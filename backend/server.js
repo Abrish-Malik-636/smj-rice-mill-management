@@ -21,6 +21,8 @@ const dashboardRoutes = require("./routes/dashboardRoutes");
 app.use("/api/dashboard", dashboardRoutes);
 const companyRoutes = require("./routes/companyRoutes");
 app.use("/api/companies", companyRoutes);
+const productTypeRoutes = require("./routes/productTypeRoutes");
+app.use("/api/product-types", productTypeRoutes);
 
 // Connect MongoDB
 mongoose

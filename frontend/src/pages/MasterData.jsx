@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import { Building2, Wheat, Wallet2, Settings, Users } from "lucide-react";
 import CompanyManager from "../components/MasterData/CompanyManager";
+import ProductManager from "../components/MasterData/ProductManager";
 
 export default function MasterData() {
   const [activeTab, setActiveTab] = useState("company");
@@ -55,21 +56,7 @@ export default function MasterData() {
       {/* Content area */}
       <div className="bg-white rounded-lg shadow-sm p-6">
         {activeTab === "company" && <CompanyManager />}
-        {activeTab === "product" && (
-          <div>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-emerald-800">
-                🌾 Product Types
-              </h3>
-              <button className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded text-sm">
-                + Add Product Type
-              </button>
-            </div>
-            <p className="text-gray-500 text-sm">
-              Define product categories and rice types for inventory tracking.
-            </p>
-          </div>
-        )}
+        {activeTab === "product" && <ProductManager />}
 
         {activeTab === "expense" && (
           <div>
