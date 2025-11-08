@@ -17,6 +17,10 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.send("✅ SMJ Rice Mill API running successfully...");
 });
+const dashboardRoutes = require("./routes/dashboardRoutes");
+app.use("/api/dashboard", dashboardRoutes);
+const companyRoutes = require("./routes/companyRoutes");
+app.use("/api/companies", companyRoutes);
 
 // Connect MongoDB
 mongoose

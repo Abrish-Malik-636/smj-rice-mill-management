@@ -1,8 +1,9 @@
 // src/pages/Dashboard.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import DatePicker from "react-datepicker";
 import { Truck, Box, Coins, AlertTriangle } from "lucide-react";
 import "react-datepicker/dist/react-datepicker.css";
+import axios from "axios";
 
 const leftAccent = {
   teal: "border-teal-400",
@@ -13,29 +14,56 @@ const leftAccent = {
 
 export default function Dashboard() {
   const [date, setDate] = useState(new Date());
+  const [stats, setStats] = useState({
+    cashInHand: 0,
+    bagsInward: 0,
+    bagsOutward: 0,
+    pendingPayments: 0,
+  });
+
+  // fetch live dashboard data
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        const res = await axios.get("http://localhost:5000/api/dashboard");
+        const data = res.data.data || {};
+
+        setStats({
+          cashInHand: data.totalExpenses || 0, // adjust these when your backend expands
+          bagsInward: data.totalProducts || 0,
+          bagsOutward: data.totalCompanies || 0,
+          pendingPayments: data.pendingPayments || 0,
+        });
+      } catch (err) {
+        console.error("Dashboard data fetch failed:", err);
+      }
+    };
+
+    fetchDashboardData();
+  }, []);
 
   const cards = [
     {
       title: "Cash in Hand",
-      value: "Rs. 120,000",
+      value: `Rs. ${stats.cashInHand.toLocaleString()}`,
       icon: <Coins size={20} />,
       color: "teal",
     },
     {
       title: "Bags Inward",
-      value: "540",
+      value: stats.bagsInward,
       icon: <Truck size={20} />,
       color: "blue",
     },
     {
       title: "Bags Outward",
-      value: "430",
+      value: stats.bagsOutward,
       icon: <Box size={20} />,
       color: "amber",
     },
     {
       title: "Pending Payments",
-      value: "12",
+      value: stats.pendingPayments,
       icon: <AlertTriangle size={20} />,
       color: "red",
     },
