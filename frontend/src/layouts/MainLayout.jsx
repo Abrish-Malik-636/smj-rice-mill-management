@@ -1,9 +1,26 @@
 // src/layouts/MainLayout.jsx
 import React, { useState } from "react";
+import { useLocation } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 
 export default function MainLayout({ children }) {
   const [isOpen, setIsOpen] = useState(true);
+  const location = useLocation();
+
+  // 🧭 Map route paths to module names
+  const routeTitles = {
+    "/": "Dashboard",
+    "/financial": "Financial",
+    "/gatepass": "IN/OUT Gate Pass",
+    "/stock": "Stock Management",
+    "/production": "Production",
+    "/reports": "Reports",
+    "/notifications": "Notifications",
+    "/masterdata": "Master Data",
+  };
+
+  // Get current module name, default if unknown
+  const currentPage = routeTitles[location.pathname] || "Dashboard";
 
   const toggleSidebar = () => setIsOpen((prev) => !prev);
 
@@ -18,7 +35,7 @@ export default function MainLayout({ children }) {
           isOpen ? "ml-[25%]" : "ml-16"
         }`}
       >
-        {/* Top Bar with Menu Button */}
+        {/* Top Bar */}
         <div className="flex items-center bg-white shadow px-6 py-3 sticky top-0 z-40">
           <button
             onClick={toggleSidebar}
@@ -28,7 +45,7 @@ export default function MainLayout({ children }) {
             ☰
           </button>
           <h2 className="text-lg font-semibold text-emerald-800">
-            SMJ Rice Mill Dashboard
+            SMJ Rice Mill — {currentPage}
           </h2>
         </div>
 

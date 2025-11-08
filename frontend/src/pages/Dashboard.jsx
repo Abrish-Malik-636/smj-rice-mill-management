@@ -89,7 +89,7 @@ export default function Dashboard() {
             selected={date}
             onChange={(d) => setDate(d)}
             dateFormat="EEE, MMM d, yyyy"
-            className="bg-transparent border-0 text-sm font-medium text-emerald-900 w-44 text-center cursor-pointer"
+            className="bg-transparent border-none outline-none focus:ring-0 hover:border-none text-sm font-medium text-emerald-900 w-44 text-center cursor-pointer"
             readOnly
           />
         </div>
