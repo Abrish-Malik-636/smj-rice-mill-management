@@ -1,46 +1,99 @@
+// src/components/Sidebar.jsx
 import React from "react";
-import { Home, Settings, Bell, BarChart2, Truck, Package, Factory, Database, X } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+
+import {
+  Home,
+  Wallet,
+  Truck,
+  Box,
+  Settings,
+  BarChart2,
+  Bell,
+  Database,
+  User,
+  LogOut,
+} from "lucide-react";
 
 export default function Sidebar({ isOpen, toggleSidebar }) {
+  const location = useLocation();
+
+  const menu = [
+    { name: "Dashboard", icon: <Home size={18} />, path: "/" },
+    { name: "Financial", icon: <Wallet size={18} />, path: "/financial" },
+    { name: "IN/OUT Gate Pass", icon: <Truck size={18} />, path: "/gatepass" },
+    { name: "Stock", icon: <Box size={18} />, path: "/stock" },
+    { name: "Production", icon: <Database size={18} />, path: "/production" },
+    { name: "Reports", icon: <BarChart2 size={18} />, path: "/reports" },
+    { name: "Notifications", icon: <Bell size={18} />, path: "/notifications" },
+    { name: "Master Data", icon: <Settings size={18} />, path: "/masterdata" },
+  ];
+
   return (
-    <div
-      className={`fixed top-0 left-0 h-full bg-emerald-800 text-white shadow-xl transform ${
-        isOpen ? "translate-x-0" : "-translate-x-full"
-      } transition-transform duration-300 ease-in-out w-1/4 z-50`}
+    <aside
+      className={`fixed top-0 left-0 h-full z-50 transform transition-all duration-300 ease-in-out
+      ${isOpen ? "translate-x-0 w-1/4" : "w-16"}
+      bg-gradient-to-b from-teal-700 to-emerald-900 text-white shadow-lg overflow-hidden`}
     >
-      <div className="flex justify-between items-center p-4 border-b border-emerald-700">
-        <h1 className="text-2xl font-bold tracking-wide">🌾 SMJ</h1>
-        <button onClick={toggleSidebar} className="text-white hover:text-emerald-300">
-          <X size={22} />
-        </button>
-      </div>
-
-      <div className="flex flex-col mt-4 space-y-3 px-4">
-        {[
-          { name: "Dashboard", icon: <Home size={18} /> },
-          { name: "Financial", icon: <BarChart2 size={18} /> },
-          { name: "IN/OUT Gate Pass", icon: <Truck size={18} /> },
-          { name: "Stock", icon: <Package size={18} /> },
-          { name: "Production", icon: <Factory size={18} /> },
-          { name: "Reports", icon: <Database size={18} /> },
-          { name: "Notifications", icon: <Bell size={18} /> },
-          { name: "Master Data", icon: <Settings size={18} /> },
-        ].map((item) => (
-          <div
-            key={item.name}
-            className="flex items-center gap-3 p-2 rounded-lg hover:bg-emerald-700 cursor-pointer transition"
-          >
-            {item.icon}
-            <span>{item.name}</span>
+      <div className="h-full flex flex-col justify-between">
+        {/* Top Section */}
+        <div>
+          <div className="flex items-center justify-between px-6 py-4 border-b border-emerald-700">
+            {isOpen && (
+              <div className="flex flex-col">
+                <div className="text-lg font-bold tracking-wide">
+                  SMJ Rice Mill
+                </div>
+                <div className="text-xs text-emerald-200">
+                  Mirza Virkan Road, Sheikhupura
+                </div>
+              </div>
+            )}
+            {/* Toggle button placeholder for now */}
           </div>
-        ))}
-      </div>
 
-      {/* Footer (user info placeholder) */}
-      <div className="absolute bottom-0 left-0 w-full p-4 border-t border-emerald-700">
-        <p className="text-sm text-emerald-200">👤 Admin User</p>
-        <p className="text-xs text-emerald-300">admin@smjrice.pk</p>
+          {/* Menu */}
+          <nav className="px-2 py-4 space-y-1">
+            {menu.map((m) => {
+              const active = location.pathname === m.path;
+              return (
+                <Link
+                  key={m.name}
+                  to={m.path}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer ${
+                    active
+                      ? "bg-emerald-600 text-white shadow-inner"
+                      : "hover:bg-emerald-700 text-emerald-100"
+                  } ${isOpen ? "" : "justify-center"}`}
+                >
+                  <div>{m.icon}</div>
+                  {isOpen && <span className="text-sm">{m.name}</span>}
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Bottom: Profile */}
+        <div className="px-3 py-4 border-t border-emerald-700">
+          <div
+            className={`flex items-center gap-3 ${isOpen ? "" : "flex-col"}`}
+          >
+            <div className="bg-emerald-600 p-1 rounded-full">
+              <User size={20} />
+            </div>
+            {isOpen && (
+              <div className="flex-1">
+                <div className="text-sm font-semibold">Admin User</div>
+                <div className="text-xs text-emerald-200">admin@smjrice.pk</div>
+              </div>
+            )}
+            <button className="text-emerald-200 hover:text-white p-2 rounded">
+              <LogOut size={16} />
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+    </aside>
   );
 }

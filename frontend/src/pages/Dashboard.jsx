@@ -1,73 +1,178 @@
+// src/pages/Dashboard.jsx
 import React, { useState } from "react";
 import DatePicker from "react-datepicker";
+import { Truck, Box, Coins, AlertTriangle } from "lucide-react";
 import "react-datepicker/dist/react-datepicker.css";
 
+const leftAccent = {
+  teal: "border-teal-400",
+  blue: "border-sky-400",
+  amber: "border-amber-400",
+  red: "border-rose-400",
+};
+
 export default function Dashboard() {
-  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [date, setDate] = useState(new Date());
+
+  const cards = [
+    {
+      title: "Cash in Hand",
+      value: "Rs. 120,000",
+      icon: <Coins size={20} />,
+      color: "teal",
+    },
+    {
+      title: "Bags Inward",
+      value: "540",
+      icon: <Truck size={20} />,
+      color: "blue",
+    },
+    {
+      title: "Bags Outward",
+      value: "430",
+      icon: <Box size={20} />,
+      color: "amber",
+    },
+    {
+      title: "Pending Payments",
+      value: "12",
+      icon: <AlertTriangle size={20} />,
+      color: "red",
+    },
+  ];
 
   const activities = [
-    "🧾 New ledger entry created for Al Rehman Traders",
-    "📦 120 Bags of Rice (B1) added to stock",
-    "💰 Payment received from Malik Sons",
-    "⚙️ Production started for shift A - 350 bags",
+    {
+      title: "Inward Entry - Raw Paddy",
+      meta: "ABC Traders · 85 bags · 5,525 kg · Just now",
+      amount: "Rs. 3,85,000",
+      color: "teal",
+      icon: <Truck size={16} />,
+    },
+    {
+      title: "Outward Entry - Premium Rice",
+      meta: "XYZ Mills · 50 bags · 3,250 kg · 15 min ago",
+      amount: "Rs. 2,60,000",
+      color: "red",
+      icon: <Box size={16} />,
+    },
+    {
+      title: "Production Complete - Day Shift",
+      meta: "Al-Barkat · Rice 850kg · 1 hour ago",
+      amount: "92% Efficiency",
+      color: "amber",
+      icon: <Coins size={16} />,
+    },
+    {
+      title: "Payment Received",
+      meta: "ABC Traders · Invoice #SMJ-2025-089 · 2 hours ago",
+      amount: "Rs. 1,50,000",
+      color: "blue",
+      icon: <Coins size={16} />,
+    },
   ];
 
   return (
-    <div className="space-y-8">
-      {/* Header Section */}
-      <div className="flex justify-between items-center border-b pb-4">
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-emerald-800">Welcome to SMJ Rice Mill</h1>
-          <p className="text-gray-500">Efficient management starts here!</p>
+          <h2 className="text-3xl font-bold text-emerald-900">Welcome back!</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Here's what's happening today
+          </p>
         </div>
 
-        {/* Interactive Date Picker */}
-        <div className="bg-white border border-gray-300 rounded-lg shadow-sm p-2 hover:shadow-md transition">
+        {/* calendar badge */}
+        <div className="rounded-lg px-4 py-2 bg-gradient-to-r from-emerald-200 to-teal-100 shadow-sm">
           <DatePicker
-            selected={selectedDate}
-            onChange={(date) => setSelectedDate(date)}
-            dateFormat="eeee, MMM d, yyyy"
-            className="w-48 text-center font-medium text-emerald-700 focus:outline-none cursor-pointer"
+            selected={date}
+            onChange={(d) => setDate(d)}
+            dateFormat="EEE, MMM d, yyyy"
+            className="bg-transparent border-0 text-sm font-medium text-emerald-900 w-44 text-center cursor-pointer"
+            readOnly
           />
         </div>
       </div>
 
-      {/* Stat Cards */}
+      {/* Cards */}
       <div className="grid grid-cols-4 gap-4">
-        {[
-          { title: "Cash in Hand", value: "Rs. 120,000", color: "emerald" },
-          { title: "Bags Inward", value: "540", color: "blue" },
-          { title: "Bags Outward", value: "430", color: "orange" },
-          { title: "Pending Payments", value: "12", color: "red" },
-        ].map((card, i) => (
+        {cards.map((c, i) => (
           <div
             key={i}
-            className={`border-l-4 border-${card.color}-500 bg-white shadow rounded-xl p-4 hover:shadow-lg transition`}
+            className={`bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition transform hover:-translate-y-1 border-l-4 ${
+              leftAccent[c.color]
+            }`}
           >
-            <h3 className="text-sm text-gray-500">{card.title}</h3>
-            <p className="text-xl font-semibold mt-1">{card.value}</p>
+            <div className="flex justify-between items-start">
+              <div>
+                <div className="text-xs text-gray-400">{c.title}</div>
+                <div className="text-2xl font-semibold text-emerald-900 mt-1">
+                  {c.value}
+                </div>
+                <div className="text-xs text-gray-400 mt-2">
+                  Data from production module
+                </div>
+              </div>
+              <div className="text-emerald-600">{c.icon}</div>
+            </div>
           </div>
         ))}
       </div>
 
-      {/* Recent Activities */}
-      <div className="bg-white shadow rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-emerald-700 mb-4">Recent Activities</h2>
-        <ul className="space-y-2 text-gray-700">
-          {activities.map((a, i) => (
-            <li
-              key={i}
-              className="border-b border-gray-100 pb-2 hover:text-emerald-600 transition"
-            >
-              {a}
-            </li>
-          ))}
-        </ul>
-      </div>
+      {/* Recent Activities + Graph */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="col-span-2 bg-white rounded-lg shadow-sm p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold text-emerald-700">
+              Recent Activities
+            </h3>
+            <button className="px-3 py-1 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 transition">
+              View All
+            </button>
+          </div>
 
-      {/* Graph Placeholder */}
-      <div className="mt-6 p-6 bg-white rounded-xl shadow text-center text-gray-400">
-        📊 Stock graphs and insights will appear here once modules are connected.
+          <div className="space-y-3">
+            {activities.map((a, idx) => (
+              <div
+                key={idx}
+                className="flex items-center justify-between p-3 rounded-md hover:bg-gray-50 transition"
+              >
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`w-11 h-11 rounded-md flex items-center justify-center text-white`}
+                    style={{
+                      background:
+                        a.color === "teal"
+                          ? "#0f766e"
+                          : a.color === "red"
+                          ? "#be123c"
+                          : a.color === "amber"
+                          ? "#c2410c"
+                          : "#0ea5e9",
+                    }}
+                  >
+                    {a.icon}
+                  </div>
+                  <div>
+                    <div className="font-medium">{a.title}</div>
+                    <div className="text-xs text-gray-400 mt-1">{a.meta}</div>
+                  </div>
+                </div>
+                <div className="text-sm font-semibold text-gray-800">
+                  {a.amount}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="col-span-1 bg-white rounded-lg shadow-sm p-4">
+          <h4 className="font-semibold text-emerald-700 mb-4">Stock Summary</h4>
+          <div className="h-44 flex items-center justify-center text-gray-400">
+            📊 Graph placeholder
+          </div>
+        </div>
       </div>
     </div>
   );

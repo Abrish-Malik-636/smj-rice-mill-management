@@ -1,38 +1,40 @@
+// src/layouts/MainLayout.jsx
 import React, { useState } from "react";
 import Sidebar from "../components/Sidebar";
-import { Menu } from "lucide-react";
-import Dashboard from "../pages/Dashboard";
 
-export default function MainLayout() {
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+export default function MainLayout({ children }) {
+  const [isOpen, setIsOpen] = useState(true);
 
-  const toggleSidebar = () => {
-    setIsSidebarOpen(!isSidebarOpen);
-  };
+  const toggleSidebar = () => setIsOpen((prev) => !prev);
 
   return (
-    <div className="flex bg-gray-50 min-h-screen">
+    <div className="flex h-screen bg-gray-50 overflow-hidden">
       {/* Sidebar */}
-      <Sidebar isOpen={isSidebarOpen} toggleSidebar={toggleSidebar} />
-
-      {/* Sidebar toggle button (fixed top-left) */}
-      {!isSidebarOpen && (
-        <button
-          onClick={toggleSidebar}
-          className="fixed top-4 left-4 bg-emerald-600 text-white p-2 rounded-md shadow-md hover:bg-emerald-700 z-40"
-        >
-          <Menu size={20} />
-        </button>
-      )}
+      <Sidebar isOpen={isOpen} toggleSidebar={toggleSidebar} />
 
       {/* Main Content */}
-      <main
-        className={`transition-all duration-300 ease-in-out ${
-          isSidebarOpen ? "ml-[25%] w-[75%]" : "ml-0 w-full"
-        } p-6`}
+      <div
+        className={`flex-1 flex flex-col transition-all duration-300 ${
+          isOpen ? "ml-[25%]" : "ml-16"
+        }`}
       >
-        <Dashboard />
-      </main>
+        {/* Top Bar with Menu Button */}
+        <div className="flex items-center bg-white shadow px-6 py-3 sticky top-0 z-40">
+          <button
+            onClick={toggleSidebar}
+            className="text-emerald-700 hover:text-emerald-900 focus:outline-none mr-4"
+            aria-label="Toggle Sidebar"
+          >
+            ☰
+          </button>
+          <h2 className="text-lg font-semibold text-emerald-800">
+            SMJ Rice Mill Dashboard
+          </h2>
+        </div>
+
+        {/* Page Content */}
+        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      </div>
     </div>
   );
 }
