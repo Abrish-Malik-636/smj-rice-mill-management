@@ -23,6 +23,11 @@ const companyRoutes = require("./routes/companyRoutes");
 app.use("/api/companies", companyRoutes);
 const productTypeRoutes = require("./routes/productTypeRoutes");
 app.use("/api/product-types", productTypeRoutes);
+const expenseCategoryRoutes = require("./routes/expenseCategoryRoutes");
+app.use("/api/expense-categories", expenseCategoryRoutes);
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const settingsRoutes = require("./routes/systemSettingsRoutes");
+app.use("/api/settings", settingsRoutes);
 
 // Connect MongoDB
 mongoose
