@@ -97,7 +97,8 @@ function StockOverview() {
   const combinedRows = useMemo(() => {
     return (stockRows || []).map((r) => ({
       ...r,
-      stockWeight: r.totalNetWeight || 0,
+      // 👇 THIS is the key fix: use balanceKg from backend
+      stockWeight: r.balanceKg || 0,
     }));
   }, [stockRows]);
 

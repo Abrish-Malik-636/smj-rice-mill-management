@@ -1,9 +1,11 @@
+// backend/controllers/systemSettingsController.js
 const path = require("path");
 const fs = require("fs");
 const SystemSettings = require("../models/systemSettingsModel");
 const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
 const ExpenseCategory = require("../models/expenseCategoryModel");
+const ProductionBatch = require("../models/productionBatchModel");
 
 /**
  * Get settings (single document). If none exists, return defaults via an upsert fallback.
@@ -12,7 +14,6 @@ exports.getSettings = async (req, res) => {
   try {
     let settings = await SystemSettings.findOne({});
     if (!settings) {
-      // create default doc (so there is always one)
       settings = await SystemSettings.create({});
     }
     res.json({ success: true, data: settings });
@@ -23,7 +24,6 @@ exports.getSettings = async (req, res) => {
 
 /**
  * Update or create the single settings document.
- * Uses findOneAndUpdate with upsert: true
  */
 exports.saveSettings = async (req, res) => {
   try {
@@ -43,7 +43,6 @@ exports.saveSettings = async (req, res) => {
 
 /**
  * Upload logo (multipart/form-data)
- * saves to backend/uploads/logo-<timestamp>.ext and returns public URL
  */
 exports.uploadLogo = async (req, res) => {
   try {
@@ -52,19 +51,14 @@ exports.uploadLogo = async (req, res) => {
         .status(400)
         .json({ success: false, message: "No file uploaded" });
 
-    // ensure uploads folder exists
     const uploadsDir = path.join(__dirname, "../uploads");
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 
-    // file already stored by multer in a tmp location - we configured storage below in routes
-    // req.file.path gives the saved file path
-    const savedPath = req.file.path; // relative to project
-    // build public URL assuming server serves /uploads
+    const savedPath = req.file.path;
     const host = req.get("host");
     const protocol = req.protocol;
     const publicUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
 
-    // update settings document with new logoUrl
     const updated = await SystemSettings.findOneAndUpdate(
       {},
       { $set: { logoUrl: publicUrl } },
@@ -78,7 +72,7 @@ exports.uploadLogo = async (req, res) => {
 };
 
 /**
- * Export backup (returns JSON containing core collections)
+ * Export backup: core settings + master data + operational data
  */
 exports.exportBackup = async (req, res) => {
   try {
@@ -87,11 +81,30 @@ exports.exportBackup = async (req, res) => {
     const productTypes = await ProductType.find({});
     const expenseCategories = await ExpenseCategory.find({});
 
+    let productionBatches = [];
+    let gatePasses = [];
+    let stockLedgers = [];
+
+    try {
+      productionBatches = await ProductionBatch.find({});
+    } catch (_) {}
+
+    try {
+      gatePasses = await GatePass.find({});
+    } catch (_) {}
+
+    try {
+      stockLedgers = await StockLedger.find({});
+    } catch (_) {}
+
     const payload = {
       settings,
       companies,
       productTypes,
       expenseCategories,
+      productionBatches,
+      gatePasses,
+      stockLedgers,
       exportedAt: new Date(),
     };
 
@@ -107,8 +120,7 @@ exports.exportBackup = async (req, res) => {
 };
 
 /**
- * Restore backup (multipart: JSON file)
- * This will replace collections with provided arrays — use carefully.
+ * Restore backup from JSON file
  */
 exports.restoreBackup = async (req, res) => {
   try {
@@ -121,28 +133,60 @@ exports.restoreBackup = async (req, res) => {
     const raw = fs.readFileSync(filePath, "utf8");
     const data = JSON.parse(raw);
 
-    // Replace/overwrite collections (basic approach)
+    // SETTINGS
     if (data.settings) {
-      // overwrite the single settings doc
       await SystemSettings.deleteMany({});
       await SystemSettings.create(data.settings);
     }
+
+    // MASTER DATA
     if (Array.isArray(data.companies)) {
       await Company.deleteMany({});
       if (data.companies.length) await Company.insertMany(data.companies);
     }
+
     if (Array.isArray(data.productTypes)) {
       await ProductType.deleteMany({});
       if (data.productTypes.length)
         await ProductType.insertMany(data.productTypes);
     }
+
     if (Array.isArray(data.expenseCategories)) {
       await ExpenseCategory.deleteMany({});
       if (data.expenseCategories.length)
         await ExpenseCategory.insertMany(data.expenseCategories);
     }
 
-    // remove uploaded restore file
+    // OPERATIONAL DATA
+    if (Array.isArray(data.productionBatches)) {
+      try {
+        await ProductionBatch.deleteMany({});
+        if (data.productionBatches.length)
+          await ProductionBatch.insertMany(data.productionBatches);
+      } catch (e) {
+        console.error("restore productionBatches error:", e);
+      }
+    }
+
+    if (Array.isArray(data.gatePasses)) {
+      try {
+        await GatePass.deleteMany({});
+        if (data.gatePasses.length) await GatePass.insertMany(data.gatePasses);
+      } catch (e) {
+        console.error("restore gatePasses error:", e);
+      }
+    }
+
+    if (Array.isArray(data.stockLedgers)) {
+      try {
+        await StockLedger.deleteMany({});
+        if (data.stockLedgers.length)
+          await StockLedger.insertMany(data.stockLedgers);
+      } catch (e) {
+        console.error("restore stockLedgers error:", e);
+      }
+    }
+
     fs.unlinkSync(filePath);
 
     res.json({ success: true, message: "Backup restored successfully" });

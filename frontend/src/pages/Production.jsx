@@ -523,7 +523,8 @@ export default function Production() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Day Shift */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-emerald-400">
           <div className="flex justify-between">
             <div>
@@ -538,6 +539,7 @@ export default function Production() {
           </div>
         </div>
 
+        {/* Night Shift */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-sky-300">
           <div className="flex justify-between">
             <div>
@@ -552,6 +554,7 @@ export default function Production() {
           </div>
         </div>
 
+        {/* Total Output */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-amber-300">
           <div className="flex justify-between">
             <div>
@@ -566,6 +569,7 @@ export default function Production() {
           </div>
         </div>
 
+        {/* Batch Count */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-violet-200">
           <div className="flex justify-between">
             <div>
@@ -577,16 +581,6 @@ export default function Production() {
             <div className="bg-violet-100 p-2 rounded-full">
               <Factory className="text-violet-700" size={18} />
             </div>
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-gray-200">
-          <div className="text-xs text-gray-500">Status</div>
-          <div className="text-xl font-bold text-gray-800">
-            {loadingSummary ? "Updating..." : "Up to date"}
-          </div>
-          <div className="text-xs text-gray-400 mt-1">
-            Live summary for today&apos;s production
           </div>
         </div>
       </div>

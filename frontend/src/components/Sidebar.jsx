@@ -13,6 +13,7 @@ import {
   Database,
   User,
   LogOut,
+  FactoryIcon,
 } from "lucide-react";
 
 export default function Sidebar({ isOpen, toggleSidebar }) {
@@ -20,9 +21,13 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
 
   const menu = [
     { name: "Dashboard", icon: <Home size={18} />, path: "/" },
-    { name: "Financial", icon: <Wallet size={18} />, path: "/financial" },
+    { name: "Transactions", icon: <Wallet size={18} />, path: "/financial" },
     { name: "Stock", icon: <Box size={18} />, path: "/stock" },
-    { name: "Production", icon: <Database size={18} />, path: "/production" },
+    {
+      name: "Production",
+      icon: <FactoryIcon size={18} />,
+      path: "/production",
+    },
     { name: "Reports", icon: <BarChart2 size={18} />, path: "/reports" },
     { name: "Notifications", icon: <Bell size={18} />, path: "/notifications" },
     { name: "Master Data", icon: <Settings size={18} />, path: "/masterdata" },

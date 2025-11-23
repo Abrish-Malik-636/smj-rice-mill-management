@@ -1,61 +1,165 @@
 // backend/controllers/stockController.js
 const ProductionBatch = require("../models/productionBatchModel");
+const Transaction = require("../models/transactionModel");
+const Company = require("../models/companyModel");
 
-/**
- * GET /api/stock/current
- * Current finished stock, grouped by product + company,
- * derived ONLY from COMPLETED production batches.
- */
+function makeKey(companyId, productTypeId) {
+  return `${companyId || "NONE"}::${productTypeId}`;
+}
+
 exports.getCurrentStock = async (req, res) => {
   try {
-    const completedBatches = await ProductionBatch.find({
+    const map = new Map();
+    const companyCache = new Map(); // companyId -> companyName
+
+    const getCompanyName = async (companyId) => {
+      if (!companyId) return "";
+      const idStr = companyId.toString();
+      if (companyCache.has(idStr)) return companyCache.get(idStr);
+
+      const comp = await Company.findById(idStr).select("name").lean();
+      const name = comp ? comp.name : "";
+      companyCache.set(idStr, name);
+      return name;
+    };
+
+    const addToMap = (
+      companyId,
+      companyName,
+      productTypeId,
+      productTypeName,
+      deltaKg,
+      updatedAt
+    ) => {
+      if (!productTypeId) return;
+      const qty = Number(deltaKg || 0);
+      if (!qty) return;
+
+      const key = makeKey(companyId, productTypeId);
+      const existing = map.get(key) || {
+        companyId: companyId || null,
+        companyName: companyName || "",
+        productTypeId,
+        productTypeName: productTypeName || "",
+        balanceKg: 0,
+        lastUpdated: null,
+      };
+
+      existing.balanceKg += qty;
+
+      const newTime = updatedAt ? new Date(updatedAt) : null;
+      if (newTime) {
+        if (!existing.lastUpdated || newTime > existing.lastUpdated) {
+          existing.lastUpdated = newTime;
+        }
+      }
+
+      map.set(key, existing);
+    };
+
+    // 1️⃣ COMPLETED production batches → add outputs
+    const batches = await ProductionBatch.find({
       status: "COMPLETED",
     }).lean();
 
-    const map = new Map();
+    for (const b of batches) {
+      const companyId = b.companyId || null;
+      // if companyName missing, we’ll fill it later from cache
+      const outputs = b.outputs || [];
+      for (const o of outputs) {
+        const productTypeId = o.productTypeId?.toString();
+        const productTypeName = o.productTypeName || "";
+        const net = Number(o.netWeightKg || 0);
+        if (net > 0) {
+          addToMap(
+            companyId,
+            b.companyName || "", // might be empty; we’ll fix below
+            productTypeId,
+            productTypeName,
+            net,
+            b.updatedAt || b.createdAt
+          );
+        }
+      }
+    }
 
-    completedBatches.forEach((batch) => {
-      const batchUpdatedAt = batch.updatedAt || batch.date || new Date();
+    // 2️⃣ PURCHASE transactions → add items
+    const purchases = await Transaction.find({ type: "PURCHASE" }).lean();
+    for (const t of purchases) {
+      const companyId = t.companyId || null;
+      const companyName = t.companyName || "";
+      const items = t.items || [];
+      for (const it of items) {
+        const productTypeId = it.productTypeId?.toString();
+        const productTypeName = it.productTypeName || "";
+        const net = Number(it.netWeightKg || 0);
+        if (net > 0) {
+          addToMap(
+            companyId,
+            companyName,
+            productTypeId,
+            productTypeName,
+            net,
+            t.updatedAt || t.createdAt
+          );
+        }
+      }
+    }
 
-      (batch.outputs || []).forEach((o) => {
-        if (!o.productTypeId || !o.netWeightKg) return;
+    // 3️⃣ SALE transactions → subtract items
+    const sales = await Transaction.find({ type: "SALE" }).lean();
+    for (const t of sales) {
+      const companyId = t.companyId || null;
+      const companyName = t.companyName || "";
+      const items = t.items || [];
+      for (const it of items) {
+        const productTypeId = it.productTypeId?.toString();
+        const productTypeName = it.productTypeName || "";
+        const net = Number(it.netWeightKg || 0);
+        if (net > 0) {
+          addToMap(
+            companyId,
+            companyName,
+            productTypeId,
+            productTypeName,
+            -net,
+            t.updatedAt || t.createdAt
+          );
+        }
+      }
+    }
 
-        const key = `${o.productTypeId.toString()}__${
-          o.companyId ? o.companyId.toString() : "null"
-        }`;
+    // Build final rows + fill missing companyName via cache
+    const rows = [];
+    for (const val of map.values()) {
+      if (val.balanceKg > 0.0001) {
+        val.balanceKg = +val.balanceKg.toFixed(3);
 
-        const existing = map.get(key) || {
-          productTypeId: o.productTypeId,
-          productTypeName: o.productTypeName || "",
-          companyId: o.companyId || null,
-          companyName: o.companyName || "",
-          totalNetWeight: 0,
-          lastUpdated: batchUpdatedAt,
-        };
-
-        existing.totalNetWeight += o.netWeightKg || 0;
-
-        if (
-          batchUpdatedAt &&
-          new Date(batchUpdatedAt) > new Date(existing.lastUpdated)
-        ) {
-          existing.lastUpdated = batchUpdatedAt;
+        if (val.lastUpdated) {
+          val.lastUpdated = new Date(val.lastUpdated);
         }
 
-        map.set(key, existing);
-      });
-    });
+        // 🔍 If companyId exists but name is empty (typical for production batches), resolve from Company
+        if (val.companyId && !val.companyName) {
+          // eslint-disable-next-line no-await-in-loop
+          val.companyName = await getCompanyName(val.companyId);
+        }
 
-    const result = Array.from(map.values()).map((row) => ({
-      ...row,
-      totalNetWeight: Number(row.totalNetWeight.toFixed(3)),
-    }));
+        rows.push(val);
+      }
+    }
 
-    return res.json({ success: true, data: result });
+    const summary = {
+      totalProducts: rows.length,
+      totalKg: +rows.reduce((sum, r) => sum + r.balanceKg, 0).toFixed(3),
+    };
+
+    return res.json({ success: true, data: rows, summary });
   } catch (err) {
     console.error("getCurrentStock error:", err);
-    return res
-      .status(500)
-      .json({ success: false, message: "Error computing current stock." });
+    return res.status(500).json({
+      success: false,
+      message: "Server error while computing current stock.",
+    });
   }
 };

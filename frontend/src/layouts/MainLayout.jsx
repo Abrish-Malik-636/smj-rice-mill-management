@@ -10,8 +10,7 @@ export default function MainLayout({ children }) {
   // 🧭 Map route paths to module names
   const routeTitles = {
     "/": "Dashboard",
-    "/financial": "Financial",
-    "/gatepass": "IN/OUT Gate Pass",
+    "/financial": "Transactions",
     "/stock": "Stock Management",
     "/production": "Production",
     "/reports": "Reports",

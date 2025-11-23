@@ -22,6 +22,7 @@ export default function Dashboard() {
   });
 
   // fetch live dashboard data
+
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -29,9 +30,9 @@ export default function Dashboard() {
         const data = res.data.data || {};
 
         setStats({
-          cashInHand: data.totalExpenses || 0, // adjust these when your backend expands
-          bagsInward: data.totalProducts || 0,
-          bagsOutward: data.totalCompanies || 0,
+          cashInHand: data.totalExpenses || 0,
+          bagsInward: data.todayTotalPaddyKg || 0,
+          bagsOutward: data.todayTotalOutputKg || 0,
           pendingPayments: data.pendingPayments || 0,
         });
       } catch (err) {

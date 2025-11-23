@@ -1,6 +1,6 @@
 // src/components/MasterData/SystemSettings.jsx
 import React, { useEffect, useState } from "react";
-import api from "../../services/api"; // your axios instance
+import api from "../../services/api";
 import { UploadCloud, Save, ArrowDownCircle } from "lucide-react";
 
 export default function SystemSettings() {
@@ -17,26 +17,6 @@ export default function SystemSettings() {
     dateFormat: "DD/MM/YYYY",
     timezone: "Asia/Karachi",
     logoUrl: "",
-
-    defaultBagWeightKg: 65,
-    defaultMoisturePercent: 14,
-    gatepassAutoNumbering: true,
-    gatepassPrefix: "GP-",
-    gatepassStartFrom: 1,
-    productionBatchPrefix: "PB-",
-    invoicePrefix: "INV-",
-    invoiceStartFrom: 1,
-    autoSaveProductionWeights: true,
-
-    printHeader: "",
-    printFooter: "",
-    watermarkText: "",
-    showLogoOnPrint: true,
-    pageSize: "A4",
-    marginTop: 20,
-    marginLeft: 15,
-    marginRight: 15,
-    marginBottom: 20,
   });
 
   const [activeTab, setActiveTab] = useState("general");
@@ -50,7 +30,6 @@ export default function SystemSettings() {
       try {
         const res = await api.get("/settings");
         if (res.data && res.data.data) {
-          // normalize dates to yyyy-mm-dd for inputs
           const s = res.data.data;
           setSettings((prev) => ({ ...prev, ...s }));
         }
@@ -68,7 +47,6 @@ export default function SystemSettings() {
   const handleSave = async () => {
     setLoading(true);
     try {
-      // convert fiscal year start to Date if provided as string input
       const payload = { ...settings };
       if (
         payload.fiscalYearStart &&
@@ -76,7 +54,7 @@ export default function SystemSettings() {
       ) {
         payload.fiscalYearStart = new Date(payload.fiscalYearStart);
       }
-      const res = await api.put("/settings", payload);
+      await api.put("/settings", payload);
       setMsg("Settings saved");
       setTimeout(() => setMsg(""), 2500);
     } catch (err) {
@@ -92,7 +70,6 @@ export default function SystemSettings() {
     const f = e.target.files[0];
     if (!f) return;
     setLogoFile(f);
-    // preview locally
     const reader = new FileReader();
     reader.onload = () => {
       handleChange("logoUrl", reader.result);
@@ -101,7 +78,10 @@ export default function SystemSettings() {
   };
 
   const uploadLogo = async () => {
-    if (!logoFile) return alert("Choose a logo file first");
+    if (!logoFile) {
+      alert("Choose a logo file first");
+      return;
+    }
     const form = new FormData();
     form.append("logo", logoFile);
     setLoading(true);
@@ -123,7 +103,6 @@ export default function SystemSettings() {
   };
 
   const downloadBackup = () => {
-    // open new tab to GET /api/settings/backup
     window.open(`${api.defaults.baseURL}/settings/backup`, "_blank");
   };
 
@@ -134,12 +113,15 @@ export default function SystemSettings() {
   };
 
   const uploadRestore = async () => {
-    if (!restoreFile) return alert("Choose a backup JSON file first");
+    if (!restoreFile) {
+      alert("Choose a backup JSON file first");
+      return;
+    }
     const form = new FormData();
     form.append("backup", restoreFile);
     setLoading(true);
     try {
-      const res = await api.post("/settings/restore", form, {
+      await api.post("/settings/restore", form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       alert("Restore complete — please reload app");
@@ -154,89 +136,89 @@ export default function SystemSettings() {
 
   return (
     <div className="space-y-4">
-      {/* header row */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold text-emerald-800">
             System Settings
           </h2>
           <p className="text-sm text-gray-500">
-            Global settings (single document)
+            General information & full system backup/restore
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            className="bg-emerald-600 text-white px-3 py-2 rounded flex items-center gap-2"
-          >
-            <Save size={16} /> Save
-          </button>
+          {activeTab === "general" && (
+            <button
+              onClick={handleSave}
+              disabled={loading}
+              className="bg-emerald-600 text-white px-3 py-2 rounded flex items-center gap-2 disabled:opacity-60"
+            >
+              <Save size={16} /> {loading ? "Saving..." : "Save"}
+            </button>
+          )}
           <div className="text-sm text-green-700">{msg}</div>
         </div>
       </div>
 
-      {/* tabs */}
+      {/* Tabs (only General + Backup now) */}
       <div className="flex gap-2">
         <button
           onClick={() => setActiveTab("general")}
-          className={`px-3 py-2 rounded ${
-            activeTab === "general" ? "bg-emerald-600 text-white" : "bg-white"
+          className={`px-3 py-2 rounded text-sm ${
+            activeTab === "general"
+              ? "bg-emerald-600 text-white"
+              : "bg-white text-gray-700 border"
           }`}
         >
           General
         </button>
         <button
-          onClick={() => setActiveTab("operational")}
-          className={`px-3 py-2 rounded ${
-            activeTab === "operational"
-              ? "bg-emerald-600 text-white"
-              : "bg-white"
-          }`}
-        >
-          Operational
-        </button>
-        <button
-          onClick={() => setActiveTab("printing")}
-          className={`px-3 py-2 rounded ${
-            activeTab === "printing" ? "bg-emerald-600 text-white" : "bg-white"
-          }`}
-        >
-          Printing
-        </button>
-        <button
           onClick={() => setActiveTab("backup")}
-          className={`px-3 py-2 rounded ${
-            activeTab === "backup" ? "bg-emerald-600 text-white" : "bg-white"
+          className={`px-3 py-2 rounded text-sm ${
+            activeTab === "backup"
+              ? "bg-emerald-600 text-white"
+              : "bg-white text-gray-700 border"
           }`}
         >
-          Backup
+          Backup & Restore
         </button>
       </div>
 
-      {/* content */}
+      {/* Content */}
       <div className="bg-white p-4 rounded-lg shadow-sm">
+        {/* GENERAL TAB */}
         {activeTab === "general" && (
           <div className="grid grid-cols-3 gap-4">
-            <div className="col-span-2">
-              <label className="text-xs text-gray-600">Company Name</label>
-              <input
-                className="w-full border p-2 rounded"
-                value={settings.companyName || ""}
-                onChange={(e) => handleChange("companyName", e.target.value)}
-              />
-              <label className="text-xs text-gray-600 mt-2">Short Name</label>
-              <input
-                className="w-full border p-2 rounded"
-                value={settings.shortName || ""}
-                onChange={(e) => handleChange("shortName", e.target.value)}
-              />
-              <label className="text-xs text-gray-600 mt-2">Address</label>
-              <input
-                className="w-full border p-2 rounded"
-                value={settings.address || ""}
-                onChange={(e) => handleChange("address", e.target.value)}
-              />
-              <div className="grid grid-cols-3 gap-2 mt-2">
+            {/* Left: Company info */}
+            <div className="col-span-2 space-y-2">
+              <div>
+                <label className="text-xs text-gray-600">Company Name</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={settings.companyName || ""}
+                  onChange={(e) => handleChange("companyName", e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Short Name</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={settings.shortName || ""}
+                  onChange={(e) => handleChange("shortName", e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Address</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={settings.address || ""}
+                  onChange={(e) => handleChange("address", e.target.value)}
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
                 <input
                   className="border p-2 rounded"
                   placeholder="Phone"
@@ -256,7 +238,8 @@ export default function SystemSettings() {
                   onChange={(e) => handleChange("ntn", e.target.value)}
                 />
               </div>
-              <div className="grid grid-cols-3 gap-2 mt-2">
+
+              <div className="grid grid-cols-3 gap-2">
                 <input
                   className="border p-2 rounded"
                   placeholder="STRN"
@@ -286,7 +269,8 @@ export default function SystemSettings() {
                   }
                 />
               </div>
-              <div className="grid grid-cols-2 gap-2 mt-2">
+
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   className="border p-2 rounded"
                   placeholder="Date format"
@@ -302,6 +286,7 @@ export default function SystemSettings() {
               </div>
             </div>
 
+            {/* Right: Logo */}
             <div className="col-span-1">
               <div className="border rounded p-3 text-center">
                 <div className="text-sm text-gray-600">Logo</div>
@@ -313,23 +298,25 @@ export default function SystemSettings() {
                       className="mx-auto h-24 object-contain"
                     />
                   ) : (
-                    <div className="h-24 w-full bg-gray-100 flex items-center justify-center text-gray-400">
-                      No logo
+                    <div className="h-24 w-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
+                      No logo configured
                     </div>
                   )}
                 </div>
-                <div className="mt-3">
+                <div className="mt-3 space-y-2">
                   <input
                     type="file"
                     accept="image/*"
                     onChange={handleLogoSelect}
+                    className="text-xs"
                   />
-                  <div className="mt-2 flex gap-2 justify-center">
+                  <div className="flex gap-2 justify-center">
                     <button
-                      className="px-3 py-1 bg-emerald-600 text-white rounded"
+                      className="px-3 py-1 bg-emerald-600 text-white rounded flex items-center gap-1 text-xs"
                       onClick={uploadLogo}
+                      type="button"
                     >
-                      <UploadCloud size={16} /> Upload
+                      <UploadCloud size={14} /> Upload
                     </button>
                   </div>
                 </div>
@@ -338,254 +325,50 @@ export default function SystemSettings() {
           </div>
         )}
 
-        {activeTab === "operational" && (
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="text-xs text-gray-600">
-                Default bag weight (kg)
-              </label>
-              <input
-                type="number"
-                className="border p-2 rounded w-full"
-                value={settings.defaultBagWeightKg || 65}
-                onChange={(e) =>
-                  handleChange("defaultBagWeightKg", Number(e.target.value))
-                }
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">
-                Default moisture %
-              </label>
-              <input
-                type="number"
-                className="border p-2 rounded w-full"
-                value={settings.defaultMoisturePercent || 14}
-                onChange={(e) =>
-                  handleChange("defaultMoisturePercent", Number(e.target.value))
-                }
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">
-                Gatepass Auto Numbering
-              </label>
-              <div className="mt-2">
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={!!settings.gatepassAutoNumbering}
-                    onChange={(e) =>
-                      handleChange("gatepassAutoNumbering", e.target.checked)
-                    }
-                  />
-                  <span>Enable</span>
-                </label>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Gatepass Prefix</label>
-              <input
-                className="border p-2 rounded w-full"
-                value={settings.gatepassPrefix || ""}
-                onChange={(e) => handleChange("gatepassPrefix", e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">
-                Gatepass Start From
-              </label>
-              <input
-                type="number"
-                className="border p-2 rounded w-full"
-                value={settings.gatepassStartFrom || 1}
-                onChange={(e) =>
-                  handleChange("gatepassStartFrom", Number(e.target.value))
-                }
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">
-                Production Batch Prefix
-              </label>
-              <input
-                className="border p-2 rounded w-full"
-                value={settings.productionBatchPrefix || ""}
-                onChange={(e) =>
-                  handleChange("productionBatchPrefix", e.target.value)
-                }
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Invoice Prefix</label>
-              <input
-                className="border p-2 rounded w-full"
-                value={settings.invoicePrefix || ""}
-                onChange={(e) => handleChange("invoicePrefix", e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">
-                Invoice Start From
-              </label>
-              <input
-                type="number"
-                className="border p-2 rounded w-full"
-                value={settings.invoiceStartFrom || 1}
-                onChange={(e) =>
-                  handleChange("invoiceStartFrom", Number(e.target.value))
-                }
-              />
-            </div>
-
-            <div className="col-span-3 mt-3">
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={!!settings.autoSaveProductionWeights}
-                  onChange={(e) =>
-                    handleChange("autoSaveProductionWeights", e.target.checked)
-                  }
-                />
-                <span>Auto Save Production Weights</span>
-              </label>
-            </div>
-          </div>
-        )}
-
-        {activeTab === "printing" && (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs text-gray-600">Header Text</label>
-              <textarea
-                className="border p-2 rounded w-full"
-                rows={3}
-                value={settings.printHeader || ""}
-                onChange={(e) => handleChange("printHeader", e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Footer Text</label>
-              <textarea
-                className="border p-2 rounded w-full"
-                rows={3}
-                value={settings.printFooter || ""}
-                onChange={(e) => handleChange("printFooter", e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Watermark Text</label>
-              <input
-                className="border p-2 rounded w-full"
-                value={settings.watermarkText || ""}
-                onChange={(e) => handleChange("watermarkText", e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">
-                Show Logo On Print
-              </label>
-              <div className="mt-2">
-                <label className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={!!settings.showLogoOnPrint}
-                    onChange={(e) =>
-                      handleChange("showLogoOnPrint", e.target.checked)
-                    }
-                  />
-                  <span>Show Logo</span>
-                </label>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Page Size</label>
-              <select
-                className="border p-2 rounded w-full"
-                value={settings.pageSize || "A4"}
-                onChange={(e) => handleChange("pageSize", e.target.value)}
-              >
-                <option value="A4">A4</option>
-                <option value="A5">A5</option>
-                <option value="Letter">Letter</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">
-                Margins (Top/Left/Right/Bottom in mm)
-              </label>
-              <div className="grid grid-cols-4 gap-2 mt-1">
-                <input
-                  type="number"
-                  className="border p-2 rounded"
-                  value={settings.marginTop || 20}
-                  onChange={(e) =>
-                    handleChange("marginTop", Number(e.target.value))
-                  }
-                />
-                <input
-                  type="number"
-                  className="border p-2 rounded"
-                  value={settings.marginLeft || 15}
-                  onChange={(e) =>
-                    handleChange("marginLeft", Number(e.target.value))
-                  }
-                />
-                <input
-                  type="number"
-                  className="border p-2 rounded"
-                  value={settings.marginRight || 15}
-                  onChange={(e) =>
-                    handleChange("marginRight", Number(e.target.value))
-                  }
-                />
-                <input
-                  type="number"
-                  className="border p-2 rounded"
-                  value={settings.marginBottom || 20}
-                  onChange={(e) =>
-                    handleChange("marginBottom", Number(e.target.value))
-                  }
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
+        {/* BACKUP TAB */}
         {activeTab === "backup" && (
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex items-center gap-3">
               <button
                 onClick={downloadBackup}
-                className="bg-sky-600 text-white px-3 py-2 rounded flex items-center gap-2"
+                type="button"
+                className="bg-sky-600 text-white px-3 py-2 rounded flex items-center gap-2 text-sm"
               >
-                <ArrowDownCircle size={16} /> Download Backup
+                <ArrowDownCircle size={16} /> Download Full Backup
               </button>
 
-              <div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-500">
+                  Backup includes settings, master data and core operational
+                  data (production, stock, gatepasses, etc.)
+                </span>
+              </div>
+            </div>
+
+            <div className="border-t pt-4">
+              <div className="text-sm font-semibold text-gray-700 mb-2">
+                Restore from Backup
+              </div>
+              <div className="flex items-center gap-3">
                 <input
                   type="file"
                   accept=".json"
                   onChange={handleRestoreSelect}
+                  className="text-xs"
                 />
                 <button
                   onClick={uploadRestore}
-                  className="ml-2 bg-rose-600 text-white px-3 py-2 rounded"
+                  type="button"
+                  className="bg-rose-600 text-white px-3 py-2 rounded text-sm"
                 >
                   Restore Backup
                 </button>
               </div>
-            </div>
-
-            <div className="text-sm text-gray-600">
-              Backup includes settings, companies, product types and expense
-              categories.
+              <div className="mt-2 text-xs text-gray-500">
+                <strong>Warning:</strong> Restore will overwrite existing
+                settings, companies, product types, expense categories, and core
+                operational data with the backup contents.
+              </div>
             </div>
           </div>
         )}
