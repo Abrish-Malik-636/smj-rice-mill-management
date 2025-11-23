@@ -28,8 +28,10 @@ app.use("/api/expense-categories", expenseCategoryRoutes);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 const settingsRoutes = require("./routes/systemSettingsRoutes");
 app.use("/api/settings", settingsRoutes);
-const gatePassesRoutes = require("./routes/gatePassesRoutes");
-app.use("/api/gatepasses", gatePassesRoutes);
+const stockRoutes = require("./routes/stockRoutes");
+app.use("/api/stock", stockRoutes);
+const productionRoutes = require("./routes/productionRoutes");
+app.use("/api/production", productionRoutes);
 
 // Connect MongoDB
 mongoose

@@ -21,7 +21,6 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
   const menu = [
     { name: "Dashboard", icon: <Home size={18} />, path: "/" },
     { name: "Financial", icon: <Wallet size={18} />, path: "/financial" },
-    { name: "IN/OUT Gate Pass", icon: <Truck size={18} />, path: "/gatepass" },
     { name: "Stock", icon: <Box size={18} />, path: "/stock" },
     { name: "Production", icon: <Database size={18} />, path: "/production" },
     { name: "Reports", icon: <BarChart2 size={18} />, path: "/reports" },

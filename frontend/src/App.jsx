@@ -5,7 +5,6 @@ import MainLayout from "./layouts/MainLayout";
 
 import Dashboard from "./pages/Dashboard";
 import Financial from "./pages/Financial";
-import GatePass from "./pages/GatePass";
 import Stock from "./pages/Stock";
 import Production from "./pages/Production";
 import Reports from "./pages/Reports";
@@ -19,7 +18,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/financial" element={<Financial />} />
-          <Route path="/gatepass" element={<GatePass />} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/production" element={<Production />} />
           <Route path="/reports" element={<Reports />} />
