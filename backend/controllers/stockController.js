@@ -12,13 +12,13 @@ exports.getCurrentStock = async (req, res) => {
     const map = new Map();
     const companyCache = new Map(); // companyId -> companyName
 
-    const getCompanyName = async (companyId) => {
-      if (!companyId) return "";
+    const getCompanyName = async (companyId, fallbackName = "") => {
+      if (!companyId) return fallbackName || "";
       const idStr = companyId.toString();
       if (companyCache.has(idStr)) return companyCache.get(idStr);
 
       const comp = await Company.findById(idStr).select("name").lean();
-      const name = comp ? comp.name : "";
+      const name = comp ? comp.name : fallbackName || "";
       companyCache.set(idStr, name);
       return name;
     };
@@ -63,17 +63,19 @@ exports.getCurrentStock = async (req, res) => {
     }).lean();
 
     for (const b of batches) {
-      const companyId = b.companyId || null;
-      // if companyName missing, we’ll fill it later from cache
       const outputs = b.outputs || [];
+
       for (const o of outputs) {
+        const companyId = o.companyId || null; // ✅ company per-output se
+        const rawCompanyName = o.companyName || ""; // ✅ name per-output se
         const productTypeId = o.productTypeId?.toString();
         const productTypeName = o.productTypeName || "";
         const net = Number(o.netWeightKg || 0);
+
         if (net > 0) {
           addToMap(
             companyId,
-            b.companyName || "", // might be empty; we’ll fix below
+            rawCompanyName,
             productTypeId,
             productTypeName,
             net,
@@ -89,10 +91,12 @@ exports.getCurrentStock = async (req, res) => {
       const companyId = t.companyId || null;
       const companyName = t.companyName || "";
       const items = t.items || [];
+
       for (const it of items) {
         const productTypeId = it.productTypeId?.toString();
         const productTypeName = it.productTypeName || "";
         const net = Number(it.netWeightKg || 0);
+
         if (net > 0) {
           addToMap(
             companyId,
@@ -112,10 +116,12 @@ exports.getCurrentStock = async (req, res) => {
       const companyId = t.companyId || null;
       const companyName = t.companyName || "";
       const items = t.items || [];
+
       for (const it of items) {
         const productTypeId = it.productTypeId?.toString();
         const productTypeName = it.productTypeName || "";
         const net = Number(it.netWeightKg || 0);
+
         if (net > 0) {
           addToMap(
             companyId,
@@ -129,24 +135,29 @@ exports.getCurrentStock = async (req, res) => {
       }
     }
 
-    // Build final rows + fill missing companyName via cache
+    // 4️⃣ Final rows: fix companyName & lastUpdated
     const rows = [];
     for (const val of map.values()) {
-      if (val.balanceKg > 0.0001) {
-        val.balanceKg = +val.balanceKg.toFixed(3);
+      if (val.balanceKg <= 0.0001) continue;
 
-        if (val.lastUpdated) {
-          val.lastUpdated = new Date(val.lastUpdated);
-        }
+      val.balanceKg = +val.balanceKg.toFixed(3);
 
-        // 🔍 If companyId exists but name is empty (typical for production batches), resolve from Company
-        if (val.companyId && !val.companyName) {
-          // eslint-disable-next-line no-await-in-loop
-          val.companyName = await getCompanyName(val.companyId);
-        }
-
-        rows.push(val);
+      if (val.lastUpdated) {
+        val.lastUpdated = new Date(val.lastUpdated);
       }
+
+      // 🔹 If companyName empty but we have companyId → lookup
+      if (val.companyId && !val.companyName) {
+        // eslint-disable-next-line no-await-in-loop
+        val.companyName = await getCompanyName(val.companyId, "");
+      }
+
+      // 🔹 If still no company info → treat as Mill Own Stock
+      if (!val.companyId && !val.companyName) {
+        val.companyName = "Mill Own Stock";
+      }
+
+      rows.push(val);
     }
 
     const summary = {

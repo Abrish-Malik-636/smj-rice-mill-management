@@ -1,15 +1,9 @@
 // src/pages/Stock.jsx
 import React, { useEffect, useState, useMemo } from "react";
 import api from "../services/api";
-import {
-  Package,
-  Layers,
-  AlertTriangle,
-  CircleDot,
-  RefreshCcw,
-  Filter,
-} from "lucide-react";
+import { Filter, X } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
+
 import {
   PieChart,
   Pie,
@@ -19,7 +13,7 @@ import {
   Legend,
 } from "recharts";
 
-const CHART_COLORS = [
+const COLORS = [
   "#0EA5E9",
   "#22C55E",
   "#A855F7",
@@ -27,41 +21,28 @@ const CHART_COLORS = [
   "#EC4899",
   "#6366F1",
   "#14B8A6",
+  "#10B981",
 ];
 
-const LOW_STOCK_THRESHOLD_KG = 500;
+const LOW_STOCK_THRESHOLD = 500;
+const EXTREME_LOW_THRESHOLD = 300;
 
 export default function Stock() {
-  return (
-    <div className="space-y-6 w-full">
-      <Toaster />
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-emerald-800 flex items-center gap-2">
-            <Package size={20} />
-            Stock Management
-          </h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Live overview of paddy in process and finished stock with product
-            and company-wise filters.
-          </p>
-        </div>
-      </div>
-
-      <StockOverview />
-    </div>
-  );
-}
-
-function StockOverview() {
   const [stockRows, setStockRows] = useState([]);
-  const [inProcessBatches, setInProcessBatches] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const [productFilter, setProductFilter] = useState("ALL");
   const [companyFilter, setCompanyFilter] = useState("ALL");
-  const [chartMode, setChartMode] = useState("PRODUCT"); // PRODUCT | COMPANY
+  const [productFilter, setProductFilter] = useState("ALL");
 
+  const [dateMode, setDateMode] = useState("RANGE"); // RANGE | TODAY
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const [showFilters, setShowFilters] = useState(false);
+
+  // --------------------------------------------------------------------
+  // LOAD DATA
+  // --------------------------------------------------------------------
   useEffect(() => {
     loadData();
   }, []);
@@ -69,15 +50,8 @@ function StockOverview() {
   async function loadData() {
     try {
       setLoading(true);
-      const [stockRes, processRes] = await Promise.all([
-        api.get("/stock/current"),
-        api.get("/production/batches", {
-          params: { status: "IN_PROCESS", limit: 200 },
-        }),
-      ]);
-
+      const stockRes = await api.get("/stock/current");
       setStockRows(stockRes.data.data || []);
-      setInProcessBatches(processRes.data.data || []);
     } catch (err) {
       toast.error("Failed to load stock data");
     } finally {
@@ -85,412 +59,377 @@ function StockOverview() {
     }
   }
 
-  // In-process paddy = sum of paddyWeightKg for IN_PROCESS batches
-  const inProcessPaddyKg = useMemo(() => {
-    return (inProcessBatches || []).reduce(
-      (sum, b) => sum + (b.paddyWeightKg || 0),
-      0
-    );
-  }, [inProcessBatches]);
-
-  // Combined rows from backend
-  const combinedRows = useMemo(() => {
-    return (stockRows || []).map((r) => ({
-      ...r,
-      // 👇 THIS is the key fix: use balanceKg from backend
-      stockWeight: r.balanceKg || 0,
-    }));
+  // --------------------------------------------------------------------
+  // ALL OPTIONS
+  // --------------------------------------------------------------------
+  const allCompanies = useMemo(() => {
+    const s = new Set();
+    stockRows.forEach((r) => r.companyName && s.add(r.companyName));
+    return Array.from(s);
   }, [stockRows]);
 
-  // Filter options
-  const productOptions = useMemo(() => {
-    const set = new Set();
-    combinedRows.forEach((r) => {
-      if (r.productTypeName) set.add(r.productTypeName);
-    });
-    return Array.from(set).sort();
-  }, [combinedRows]);
+  const allProducts = useMemo(() => {
+    const s = new Set();
+    stockRows.forEach((r) => r.productTypeName && s.add(r.productTypeName));
+    return Array.from(s);
+  }, [stockRows]);
 
-  const companyOptions = useMemo(() => {
-    const set = new Set();
-    combinedRows.forEach((r) => {
-      if (r.companyName) set.add(r.companyName);
-    });
-    return Array.from(set).sort();
-  }, [combinedRows]);
+  // --------------------------------------------------------------------
+  // DEPENDENT PRODUCT LIST
+  // --------------------------------------------------------------------
+  const filteredProducts = useMemo(() => {
+    if (companyFilter === "ALL") return allProducts;
 
-  // Apply filters
+    const s = new Set();
+    stockRows.forEach((r) => {
+      if (r.companyName === companyFilter) s.add(r.productTypeName);
+    });
+
+    return Array.from(s);
+  }, [companyFilter, stockRows, allProducts]);
+
+  useEffect(() => {
+    if (productFilter !== "ALL" && !filteredProducts.includes(productFilter)) {
+      setProductFilter("ALL");
+    }
+  }, [filteredProducts]);
+
+  // --------------------------------------------------------------------
+  // DEPENDENT COMPANY LIST
+  // --------------------------------------------------------------------
+  const filteredCompanies = useMemo(() => {
+    if (productFilter === "ALL") return allCompanies;
+
+    const s = new Set();
+    stockRows.forEach((r) => {
+      if (r.productTypeName === productFilter) s.add(r.companyName);
+    });
+
+    return Array.from(s);
+  }, [productFilter, stockRows, allCompanies]);
+
+  useEffect(() => {
+    if (companyFilter !== "ALL" && !filteredCompanies.includes(companyFilter)) {
+      setCompanyFilter("ALL");
+    }
+  }, [filteredCompanies]);
+
+  // --------------------------------------------------------------------
+  // DATE FILTER LOGIC
+  // applies on BOTH createdAt OR lastUpdated
+  // --------------------------------------------------------------------
+  function recordMatchesDate(row) {
+    const created = row.createdAt ? new Date(row.createdAt) : null;
+    const updated = row.lastUpdated ? new Date(row.lastUpdated) : null;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (dateMode === "TODAY") {
+      if ((created && created >= today) || (updated && updated >= today)) {
+        return true;
+      }
+      return false;
+    }
+
+    // RANGE MODE
+    if (!dateFrom || !dateTo) return true;
+
+    const from = new Date(dateFrom);
+    const to = new Date(dateTo);
+    to.setHours(23, 59, 59, 999);
+
+    const createdMatch = created && created >= from && created <= to;
+    const updatedMatch = updated && updated >= from && updated <= to;
+
+    return createdMatch || updatedMatch;
+  }
+
+  // --------------------------------------------------------------------
+  // APPLY FILTERS (auto, no button)
+  // --------------------------------------------------------------------
   const filteredRows = useMemo(() => {
-    return combinedRows.filter((r) => {
-      const matchProduct =
-        productFilter === "ALL" || r.productTypeName === productFilter;
+    return stockRows.filter((r) => {
       const matchCompany =
         companyFilter === "ALL" || r.companyName === companyFilter;
-      return matchProduct && matchCompany;
+      const matchProduct =
+        productFilter === "ALL" || r.productTypeName === productFilter;
+
+      const matchDate = recordMatchesDate(r);
+
+      return matchCompany && matchProduct && matchDate;
     });
-  }, [combinedRows, productFilter, companyFilter]);
+  }, [stockRows, companyFilter, productFilter, dateMode, dateFrom, dateTo]);
 
-  // Global summary (cards always use ALL stock)
-  const totalStockKg = combinedRows.reduce(
-    (sum, r) => sum + (r.stockWeight || 0),
-    0
-  );
+  // --------------------------------------------------------------------
+  // DONUT LOGIC (auto adapt by filter)
+  // --------------------------------------------------------------------
+  const donutData = useMemo(() => {
+    const map = new Map();
 
-  const productTypesCount = new Set(
-    combinedRows.map((r) => r.productTypeId || r.productTypeName)
-  ).size;
-
-  const lowItemsCount = combinedRows.filter((r) => {
-    if (r.stockWeight <= 0) return true;
-    if (r.stockWeight > 0 && r.stockWeight <= LOW_STOCK_THRESHOLD_KG)
-      return true;
-    return false;
-  }).length;
-
-  // Chart data depends on chart mode + FILTERED rows
-  const chartData = useMemo(() => {
-    const byKey = new Map();
-
-    if (chartMode === "PRODUCT") {
+    if (companyFilter !== "ALL") {
       filteredRows.forEach((r) => {
-        const key = r.productTypeName || "Unknown";
-        const prev = byKey.get(key) || 0;
-        byKey.set(key, prev + (r.stockWeight || 0));
+        const key = r.productTypeName;
+        map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
+      });
+    } else if (productFilter !== "ALL") {
+      filteredRows.forEach((r) => {
+        const key = r.companyName;
+        map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
       });
     } else {
       filteredRows.forEach((r) => {
-        const key = r.companyName || "No Company";
-        const prev = byKey.get(key) || 0;
-        byKey.set(key, prev + (r.stockWeight || 0));
+        const key = r.productTypeName;
+        map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
       });
     }
 
-    const arr = Array.from(byKey.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
+    return Array.from(map.entries()).map(([name, value]) => ({
+      name,
+      value: +value.toFixed(2),
+    }));
+  }, [filteredRows, companyFilter, productFilter]);
 
-    const top5 = arr.slice(0, 5);
-    const others = arr.slice(5).reduce((sum, x) => sum + x.value, 0);
-    if (others > 0) {
-      top5.push({ name: "Others", value: others });
-    }
-    return top5;
-  }, [filteredRows, chartMode]);
-
-  function getStatus(row) {
-    if (row.stockWeight <= 0) return "OUT";
-    if (row.stockWeight > 0 && row.stockWeight <= LOW_STOCK_THRESHOLD_KG)
-      return "LOW";
+  // --------------------------------------------------------------------
+  // STATUS LOGIC
+  // --------------------------------------------------------------------
+  function statusOf(r) {
+    const w = r.balanceKg || 0;
+    if (w <= 0) return "OUT";
+    if (w <= EXTREME_LOW_THRESHOLD) return "EXTREME_LOW";
+    if (w <= LOW_STOCK_THRESHOLD) return "LOW";
     return "OK";
   }
 
-  function statusClass(status) {
-    if (status === "OUT") return "text-rose-600";
-    if (status === "LOW") return "text-amber-500";
-    return "text-emerald-600";
+  function rowColor(status) {
+    if (status === "OUT") return "bg-red-50";
+    if (status === "EXTREME_LOW") return "bg-red-100";
+    if (status === "LOW") return "bg-yellow-50";
+    return "bg-green-50";
   }
 
-  function statusDotClass(status) {
-    if (status === "OUT") return "bg-rose-500 animate-pulse";
-    if (status === "LOW") return "bg-amber-400 animate-pulse";
-    return "bg-emerald-500";
+  function statusBadge(status) {
+    if (status === "OUT")
+      return <span className="text-red-700 font-semibold">Out of Stock</span>;
+
+    if (status === "EXTREME_LOW")
+      return <span className="text-red-600 font-semibold">Extreme Low</span>;
+
+    if (status === "LOW")
+      return <span className="text-yellow-600 font-semibold">Low Stock</span>;
+
+    return <span className="text-green-600 font-semibold">Available</span>;
   }
 
-  const filtersActive = productFilter !== "ALL" || companyFilter !== "ALL";
-
+  // --------------------------------------------------------------------
+  // RENDER
+  // --------------------------------------------------------------------
   return (
-    <div className="space-y-5">
-      {/* Cards (overall summary) */}
-      <div className="grid grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl shadow border-l-4 border-emerald-400 p-4">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Total Stock</div>
-              <div className="text-2xl font-bold text-emerald-800">
-                {totalStockKg.toFixed(2)} kg
-              </div>
-            </div>
-            <div className="bg-emerald-100 p-2 rounded-full">
-              <Package className="text-emerald-700" size={20} />
-            </div>
-          </div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            Finished & raw stock currently in system (all products & companies)
-          </div>
-        </div>
+    <div className="space-y-6 w-full">
+      <Toaster />
 
-        <div className="bg-white rounded-xl shadow border-l-4 border-sky-300 p-4">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Paddy In Process</div>
-              <div className="text-2xl font-bold text-sky-800">
-                {inProcessPaddyKg.toFixed(2)} kg
-              </div>
-            </div>
-            <div className="bg-sky-100 p-2 rounded-full">
-              <Layers className="text-sky-700" size={20} />
-            </div>
-          </div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            Total paddy assigned to running production batches
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl shadow border-l-4 border-amber-300 p-4">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Low / Empty Items</div>
-              <div className="text-2xl font-bold text-amber-600">
-                {lowItemsCount}
-              </div>
-            </div>
-            <div className="bg-amber-50 p-2 rounded-full">
-              <AlertTriangle className="text-amber-500" size={20} />
-            </div>
-          </div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            Items at or below {LOW_STOCK_THRESHOLD_KG} kg (per product/company)
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl shadow border-l-4 border-violet-200 p-4">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Product Types</div>
-              <div className="text-2xl font-bold text-violet-800">
-                {productTypesCount}
-              </div>
-            </div>
-            <div className="bg-violet-100 p-2 rounded-full">
-              <CircleDot className="text-violet-700" size={20} />
-            </div>
-          </div>
-          <div className="text-[11px] text-gray-400 mt-1">
-            Distinct products currently present in stock
-          </div>
-        </div>
-      </div>
-
-      {/* Filters + Refresh */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 text-xs">
-          <div className="flex items-center gap-1 text-gray-600">
-            <Filter size={14} />
-            <span className="font-semibold">Filters:</span>
-          </div>
-
-          {/* Product filter */}
-          <select
-            value={productFilter}
-            onChange={(e) => setProductFilter(e.target.value)}
-            className="border rounded px-2 py-1 bg-white"
-          >
-            <option value="ALL">All Products</option>
-            {productOptions.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-
-          {/* Company filter */}
-          <select
-            value={companyFilter}
-            onChange={(e) => setCompanyFilter(e.target.value)}
-            className="border rounded px-2 py-1 bg-white"
-          >
-            <option value="ALL">All Companies</option>
-            {companyOptions.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-
-          {filtersActive && (
-            <button
-              onClick={() => {
-                setProductFilter("ALL");
-                setCompanyFilter("ALL");
-              }}
-              className="text-[11px] px-2 py-1 border rounded bg-gray-50 hover:bg-gray-100"
-            >
-              Clear Filters
-            </button>
-          )}
-
-          {filtersActive && (
-            <span className="text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
-              Showing filtered stock view
-            </span>
-          )}
-        </div>
+      {/* HEADER */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-emerald-800">
+          Stock Overview
+        </h2>
 
         <button
-          onClick={loadData}
-          className="flex items-center gap-1 text-xs px-3 py-1 border rounded-lg text-emerald-700 hover:bg-emerald-50"
+          className="p-2 rounded-lg hover:bg-gray-100"
+          onClick={() => setShowFilters(true)}
         >
-          <RefreshCcw size={14} />
-          Refresh
+          <Filter size={18} className="text-gray-600" />
         </button>
       </div>
 
-      {/* Table (left) + Chart (right) */}
-      <div className="grid grid-cols-12 gap-4">
-        {/* Stock table LEFT */}
-        <div className="col-span-8 bg-white rounded-xl shadow border overflow-hidden">
-          <div className="p-3 border-b flex items-center justify-between">
-            <div className="text-sm font-semibold text-emerald-800">
-              Stock Details
+      {/* FILTER POPUP */}
+      {showFilters && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-4 w-80 shadow-xl relative">
+            <button
+              className="absolute top-2 right-2 text-gray-500"
+              onClick={() => setShowFilters(false)}
+            >
+              <X size={18} />
+            </button>
+
+            <h3 className="text-sm font-semibold text-emerald-800 mb-3">
+              Filters
+            </h3>
+
+            {/* COMPANY */}
+            <label className="text-xs text-gray-600">Company</label>
+            <select
+              className="w-full border p-2 rounded text-sm mb-3"
+              value={companyFilter}
+              onChange={(e) => setCompanyFilter(e.target.value)}
+            >
+              <option value="ALL">All Companies</option>
+              {filteredCompanies.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+
+            {/* PRODUCT */}
+            <label className="text-xs text-gray-600">Product</label>
+            <select
+              className="w-full border p-2 rounded text-sm mb-4"
+              value={productFilter}
+              onChange={(e) => setProductFilter(e.target.value)}
+            >
+              <option value="ALL">All Products</option>
+              {filteredProducts.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+
+            {/* DATE FILTER */}
+            <label className="text-xs text-gray-600 mb-1 block">
+              Date Filter
+            </label>
+
+            <div className="flex items-center gap-3 mb-3 text-sm">
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="dateMode"
+                  value="RANGE"
+                  checked={dateMode === "RANGE"}
+                  onChange={() => setDateMode("RANGE")}
+                />
+                Range
+              </label>
+
+              <label className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="dateMode"
+                  value="TODAY"
+                  checked={dateMode === "TODAY"}
+                  onChange={() => setDateMode("TODAY")}
+                />
+                Today
+              </label>
             </div>
-            <div className="text-[11px] text-gray-400">
-              Product & company-wise stock levels{" "}
-              {filtersActive && <span>(filtered)</span>}
-            </div>
-          </div>
 
-          <div className="max-h-[360px] overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-[#E6F9F0] text-emerald-800 sticky top-0 z-10">
-                <tr>
-                  <th className="p-2 text-left">Product</th>
-                  <th className="p-2 text-left">Company</th>
-                  <th className="p-2 text-right">Stock (kg)</th>
-                  <th className="p-2 text-left">Status</th>
-                  <th className="p-2 text-left">Last Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!loading &&
-                  filteredRows.map((r, idx) => {
-                    const status = getStatus(r);
-                    return (
-                      <tr
-                        key={`${r.productTypeId || r.productTypeName}__${
-                          r.companyId || r.companyName || idx
-                        }`}
-                        className={idx % 2 ? "bg-white" : "bg-gray-50"}
-                      >
-                        <td className="p-2">{r.productTypeName || "-"}</td>
-                        <td className="p-2">{r.companyName || "-"}</td>
-                        <td className="p-2 text-right">
-                          {r.stockWeight.toFixed(2)}
-                        </td>
-                        <td className="p-2">
-                          <div className="flex items-center gap-1">
-                            <span
-                              className={`w-2 h-2 rounded-full ${statusDotClass(
-                                status
-                              )}`}
-                            ></span>
-                            <span
-                              className={`font-semibold ${statusClass(status)}`}
-                            >
-                              {status === "OK"
-                                ? "In Stock"
-                                : status === "LOW"
-                                ? "Low Stock"
-                                : "Out of Stock"}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="p-2 text-[11px] text-gray-500">
-                          {r.lastUpdated
-                            ? new Date(r.lastUpdated).toLocaleString()
-                            : "-"}
-                        </td>
-                      </tr>
-                    );
-                  })}
+            {dateMode === "RANGE" && (
+              <div className="space-y-2 mb-4">
+                <div>
+                  <label className="text-xs text-gray-600">From</label>
+                  <input
+                    type="date"
+                    className="w-full border p-2 rounded text-sm"
+                    value={dateFrom}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                  />
+                </div>
 
-                {!loading && filteredRows.length === 0 && (
-                  <tr>
-                    <td className="p-4 text-center text-gray-400" colSpan={5}>
-                      {filtersActive
-                        ? "No stock matches the selected filters."
-                        : "No stock records found."}
-                    </td>
-                  </tr>
-                )}
-
-                {loading && (
-                  <tr>
-                    <td className="p-4 text-center text-gray-400" colSpan={5}>
-                      Loading stock...
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                <div>
+                  <label className="text-xs text-gray-600">To</label>
+                  <input
+                    type="date"
+                    className="w-full border p-2 rounded text-sm"
+                    value={dateTo}
+                    onChange={(e) => setDateTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
+      )}
 
-        {/* Chart RIGHT */}
-        <div className="col-span-4 bg-white rounded-xl shadow border p-4">
-          <div className="flex items-center justify-between mb-2">
-            <div>
-              <div className="text-sm font-semibold text-emerald-800">
-                {chartMode === "PRODUCT"
-                  ? "Stock Distribution by Product"
-                  : "Stock Distribution by Company"}
-              </div>
-              <div className="text-[11px] text-gray-400">
-                Donut chart reflects current filters
-              </div>
-            </div>
-
-            <div className="flex text-[11px] bg-gray-100 rounded-full p-0.5">
-              <button
-                onClick={() => setChartMode("PRODUCT")}
-                className={`px-2 py-0.5 rounded-full ${
-                  chartMode === "PRODUCT"
-                    ? "bg-white shadow text-emerald-700"
-                    : "text-gray-500"
-                }`}
-              >
-                Product
-              </button>
-              <button
-                onClick={() => setChartMode("COMPANY")}
-                className={`px-2 py-0.5 rounded-full ${
-                  chartMode === "COMPANY"
-                    ? "bg-white shadow text-emerald-700"
-                    : "text-gray-500"
-                }`}
-              >
-                Company
-              </button>
-            </div>
+      {/* MAIN GRID (TABLE LEFT, DONUT RIGHT) */}
+      <div className="grid grid-cols-12 gap-4">
+        {/* LEFT: TABLE */}
+        <div className="col-span-8 bg-white rounded-lg shadow p-4">
+          <div className="text-sm font-semibold text-emerald-800 mb-2">
+            Stock Items
           </div>
 
-          {/* Fixed-height chart area so it never collapses */}
-          <div className="mt-2 h-64">
-            {chartData.length > 0 ? (
+          <table className="w-full text-xs border rounded">
+            <thead className="bg-emerald-50 text-emerald-800">
+              <tr>
+                <th className="p-2 text-left">Product</th>
+                <th className="p-2 text-left">Company</th>
+                <th className="p-2 text-right">Stock (kg)</th>
+                <th className="p-2 text-left">Status</th>
+                <th className="p-2 text-left">Updated</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {!loading &&
+                filteredRows.map((r, idx) => {
+                  const status = statusOf(r);
+                  return (
+                    <tr key={idx} className={rowColor(status)}>
+                      <td className="p-2">{r.productTypeName}</td>
+                      <td className="p-2">{r.companyName}</td>
+                      <td className="p-2 text-right">
+                        {r.balanceKg.toFixed(2)}
+                      </td>
+                      <td className="p-2">{statusBadge(status)}</td>
+                      <td className="p-2 text-[10px] text-gray-500">
+                        {r.lastUpdated
+                          ? new Date(r.lastUpdated).toLocaleString()
+                          : "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
+
+              {!loading && filteredRows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="p-4 text-center text-gray-400">
+                    No stock records found.
+                  </td>
+                </tr>
+              )}
+
+              {loading && (
+                <tr>
+                  <td colSpan={5} className="p-4 text-center text-gray-400">
+                    Loading...
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* RIGHT: DONUT */}
+        <div className="col-span-4 bg-white rounded-lg shadow p-4">
+          <div className="text-sm font-semibold text-emerald-800 mb-2">
+            Stock Distribution
+          </div>
+
+          <div className="h-64">
+            {donutData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={chartData}
+                    data={donutData}
                     dataKey="value"
                     nameKey="name"
-                    innerRadius={50}
+                    innerRadius={40}
                     outerRadius={80}
                   >
-                    {chartData.map((entry, index) => (
-                      <Cell
-                        key={`cell-${entry.name}-${index}`}
-                        fill={CHART_COLORS[index % CHART_COLORS.length]}
-                      />
+                    {donutData.map((entry, index) => (
+                      <Cell key={index} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
                   <Tooltip />
-                  <Legend />
+                  <Legend wrapperStyle={{ fontSize: "10px" }} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-full flex items-center justify-center text-gray-400 text-xs">
-                {filtersActive
-                  ? "No data to display for current filters."
-                  : "No stock data available for chart."}
+              <div className="flex items-center justify-center h-full text-gray-400 text-sm">
+                No data to display
               </div>
             )}
           </div>

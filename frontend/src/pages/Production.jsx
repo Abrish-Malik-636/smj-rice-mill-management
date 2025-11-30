@@ -355,6 +355,10 @@ export default function Production() {
       toast.error("Fill product, bags and weight per bag");
       return;
     }
+    if (!outputForm.companyId) {
+      toast.error("Please select a company for this output");
+      return;
+    }
 
     const product = products.find((p) => p._id === outputForm.productTypeId);
     const company = companies.find((c) => c._id === outputForm.companyId);
@@ -875,7 +879,7 @@ export default function Production() {
                       }
                       className="border rounded px-2 py-1 col-span-3"
                     >
-                      <option value="">Company (optional)</option>
+                      <option value="">Select company</option>
                       {companies.map((c) => (
                         <option key={c._id} value={c._id}>
                           {c.name}

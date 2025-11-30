@@ -902,10 +902,7 @@ export default function Financial() {
 
         {/* Buttons */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1 text-xs text-gray-600">
-            <AlertCircle size={12} />
-            <span>All validations run when you press Save.</span>
-          </div>
+          <div className="flex items-center gap-1 text-xs text-gray-600"></div>
           <div className="flex gap-2">
             {isEditing && (
               <button

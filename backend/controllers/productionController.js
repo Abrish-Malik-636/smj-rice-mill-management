@@ -356,6 +356,13 @@ exports.addOutput = async (req, res) => {
       });
     }
 
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        message: "Company is required for each finished output.",
+      });
+    }
+
     if (!["DAY", "NIGHT"].includes(shift)) {
       return res
         .status(400)

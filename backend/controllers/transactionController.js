@@ -6,10 +6,29 @@ const ProductType = require("../models/productTypeModel");
 const SystemSettings = require("../models/systemSettingsModel");
 
 /**
- * Generate invoice number using SystemSettings:
- * invoicePrefix + (invoiceStartFrom + currentCount), padded to 4 digits
- * Example: INV-0001, INV-0002, ...
+ * Generate a UNIQUE invoice number.
+ *
+ * Uses SystemSettings invoicePrefix (default "INV-")
+ * and type-specific postfix:
+ *   - SALE:    INV-S-YYYYMMDD-HHMMSS-1234
+ *   - PURCHASE:INV-P-YYYYMMDD-HHMMSS-5678
+ *
+ * We also check DB a few times to avoid collisions.
  */
+function buildInvoiceString(prefix) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const YYYY = d.getFullYear();
+  const MM = pad(d.getMonth() + 1);
+  const DD = pad(d.getDate());
+  const HH = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  const rand = Math.floor(1000 + Math.random() * 9000); // 4-digit
+
+  return `${prefix}${YYYY}${MM}${DD}-${HH}${mm}${ss}-${rand}`;
+}
+
 async function generateInvoiceNo(txnType) {
   // load settings (or defaults)
   let settings = await SystemSettings.findOne({});
@@ -17,23 +36,39 @@ async function generateInvoiceNo(txnType) {
     settings = await SystemSettings.create({});
   }
 
-  let prefix = settings.invoicePrefix || "INV-";
-  // If later you want different prefix per type, you can extend:
-  // if (txnType === "SALE") prefix = settings.saleInvoicePrefix || "SINV-";
-  // if (txnType === "PURCHASE") prefix = settings.purchaseInvoicePrefix || "PINV-";
+  const basePrefix = settings.invoicePrefix || "INV-";
 
-  const startFrom = settings.invoiceStartFrom || 1;
+  // You can later extend with separate prefixes:
+  // settings.saleInvoicePrefix, settings.purchaseInvoicePrefix, etc.
+  let prefix = basePrefix;
+  if (txnType === "SALE") {
+    prefix = `${basePrefix}S-`;
+  } else if (txnType === "PURCHASE") {
+    prefix = `${basePrefix}P-`;
+  } else {
+    prefix = `${basePrefix}`;
+  }
 
-  // Count existing transactions (simple approach)
-  const count = await Transaction.countDocuments({});
-  const nextNumber = startFrom + count;
-  const padded = String(nextNumber).padStart(4, "0");
+  // Try a few times to avoid duplicates
+  let attempts = 0;
+  while (attempts < 5) {
+    const candidate = buildInvoiceString(prefix);
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await Transaction.exists({ invoiceNo: candidate });
+    if (!exists) return candidate;
+    attempts++;
+  }
 
-  return `${prefix}${padded}`;
+  // If still colliding, throw error
+  throw new Error(
+    "Could not generate unique invoice number after several attempts."
+  );
 }
 
 /**
  * Compute amounts for items.
+ *  - If netWeightKg is provided, we use it;
+ *  - otherwise netWeightKg = numBags * perBagWeightKg
  */
 function computeItemAmounts(itemsRaw) {
   const items = [];
@@ -65,7 +100,7 @@ function computeItemAmounts(itemsRaw) {
 
     items.push({
       productTypeId: raw.productTypeId,
-      productTypeName: "", // filled after we resolve product names
+      productTypeName: "", // filled after resolving product names
       numBags,
       perBagWeightKg,
       netWeightKg,
@@ -89,7 +124,7 @@ function validatePayload(body) {
   }
 
   if (!["PURCHASE", "SALE"].includes(body.type)) {
-    return `Field "type" must be "PURCHASE" or "SALE".`;
+    return 'Field "type" must be "PURCHASE" or "SALE".';
   }
 
   if (!Array.isArray(body.items) || body.items.length === 0) {
@@ -99,7 +134,7 @@ function validatePayload(body) {
   // Payment status
   const payStatus = body.paymentStatus || "PAID";
   if (!["PAID", "UNPAID", "PARTIAL"].includes(payStatus)) {
-    return `Field "paymentStatus" must be "PAID", "UNPAID" or "PARTIAL".`;
+    return 'Field "paymentStatus" must be "PAID", "UNPAID" or "PARTIAL".';
   }
 
   if ((payStatus === "UNPAID" || payStatus === "PARTIAL") && !body.dueDate) {
@@ -109,7 +144,7 @@ function validatePayload(body) {
   // Payment method
   const payMethod = body.paymentMethod || "CASH";
   if (!["CASH", "CARD", "BANK_TRANSFER", "CREDIT"].includes(payMethod)) {
-    return `Field "paymentMethod" must be one of CASH, CARD, BANK_TRANSFER, CREDIT.`;
+    return 'Field "paymentMethod" must be one of CASH, CARD, BANK_TRANSFER, CREDIT.';
   }
 
   // Items-level checks
@@ -156,6 +191,7 @@ exports.createTransaction = async (req, res) => {
     })
       .lean()
       .select("name");
+
     const productMap = {};
     for (const p of productDocs) {
       productMap[p._id.toString()] = p.name;
@@ -165,21 +201,24 @@ exports.createTransaction = async (req, res) => {
         productMap[item.productTypeId.toString()] || "Unknown";
     }
 
-    // Generate invoice number
+    // Generate unique invoice number
     const invoiceNo = await generateInvoiceNo(payload.type);
 
+    const payStatus = payload.paymentStatus || "PAID";
+    const dueDate =
+      payStatus === "PAID" || !payload.dueDate
+        ? null
+        : new Date(payload.dueDate);
+
     const doc = new Transaction({
-      type: payload.type,
+      type: payload.type, // PURCHASE or SALE
       invoiceNo,
       date: new Date(payload.date),
       companyId: payload.companyId,
       companyName: company.name,
-      paymentStatus: payload.paymentStatus || "PAID",
+      paymentStatus: payStatus,
       paymentMethod: payload.paymentMethod || "CASH",
-      dueDate:
-        payload.paymentStatus === "PAID" || !payload.dueDate
-          ? null
-          : new Date(payload.dueDate),
+      dueDate,
       remarks: payload.remarks || "",
       items,
       totalAmount,
@@ -189,6 +228,15 @@ exports.createTransaction = async (req, res) => {
     return res.status(201).json({ success: true, data: saved });
   } catch (err) {
     console.error("createTransaction error:", err);
+
+    // If we somehow hit a duplicate invoiceNo, return a friendly error
+    if (err.code === 11000 && err.keyPattern && err.keyPattern.invoiceNo) {
+      return res.status(409).json({
+        success: false,
+        message: "Invoice number already exists. Please try again.",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Server error while creating transaction.",
@@ -338,6 +386,7 @@ exports.updateTransaction = async (req, res) => {
     })
       .lean()
       .select("name");
+
     const productMap = {};
     for (const p of productDocs) {
       productMap[p._id.toString()] = p.name;
@@ -347,16 +396,19 @@ exports.updateTransaction = async (req, res) => {
         productMap[item.productTypeId.toString()] || "Unknown";
     }
 
+    const payStatus = payload.paymentStatus || "PAID";
+    const dueDate =
+      payStatus === "PAID" || !payload.dueDate
+        ? null
+        : new Date(payload.dueDate);
+
     existing.date = new Date(payload.date);
     existing.companyId = companyId;
     existing.companyName = company.name;
-    existing.paymentStatus = payload.paymentStatus || "PAID";
+    existing.paymentStatus = payStatus;
     existing.paymentMethod =
       payload.paymentMethod || existing.paymentMethod || "CASH";
-    existing.dueDate =
-      existing.paymentStatus === "PAID" || !payload.dueDate
-        ? null
-        : new Date(payload.dueDate);
+    existing.dueDate = dueDate;
     existing.remarks = payload.remarks || "";
     existing.items = items;
     existing.totalAmount = totalAmount;
