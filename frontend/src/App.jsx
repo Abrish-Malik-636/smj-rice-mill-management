@@ -2,7 +2,7 @@
 import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import MainLayout from "./layouts/MainLayout";
-
+import GatePass from "./pages/GatePass";
 import Dashboard from "./pages/Dashboard";
 import Financial from "./pages/Financial";
 import Stock from "./pages/Stock";
@@ -19,6 +19,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/financial" element={<Financial />} />
           <Route path="/stock" element={<Stock />} />
+          <Route path="/gatepass" element={<GatePass />} />
           <Route path="/production" element={<Production />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
