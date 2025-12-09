@@ -1,7 +1,6 @@
 // backend/controllers/gatePassController.js
 const GatePass = require("../models/gatePassModel");
 
-// helper builds query
 const buildSearchQuery = (search, type) => {
   const q = {};
   if (type) q.type = type;
@@ -10,8 +9,8 @@ const buildSearchQuery = (search, type) => {
       { truckNo: { $regex: search, $options: "i" } },
       { supplier: { $regex: search, $options: "i" } },
       { customer: { $regex: search, $options: "i" } },
-      { itemType: { $regex: search, $options: "i" } },
       { gatePassNo: { $regex: search, $options: "i" } },
+      { driverName: { $regex: search, $options: "i" } },
     ];
   }
   return q;
@@ -21,7 +20,6 @@ exports.createGatePass = async (req, res) => {
   try {
     const body = req.body || {};
 
-    // Per-type required checks:
     if (body.type === "IN") {
       if (!body.supplier || String(body.supplier).trim() === "") {
         return res.status(400).json({
@@ -38,25 +36,19 @@ exports.createGatePass = async (req, res) => {
           message: "Customer is required for OUT gate pass.",
         });
       }
-      if (body.quantity == null || body.quantity === "") {
-        return res.status(400).json({
-          success: false,
-          message: "Quantity is required for OUT gate pass.",
-        });
-      }
-      if (isNaN(body.quantity) || Number(body.quantity) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Quantity must be a number greater than 0.",
-        });
-      }
     }
 
-    // Create (mongoose validators will run for formats)
+    // Validate items array
+    if (!body.items || body.items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one item is required.",
+      });
+    }
+
     const gp = await GatePass.create(body);
     return res.status(201).json({ success: true, data: gp });
   } catch (err) {
-    // friendly validation message extraction
     let message = err.message || "Failed to create gate pass.";
     if (err.name === "ValidationError") {
       const firstKey = Object.keys(err.errors)[0];
@@ -72,10 +64,12 @@ exports.getGatePasses = async (req, res) => {
     const limit = parseInt(req.query.limit || "10", 10);
     const search = req.query.search || "";
     const type = req.query.type || "";
+    const status = req.query.status || "";
 
     const query = buildSearchQuery(search, type || undefined);
-    const total = await GatePass.countDocuments(query);
+    if (status) query.status = status;
 
+    const total = await GatePass.countDocuments(query);
     const data = await GatePass.find(query)
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -107,16 +101,7 @@ exports.getGatePass = async (req, res) => {
 exports.updateGatePass = async (req, res) => {
   try {
     const body = { ...req.body };
-    delete body.gatePassNo; // never change
-
-    if (body.type === "OUT" && body.quantity != null) {
-      if (isNaN(body.quantity) || Number(body.quantity) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Quantity must be a number greater than 0.",
-        });
-      }
-    }
+    delete body.gatePassNo;
 
     const gp = await GatePass.findByIdAndUpdate(req.params.id, body, {
       new: true,
@@ -150,5 +135,18 @@ exports.deleteGatePass = async (req, res) => {
     res
       .status(500)
       .json({ success: false, message: "Unable to delete gate pass." });
+  }
+};
+
+// Get unique custom item names for suggestions
+exports.getCustomItems = async (req, res) => {
+  try {
+    const items = await GatePass.distinct("items.customItemName");
+    const filtered = items.filter((item) => item && item.trim() !== "");
+    res.json({ success: true, data: filtered });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to fetch custom items." });
   }
 };

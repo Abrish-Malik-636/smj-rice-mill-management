@@ -1,6 +1,38 @@
 // backend/models/gatePassModel.js
 const mongoose = require("mongoose");
 
+const ItemSchema = new mongoose.Schema(
+  {
+    itemType: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    customItemName: {
+      type: String,
+      trim: true,
+    },
+    quantity: {
+      type: Number,
+      min: [0, "Quantity must be greater than 0."],
+    },
+    unit: {
+      type: String,
+      enum: ["kg", "ton", "bags", "pcs", "mounds"],
+      default: "kg",
+    },
+    rate: {
+      type: Number,
+      min: 0,
+    },
+    amount: {
+      type: Number,
+      min: 0,
+    },
+  },
+  { _id: true }
+);
+
 const GatePassSchema = new mongoose.Schema(
   {
     type: {
@@ -15,16 +47,12 @@ const GatePassSchema = new mongoose.Schema(
       sparse: true,
     },
 
-    // Truck number: restrict format & length
     truckNo: {
       type: String,
       required: [true, "Truck number is required."],
-      minlength: [6, "Truck number seems too short."],
-      maxlength: [12, "Truck number seems too long."],
-      match: [
-        /^[A-Z]{2,4}-\d{3,4}$/,
-        "Truck number format invalid. Expected format: ABC-123 or AB-1234 (only capital letters, a hyphen, digits).",
-      ],
+      minlength: [6, "Truck number too short."],
+      maxlength: [12, "Truck number too long."],
+      match: [/^[A-Z]{2,4}-\d{3,4}$/, "Format: ABC-123 or AB-1234"],
     },
 
     customer: {
@@ -33,10 +61,9 @@ const GatePassSchema = new mongoose.Schema(
       validate: {
         validator: function (v) {
           if (!v) return true;
-          return /^[A-Za-z\s.'-]+$/.test(v);
+          return /^[A-Za-z\s]+$/.test(v);
         },
-        message:
-          "Customer name invalid. Use letters, spaces, apostrophe, dot or hyphen only.",
+        message: "Customer name: letters and spaces only.",
       },
     },
 
@@ -46,33 +73,37 @@ const GatePassSchema = new mongoose.Schema(
       validate: {
         validator: function (v) {
           if (!v) return true;
-          return /^[A-Za-z\s.'-]+$/.test(v);
+          return /^[A-Za-z\s]+$/.test(v);
         },
-        message:
-          "Supplier name invalid. Use letters, spaces, apostrophe, dot or hyphen only.",
+        message: "Supplier name: letters and spaces only.",
       },
     },
 
-    itemType: {
-      type: String,
-      required: [true, "Item type is required."],
-      trim: true,
+    // Multiple items array
+    items: {
+      type: [ItemSchema],
+      default: [],
     },
 
-    quantity: {
+    // Deprecated fields (kept for backward compatibility)
+    itemType: String,
+    customItemName: String,
+    quantity: Number,
+    unit: String,
+
+    totalQuantity: {
       type: Number,
-      min: [0, "Quantity must be greater than 0."],
+      default: 0,
     },
 
-    unit: {
-      type: String,
-      enum: ["kg", "ton", "bags", "pcs"],
-      default: "kg",
+    totalAmount: {
+      type: Number,
+      default: 0,
     },
 
     transporter: {
       type: String,
-      trim: true, // optional
+      trim: true,
     },
 
     driverName: {
@@ -81,17 +112,52 @@ const GatePassSchema = new mongoose.Schema(
       validate: {
         validator: function (v) {
           if (!v) return true;
-          return /^[A-Za-z\s.'-]+$/.test(v);
+          return /^[A-Za-z\s]+$/.test(v);
         },
-        message:
-          "Driver name invalid. Use letters, spaces, apostrophe, dot or hyphen only.",
+        message: "Driver name: letters and spaces only.",
       },
+    },
+
+    driverContact: {
+      type: String,
+      trim: true,
+      validate: {
+        validator: function (v) {
+          if (!v) return true;
+          // 03XX-XXXXXXX format (11 digits with dash)
+          return /^03\d{2}-\d{7}$/.test(v);
+        },
+        message: "Driver contact: 03XX-XXXXXXX format (11 digits).",
+      },
+    },
+
+    vehicleWeight: {
+      type: Number,
+      min: 0,
+    },
+
+    // Bilty/LR Number (common in logistics)
+    biltyNumber: {
+      type: String,
+      trim: true,
+    },
+
+    // Freight charges
+    freightCharges: {
+      type: Number,
+      min: 0,
     },
 
     remarks: {
       type: String,
       trim: true,
       maxlength: 500,
+    },
+
+    status: {
+      type: String,
+      enum: ["Pending", "Completed", "Cancelled"],
+      default: "Pending",
     },
 
     createdBy: {
@@ -108,8 +174,9 @@ GatePassSchema.pre("save", async function (next) {
 
   try {
     const year = new Date().getFullYear();
+    const prefix = this.type === "IN" ? "GPI" : "GPO";
     const last = await this.constructor
-      .find({ gatePassNo: new RegExp(`^GP-${year}-`) })
+      .find({ gatePassNo: new RegExp(`^${prefix}-${year}-`) })
       .sort({ _id: -1 })
       .limit(1);
 
@@ -120,7 +187,20 @@ GatePassSchema.pre("save", async function (next) {
       if (!Number.isNaN(lastNumber)) number = lastNumber + 1;
     }
 
-    this.gatePassNo = `GP-${year}-${String(number).padStart(5, "0")}`;
+    this.gatePassNo = `${prefix}-${year}-${String(number).padStart(5, "0")}`;
+
+    // Calculate totals from items array
+    if (this.items && this.items.length > 0) {
+      this.totalQuantity = this.items.reduce(
+        (sum, item) => sum + (item.quantity || 0),
+        0
+      );
+      this.totalAmount = this.items.reduce(
+        (sum, item) => sum + (item.amount || 0),
+        0
+      );
+    }
+
     next();
   } catch (err) {
     next(err);
