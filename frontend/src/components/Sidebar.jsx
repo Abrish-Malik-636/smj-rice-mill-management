@@ -14,6 +14,7 @@ import {
   LogOut,
   FactoryIcon,
   Menu,
+  Lightbulb,
 } from "lucide-react";
 
 export default function Sidebar({ isOpen, toggleSidebar }) {
@@ -33,6 +34,13 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
     { name: "Reports", icon: <BarChart2 size={18} />, path: "/reports" },
     { name: "Notifications", icon: <Bell size={18} />, path: "/notifications" },
     { name: "Master Data", icon: <Settings size={18} />, path: "/masterdata" },
+    // Add AI menu item
+    {
+      name: "AI ",
+      icon: <Lightbulb className="w-5 h-5" />,
+      label: "AI Suggestions",
+      path: "/ai/suggestions",
+    },
   ];
 
   return (

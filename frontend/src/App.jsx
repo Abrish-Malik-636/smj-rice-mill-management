@@ -10,6 +10,8 @@ import Production from "./pages/Production";
 import Reports from "./pages/Reports";
 import Notifications from "./pages/Notifications";
 import MasterData from "./pages/MasterData";
+import AIChatbot from "./components/AI/AIChatbot";
+import AISuggestions from "./components/AI/AISuggestions";
 
 export default function App() {
   return (
@@ -24,7 +26,9 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/masterdata" element={<MasterData />} />
+          <Route path="/ai/suggestions" element={<AISuggestions />} />
         </Routes>
+        <AIChatbot />
       </MainLayout>
     </Router>
   );
