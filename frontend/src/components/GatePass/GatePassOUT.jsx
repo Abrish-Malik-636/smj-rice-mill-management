@@ -1,1198 +1,770 @@
-// src/components/GatePass/GatePassOUT.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
+import {
+  Edit2,
+  Trash2,
+  Printer,
+  Download,
+  Funnel,
+  ChevronDown,
+} from "lucide-react";
+import { toast } from "react-hot-toast";
 import api from "../../services/api";
-import * as Dialog from "@radix-ui/react-dialog";
-import toast, { Toaster } from "react-hot-toast";
-import { LogOut, Edit, Trash2, Printer, Download } from "lucide-react";
-import * as Popover from "@radix-ui/react-popover";
-
-/**
- * GatePassOUT.jsx (FINAL)
- * - Uses same IN UI
- * - Extra fields: rate, rateType, sendTo, totalAmount (auto)
- * - Table columns = Compact Version B
- * - Stats updated live
- * - Pagination, CSV modal, keyboard shortcuts integrated
- * - Print card (380px)
- * - Dialog accessibility fixed
- * - No warnings
- */
 
 const PAGE_SIZE = 10;
 
-function todayISODate() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function rowsToCsv(rows) {
+  const cols = [
+    "createdAt",
+    "gatePassNo",
+    "truckNo",
+    "customer",
+    "itemType",
+    "quantity",
+    "unit",
+    "transporter",
+    "driverName",
+    "remarks",
+  ];
+  const header = cols.join(",");
+  const lines = rows.map((r) =>
+    cols
+      .map((c) => {
+        const v = r[c] == null ? "" : String(r[c]).replace(/"/g, '""');
+        return `"${v}"`;
+      })
+      .join(",")
+  );
+  return [header, ...lines].join("\n");
 }
 
 export default function GatePassOUT() {
-  // Form
   const [form, setForm] = useState({
-    date: todayISODate(),
-    companyId: "",
-    companyName: "",
-    productTypeId: "",
-    productTypeName: "",
-    numBags: "",
-    bagWeightKg: "",
-    emptyBagWeightKg: "",
-    rate: "",
-    rateType: "per_bag",
-    sendTo: "",
+    truckNo: "",
+    customer: "",
+    itemType: "",
+    quantity: "",
+    unit: "kg",
+    transporter: "",
+    driverName: "",
     remarks: "",
   });
-
-  // FILTERS
-  const [filters, setFilters] = useState({
-    from: "",
-    to: "",
-    companyId: "",
-    productTypeId: "",
-    rateType: "", // OUT only
-    search: "",
-  });
-
-  // Lists
-  const [companies, setCompanies] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [allList, setAllList] = useState([]);
-
-  // Pagination
+  const [errors, setErrors] = useState({});
+  const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
-  const pageSize = PAGE_SIZE;
-
-  // APPLY FILTERS
-  const filteredList = allList.filter((g) => {
-    // date filter
-    if (filters.from && new Date(g.date) < new Date(filters.from)) return false;
-    if (filters.to && new Date(g.date) > new Date(filters.to)) return false;
-
-    // company
-    if (filters.companyId && g.companyId !== filters.companyId) return false;
-
-    // product
-    if (filters.productTypeId && g.productTypeId !== filters.productTypeId)
-      return false;
-
-    // rateType (OUT only)
-    if (filters.rateType && g.rateType !== filters.rateType) return false;
-
-    // search text (gpno, company, product, sendTo)
-    if (filters.search) {
-      const s = filters.search.toLowerCase();
-      const target =
-        `${g.gatePassNo} ${g.companyName} ${g.productTypeName} ${g.sendTo}`.toLowerCase();
-      if (!target.includes(s)) return false;
-    }
-
-    return true;
-  });
-
-  // final pagination
-  const pagedList = filteredList.slice((page - 1) * pageSize, page * pageSize);
-  const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize));
-
-  // Stats
-  const [stats, setStats] = useState({
-    count: 0,
-    totalNetWeight: 0,
-    totalAmount: 0,
-    lastUpdatedTime: "-",
-    nextGatePassNo: "",
-  });
-
-  // UI states
+  const [total, setTotal] = useState(0);
+  const [itemFilter, setItemFilter] = useState("");
   const [loading, setLoading] = useState(false);
-  const [printData, setPrintData] = useState(null);
-  const [selectedId, setSelectedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [settings, setSettings] = useState(null);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
 
-  const [csvOpen, setCsvOpen] = useState(false);
-  const [csvFilename, setCsvFilename] = useState("");
-  const [csvScope, setCsvScope] = useState("current");
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [editData, setEditData] = useState(null);
+  const nameRegex = /^[A-Za-z\s.'+]+$/; // allow letters, spaces, dot, apostrophe (no hyphen)
+  const truckRegex = /^[A-Z]{2,4}-\d{3,4}$/;
 
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState(null);
+  const setFieldError = (field, msg) =>
+    setErrors((p) => ({ ...p, [field]: msg }));
+  const clearFieldError = (field) =>
+    setErrors((p) => {
+      const c = { ...p };
+      delete c[field];
+      return c;
+    });
 
-  const inputRefs = useRef([]);
+  const validateTruckNo = (v) => {
+    if (!v) return "Truck number is required.";
+    if (v.length < 6) return "Truck number too short.";
+    if (v.length > 12) return "Truck number too long.";
+    if (!truckRegex.test(v))
+      return "Format: ABC-123 or AB-1234 (caps letters, hyphen, digits).";
+    return "";
+  };
+  const validateCustomer = (v) => {
+    if (!v || v.trim() === "") return "Customer is required for OUT gate pass.";
+    if (!nameRegex.test(v))
+      return "Customer name invalid. Use letters, spaces, dot or apostrophe only.";
+    return "";
+  };
+  const validateItemType = (v) => (!v ? "Please select item type." : "");
+  const validateQuantity = (v) => {
+    if (v === "" || v == null) return "Quantity is required.";
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(String(v)))
+      return "Quantity must be numeric (no letters).";
+    if (Number(v) <= 0) return "Quantity must be greater than 0.";
+    return "";
+  };
+  const validateDriver = (v) =>
+    !v ? "" : nameRegex.test(v) ? "" : "Driver name invalid.";
 
-  // =========================
-  // LOADERS
-  // =========================
+  const validateField = (name, value) => {
+    let msg = "";
+    if (name === "truckNo") msg = validateTruckNo(value);
+    if (name === "customer") msg = validateCustomer(value);
+    if (name === "itemType") msg = validateItemType(value);
+    if (name === "quantity") msg = validateQuantity(value);
+    if (name === "driverName") msg = validateDriver(value);
+    if (msg) setFieldError(name, msg);
+    else clearFieldError(name);
+  };
+
   useEffect(() => {
-    refreshAll();
-
-    const handleKey = (e) => {
-      const active = document.activeElement;
-      const isInside = inputRefs.current.some((r) => r === active);
-
-      // Ctrl+P
-      if (e.ctrlKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        if (selectedId) openPrint(selectedId);
-        else toast.error("Select a row first");
-      }
-
-      // Ctrl+L
-      if (e.ctrlKey && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        refreshAll();
-        toast.success("Reloaded");
-      }
-
-      // Shift+Enter → save
-      if (e.shiftKey && e.key === "Enter") {
-        e.preventDefault();
-        handleSave();
-      }
-
-      // Enter → next input
-      if (!e.shiftKey && e.key === "Enter" && isInside) {
-        e.preventDefault();
-        const idx = inputRefs.current.findIndex((r) => r === active);
-        const next = inputRefs.current[idx + 1];
-        if (next) next.focus();
-      }
+    const loadSettings = async () => {
+      try {
+        const res = await api.get("/settings/general");
+        if (res.data && res.data.success !== false)
+          setSettings(res.data.data || res.data);
+      } catch {}
     };
+    loadSettings();
+  }, []);
 
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [selectedId]);
-
-  async function refreshAll() {
-    await Promise.all([
-      loadCompanies(),
-      loadProducts(),
-      loadList(),
-      loadStats(),
-    ]);
-    setPage(1);
-  }
-
-  async function loadCompanies() {
+  const fetchRows = async () => {
     try {
-      const res = await api.get("/companies");
-      setCompanies(res.data.data || []);
-    } catch (err) {
-      console.error("companies", err);
-    }
-  }
-
-  async function loadProducts() {
-    try {
-      const res = await api.get("/product-types");
-      setProducts(res.data.data || []);
-    } catch (err) {
-      console.error("products", err);
-    }
-  }
-
-  async function loadList() {
-    try {
-      const res = await api.get("/gatepasses?type=OUT");
-      const data = res.data.data || [];
-      data.sort((a, b) => new Date(b.date) - new Date(a.date));
-      setAllList(data);
-    } catch (err) {
-      console.error("list", err);
-    }
-  }
-
-  async function loadStats() {
-    try {
-      const res = await api.get("/gatepasses/stats/today");
-      const full = res.data.data || {};
-      const s = full.stats?.OUT || {
-        count: 0,
-        totalNetWeight: 0,
-        totalAmount: 0,
+      setLoading(true);
+      const params = {
+        page,
+        limit: PAGE_SIZE,
+        type: "OUT",
+        search: searchQuery || "",
       };
-      setStats({
-        count: s.count,
-        totalNetWeight: s.totalNetWeight,
-        totalAmount: s.totalAmount,
-        lastUpdatedTime: full.lastUpdatedTime
-          ? new Date(full.lastUpdatedTime).toLocaleTimeString()
-          : "-",
-        nextGatePassNo: full.nextGatePassNo || "",
-      });
+      const res = await api.get("/gatepasses", { params });
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Failed");
+      let list = res.data.data || [];
+      if (itemFilter) list = list.filter((r) => r.itemType === itemFilter);
+      setRows(list);
+      setTotal(res.data.total || list.length);
     } catch (err) {
-      console.error("stats", err);
+      toast.error(err.message || "Unable to fetch");
+    } finally {
+      setLoading(false);
     }
-  }
+  };
 
-  // =========================
-  // FORM HANDLERS
-  // =========================
-  function handleNumeric(e) {
-    const name = e.target.name;
-    let v = String(e.target.value);
-    v = v.replace(/^0+(?=\d)/, "");
-    setForm((s) => ({ ...s, [name]: v }));
-  }
+  useEffect(() => {
+    fetchRows(); /* eslint-disable-next-line */
+  }, [page, itemFilter]);
 
-  function handleChange(e) {
+  // suggestions only when customer field has error
+  const customerSuggestions = errors.customer
+    ? Array.from(new Set(rows.map((r) => r.customer).filter(Boolean))).slice(
+        0,
+        6
+      )
+    : [];
+
+  // formatting truck number while typing
+  const formatTruckInput = (raw) => {
+    let s = raw.toUpperCase();
+    s = s.replace(/[^A-Z0-9]/g, "");
+    const letters = s.match(/^[A-Z]*/)[0] || "";
+    const digits = s.slice(letters.length) || "";
+    if (!digits) return letters;
+    return `${letters}-${digits}`.slice(0, 12);
+  };
+
+  const handleChange = (e) => {
     const { name, value } = e.target;
-    setForm((s) => ({ ...s, [name]: value }));
-  }
+    let v = value;
+    if (name === "truckNo") v = formatTruckInput(value);
+    if (name === "customer" || name === "driverName")
+      v = value.replace(/\s+/g, " ");
+    if (name === "quantity") v = value.replace(/[^\d.]/g, ""); // allow only numbers and dot
+    setForm((p) => ({ ...p, [name]: v }));
+    validateField(name, v);
+  };
 
-  function computeNet(f) {
-    const bags = Number(f.numBags) || 0;
-    const bag = Number(f.bagWeightKg) || 0;
-    const empty = Number(f.emptyBagWeightKg) || 0;
-    const perBag = Math.max(bag - empty, 0);
-    return +(bags * perBag).toFixed(3);
-  }
+  const validateForm = () => {
+    const e1 = validateTruckNo(form.truckNo);
+    const e2 = validateCustomer(form.customer);
+    const e3 = validateItemType(form.itemType);
+    const e4 = validateQuantity(form.quantity);
+    const e5 = validateDriver(form.driverName);
+    const newErr = {};
+    if (e1) newErr.truckNo = e1;
+    if (e2) newErr.customer = e2;
+    if (e3) newErr.itemType = e3;
+    if (e4) newErr.quantity = e4;
+    if (e5) newErr.driverName = e5;
+    setErrors(newErr);
+    return Object.keys(newErr).length === 0;
+  };
 
-  function computeTotal(f) {
-    const net = computeNet(f);
-    const r = Number(f.rate) || 0;
-    return f.rateType === "per_bag"
-      ? +(Number(f.numBags) * r).toFixed(2)
-      : +(net * r).toFixed(2);
-  }
-
-  // =========================
-  // SAVE
-  // =========================
-  async function handleSave() {
-    if (
-      !form.date ||
-      !form.companyId ||
-      !form.productTypeId ||
-      !form.numBags ||
-      !form.bagWeightKg
-    ) {
-      toast.error(
-        "Fill required fields: Date, Company, Product, Bags, Bag Weight"
-      );
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) {
+      toast.error("Fix highlighted fields.");
       return;
     }
-
-    const payload = {
-      ...form,
-      numBags: Number(form.numBags),
-      bagWeightKg: Number(form.bagWeightKg),
-      emptyBagWeightKg: Number(form.emptyBagWeightKg || 0),
-      rate: Number(form.rate || 0),
-      type: "OUT",
-    };
-
-    setLoading(true);
+    const payload = { ...form, type: "OUT", quantity: Number(form.quantity) };
     try {
-      await api.post("/gatepasses", payload);
-      toast.success("OUT GatePass saved");
-
+      const url = editingId ? `/gatepasses/${editingId}` : "/gatepasses";
+      const method = editingId ? "put" : "post";
+      const res = await api[method](url, payload);
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Save failed");
+      toast.success(editingId ? "Updated." : "Created.");
       setForm({
-        date: todayISODate(),
-        companyId: "",
-        companyName: "",
-        productTypeId: "",
-        productTypeName: "",
-        numBags: "",
-        bagWeightKg: "",
-        emptyBagWeightKg: 0,
-        rate: "",
-        rateType: "per_bag",
-        sendTo: "",
+        truckNo: "",
+        customer: "",
+        itemType: "",
+        quantity: "",
+        unit: "kg",
+        transporter: "",
+        driverName: "",
         remarks: "",
       });
-
-      await refreshAll();
+      setEditingId(null);
+      setErrors({});
+      fetchRows();
     } catch (err) {
-      console.error("save error", err);
-      toast.error(err.response?.data?.message || "Save failed");
+      toast.error(err.message || "Unable to save.");
     }
-    setLoading(false);
-  }
+  };
 
-  // =========================
-  // EDIT
-  // =========================
-  function openEdit(g) {
-    setEditData({ ...g });
-    setEditOpen(true);
-  }
+  const handleEdit = (row) => {
+    setForm({
+      truckNo: row.truckNo || "",
+      customer: row.customer || "",
+      itemType: row.itemType || "",
+      quantity: row.quantity != null ? String(row.quantity) : "",
+      unit: row.unit || "kg",
+      transporter: row.transporter || "",
+      driverName: row.driverName || "",
+      remarks: row.remarks || "",
+    });
+    setEditingId(row._id);
+    setErrors({});
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
-  async function handleUpdate() {
-    if (!editData) return;
-
-    const payload = {
-      ...editData,
-      rate: Number(editData.rate || 0),
-      numBags: Number(editData.numBags),
-      bagWeightKg: Number(editData.bagWeightKg),
-      emptyBagWeightKg: Number(editData.emptyBagWeightKg),
-    };
-    delete payload.gatePassNo;
-
+  const handleDelete = async (row) => {
+    if (!window.confirm(`Delete Gate Pass ${row.gatePassNo || ""}?`)) return;
     try {
-      await api.put(`/gatepasses/${editData._id}`, payload);
-      toast.success("Updated OUT gate pass");
-      setEditOpen(false);
-      await refreshAll();
+      const res = await api.delete(`/gatepasses/${row._id}`);
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Delete failed");
+      toast.success("Deleted.");
+      fetchRows();
     } catch (err) {
-      console.error("update", err);
-      toast.error(err.response?.data?.message || "Update failed");
+      toast.error(err.message || "Unable to delete");
     }
-  }
+  };
 
-  // =========================
-  // DELETE
-  // =========================
-  function confirmDelete(id) {
-    setDeleteId(id);
-    setDeleteOpen(true);
-  }
+  // print single gatepass
+  const openPrintWindow = (row) => {
+    const win = window.open("", "_blank", "width=700,height=900");
+    if (!win) return;
+    const millName = settings?.name || settings?.companyName || "Rice Mill";
+    const millAddress = settings?.address || settings?.companyAddress || "";
+    const logo = settings?.logoUrl || settings?.logo || "";
+    const gateTypeLabel = "OUTWARD";
+    const logoHtml = logo
+      ? `<img src="${logo}" style="height:40px;margin-right:10px;border-radius:6px" alt="logo" />`
+      : `<div style="width:40px;height:40px;border-radius:6px;background:#ecfdf5;color:#047857;display:inline-flex;align-items:center;justify-content:center;font-weight:700;margin-right:10px">GP</div>`;
 
-  async function doDelete() {
-    if (!deleteId) return;
-    try {
-      await api.delete(`/gatepasses/${deleteId}`);
-      toast.success("Deleted");
-      setDeleteOpen(false);
-      if (selectedId === deleteId) setSelectedId(null);
-      await refreshAll();
-    } catch (err) {
-      toast.error("Delete failed");
+    const html = `
+      <html><head><title>Gate Pass ${row.gatePassNo || ""}</title>
+      <style>
+        body{font-family:system-ui;background:#f3f4f6}
+        .card{max-width:520px;margin:28px auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08)}
+        .header{display:flex;align-items:center}
+        .title{font-weight:700;color:#047857;font-size:18px}
+        .addr{font-size:12px;color:#6b7280}
+        .tag{display:inline-block;margin-top:6px;padding:4px 10px;border-radius:999px;background:#d1fae5;color:#047857;font-weight:600;font-size:12px}
+        .row{display:flex;justify-content:space-between;margin:8px 0;font-size:13px}
+        hr{border:0;border-top:1px solid #e6e6e6;margin:12px 0}
+      </style></head><body>
+      <div class="card"><div class="header">${logoHtml}<div><div class="title">${millName}</div><div class="addr">${millAddress}</div><div class="tag">${gateTypeLabel}</div></div></div>
+      <hr/>
+      <div class="row"><div>Gate Pass No</div><div>${
+        row.gatePassNo || "-"
+      }</div></div>
+      <div class="row"><div>Date</div><div>${
+        row.createdAt ? new Date(row.createdAt).toLocaleString() : "-"
+      }</div></div>
+      <div class="row"><div>Truck No</div><div>${row.truckNo || "-"}</div></div>
+      <div class="row"><div>Customer</div><div>${
+        row.customer || "-"
+      }</div></div>
+      <div class="row"><div>Item</div><div>${row.itemType || "-"}</div></div>
+      <div class="row"><div>Quantity</div><div>${row.quantity || "-"} ${
+      row.unit || ""
+    }</div></div>
+      <div class="row"><div>Transporter</div><div>${
+        row.transporter || "-"
+      }</div></div>
+      <div class="row"><div>Driver</div><div>${
+        row.driverName || "-"
+      }</div></div>
+      <hr/>
+      <div style="color:#6b7280;font-size:12px">${row.remarks || ""}</div>
+      </div><script>window.print();</script></body></html>
+    `;
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // CSV export (filtered visible)
+  const exportCsv = () => {
+    if (!rows || rows.length === 0) {
+      toast.error("No rows to export.");
+      return;
     }
-  }
-
-  // =========================
-  // PRINT
-  // =========================
-  async function openPrint(id) {
-    try {
-      const res = await api.get(`/gatepasses/print/${id}`);
-      setPrintData(res.data.data);
-    } catch (err) {
-      toast.error("Cannot load print preview");
-    }
-  }
-
-  // =========================
-  // CSV EXPORT HELPERS
-  // =========================
-  function arrayToCSV(rows) {
-    if (!rows || rows.length === 0) return "";
-    const headers = Object.keys(rows[0]);
-    const escape = (v) => {
-      if (v == null) return "";
-      const s = String(v);
-      if (s.includes(",") || s.includes('"') || s.includes("\n"))
-        return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    };
-    const lines = [headers.join(",")].concat(
-      rows.map((r) => headers.map((h) => escape(r[h])).join(","))
-    );
-    return lines.join("\n");
-  }
-
-  function downloadCSV(rows, filename) {
-    const csv = arrayToCSV(rows);
+    const csv = rowsToCsv(rows);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filename;
+    a.download = `GatePass_OUT_page${page}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  function handleExportCSV() {
-    const defaultName = `OUT-GatePass-${new Date()
-      .toISOString()
-      .slice(0, 10)}.csv`;
-    const fname = csvFilename.trim() || defaultName;
-    const rows = (csvScope === "current" ? pagedList : allList).map((g) => ({
-      gatePassNo: g.gatePassNo,
-      date: new Date(g.date).toLocaleString(),
-      company: g.companyName,
-      product: g.productTypeName,
-      bags: g.numBags,
-      netWeight: g.netWeightKg,
-      rate: `${g.rate} (${g.rateType})`,
-      totalAmount: g.totalAmount,
-      sendTo: g.sendTo,
-      remarks: g.remarks || "",
-    }));
-    downloadCSV(rows, fname);
-    toast.success("Exported");
-    setCsvOpen(false);
-  }
-
-  // =========================
-  // TABLE & PAGINATION
-  // =========================
-  function onRowClick(id) {
-    setSelectedId((s) => (s === id ? null : id));
-  }
-
-  function goToPage(p) {
-    const next = Math.min(Math.max(1, p), totalPages);
-    setPage(next);
-  }
-
-  // ENTER NAVIGATION
-  const setInputRef = (el, idx) => {
-    inputRefs.current[idx] = el;
   };
 
-  const printStyles = `
-    @media print {
-      body * { visibility: hidden; }
-      .print-card, .print-card * { visibility: visible; }
-      .print-card {
-        position: absolute;
-        left: 50%; top: 10mm;
-        transform: translateX(-50%);
-        width: 380px;
-      }
-    }
-  `;
+  // PDF export via print table
+  const exportPdf = () => {
+    const millName = settings?.name || settings?.companyName || "Rice Mill";
+    const millAddress = settings?.address || settings?.companyAddress || "";
+    const logo = settings?.logoUrl || settings?.logo || "";
+    let rowsHtml = rows
+      .map(
+        (r) => `
+      <tr>
+        <td>${
+          r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "-"
+        }</td>
+        <td>${r.gatePassNo || ""}</td>
+        <td>${r.truckNo || ""}</td>
+        <td>${r.customer || ""}</td>
+        <td>${r.itemType || ""}</td>
+        <td>${r.quantity || ""} ${r.unit || ""}</td>
+        <td>${r.transporter || ""}</td>
+        <td>${r.driverName || ""}</td>
+      </tr>`
+      )
+      .join("");
+
+    const html = `
+      <html><head><title>Gate Passes</title>
+      <style>body{font-family:system-ui;padding:20px}.hdr{display:flex;align-items:center;gap:10px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #e5e7eb;padding:6px;text-align:left;font-size:12px}th{background:#f0fdf4;color:#065f46}</style></head><body>
+      <div class="hdr">${
+        logo
+          ? `<img src="${logo}" style="height:36px"/>`
+          : '<div style="width:36px;height:36px;background:#ecfdf5;color:#047857;display:inline-flex;align-items:center;justify-content:center;border-radius:6px">GP</div>'
+      }<div><div style="font-weight:700">${millName}</div><div style="font-size:12px;color:#6b7280">${millAddress}</div></div></div>
+      <table><thead><tr><th>Date</th><th>GP No</th><th>Truck</th><th>Customer</th><th>Item</th><th>Qty</th><th>Transporter</th><th>Driver</th></tr></thead><tbody>${rowsHtml}</tbody></table><script>window.print();</script></body></html>
+    `;
+    const win = window.open("", "_blank", "width=900,height=700");
+    win.document.write(html);
+    win.document.close();
+  };
+
+  const applyFilter = () => {
+    setPage(1);
+    setFilterOpen(false);
+    fetchRows();
+  };
+
   return (
-    <div className="space-y-6">
-      <Toaster />
-      <style>{printStyles}</style>
+    <div className="space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        className="bg-white rounded-xl shadow p-4 space-y-4"
+      >
+        <h2 className="text-lg font-semibold text-emerald-700">
+          Outward Gate Pass
+        </h2>
 
-      {/* ========================= */}
-      {/* STATS */}
-      {/* ========================= */}
-      <div className="grid grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-red-400">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-sm text-gray-500">Today OUT count</div>
-              <div className="text-2xl font-bold text-red-700">
-                {stats.count}
-              </div>
-            </div>
-            <div className="bg-red-100 p-2 rounded-full">
-              <LogOut className="text-red-700" />
-            </div>
-          </div>
-          <div className="text-xs text-gray-400 mt-2">
-            Last updated: {stats.lastUpdatedTime}
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-red-300">
-          <div className="text-sm text-gray-500">Total OUT Net Wt</div>
-          <div className="text-2xl font-bold text-red-700">
-            {stats.totalNetWeight} kg
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-red-200">
-          <div className="text-sm text-gray-500">Cash IN-Hand</div>
-          <div className="text-2xl font-bold text-red-700">
-            Rs {stats.totalAmount}
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-red-100">
-          <div className="text-sm text-gray-500">Next GP (preview)</div>
-          <div className="text-lg font-semibold text-red-700">
-            {stats.nextGatePassNo}
-          </div>
-        </div>
-      </div>
-
-      {/* ========================= */}
-      {/* FORM */}
-      {/* ========================= */}
-      <div className="bg-[#FDE8E8] rounded-xl p-6 border border-red-200 shadow-sm">
-        <h3 className="text-lg font-semibold text-red-800 mb-4">
-          Add OUT Gate Pass
-        </h3>
-
-        <div className="grid grid-cols-4 gap-4">
-          <input
-            ref={(el) => setInputRef(el, 0)}
-            type="date"
-            name="date"
-            value={form.date}
-            onChange={handleChange}
-            className="border rounded px-3 py-2"
-            aria-label="date"
-          />
-
-          <select
-            ref={(el) => setInputRef(el, 1)}
-            name="companyId"
-            value={form.companyId}
-            onChange={(e) => {
-              const id = e.target.value;
-              const c = companies.find((x) => x._id === id);
-              setForm((s) => ({
-                ...s,
-                companyId: id,
-                companyName: c?.name || "",
-              }));
-            }}
-            className="border rounded px-3 py-2"
-          >
-            <option value="">Select Company</option>
-            {companies.map((c) => (
-              <option key={c._id} value={c._id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-
-          <select
-            ref={(el) => setInputRef(el, 2)}
-            name="productTypeId"
-            value={form.productTypeId}
-            onChange={(e) => {
-              const id = e.target.value;
-              const p = products.find((x) => x._id === id);
-              setForm((s) => ({
-                ...s,
-                productTypeId: id,
-                productTypeName: p?.name || "",
-              }));
-            }}
-            className="border rounded px-3 py-2"
-          >
-            <option value="">Select Product</option>
-            {products.map((p) => (
-              <option key={p._id} value={p._id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-
-          <input
-            ref={(el) => setInputRef(el, 3)}
-            type="number"
-            name="numBags"
-            placeholder="No. of bags"
-            value={form.numBags}
-            onChange={handleNumeric}
-            className="border rounded px-3 py-2"
-          />
-
-          <input
-            ref={(el) => setInputRef(el, 4)}
-            type="number"
-            name="bagWeightKg"
-            value={form.bagWeightKg}
-            onChange={handleNumeric}
-            placeholder="Bag weight (kg)"
-            className="border rounded px-3 py-2"
-          />
-
-          <input
-            ref={(el) => setInputRef(el, 5)}
-            type="number"
-            name="emptyBagWeightKg"
-            value={form.emptyBagWeightKg}
-            onChange={handleNumeric}
-            placeholder="Empty bag weight"
-            className="border rounded px-3 py-2"
-          />
-
-          {/* OUT extra fields */}
-          <input
-            ref={(el) => setInputRef(el, 6)}
-            type="number"
-            name="rate"
-            value={form.rate}
-            onChange={handleNumeric}
-            placeholder="Rate"
-            className="border rounded px-3 py-2"
-          />
-
-          <select
-            ref={(el) => setInputRef(el, 7)}
-            name="rateType"
-            value={form.rateType}
-            onChange={handleChange}
-            className="border rounded px-3 py-2"
-          >
-            <option value="per_bag">Per Bag</option>
-            <option value="per_kg">Per Kg</option>
-          </select>
-
-          <input
-            ref={(el) => setInputRef(el, 8)}
-            name="sendTo"
-            value={form.sendTo}
-            onChange={handleChange}
-            placeholder="Send To"
-            className="border rounded px-3 py-2"
-          />
-
-          <input
-            type="text"
-            value={computeTotal(form)}
-            readOnly
-            className="border bg-gray-100 rounded px-3 py-2"
-            placeholder="Total Amount"
-          />
-
-          {/* remarks full row */}
-          <input
-            ref={(el) => setInputRef(el, 9)}
-            name="remarks"
-            value={form.remarks}
-            onChange={handleChange}
-            placeholder="Remarks"
-            className="border rounded px-3 py-2 col-span-4"
-          />
-        </div>
-
-        <div className="mt-4 flex justify-between">
-          <div className="text-sm text-gray-600">
-            Net Weight (auto):{" "}
-            <span className="text-red-700 font-semibold">
-              {computeNet(form)} kg
-            </span>
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Truck No <span className="text-red-500">*</span>
+            </label>
+            <input
+              name="truckNo"
+              value={form.truckNo}
+              onChange={handleChange}
+              placeholder="ABC-1234"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.truckNo ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.truckNo && (
+              <p className="text-xs text-red-500 mt-1">{errors.truckNo}</p>
+            )}
           </div>
 
-          <button
-            onClick={handleSave}
-            disabled={loading}
-            className="bg-red-700 text-white px-5 py-2 rounded hover:bg-red-800"
-          >
-            {loading ? "Saving..." : "Save OUT GatePass"}
-          </button>
-        </div>
-      </div>
-
-      {/* ========================= */}
-      {/* TABLE + PAGINATION */}
-      {/* ========================= */}
-      <div className="bg-white rounded-xl shadow-sm border">
-        <div className="p-3 border-b flex justify-between items-center">
-          <button
-            className="flex gap-2 items-center px-3 py-1 bg-red-50 border rounded hover:bg-red-100"
-            onClick={() => setCsvOpen(true)}
-          >
-            <Download size={16} /> Export CSV
-          </button>
-
-          {/* FILTER BUTTON */}
-          <Popover.Root>
-            <Popover.Trigger asChild>
-              <button className="flex gap-2 items-center px-3 py-1 bg-gray-100 border rounded hover:bg-gray-200">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M3 4a1 1 0 012 0v1h14V4a1 1 0 112 0v1a1 1 0 01-1 1h-1l-5 7v6a1 1 0 01-.553.894l-4 2A1 1 0 018 20v-8L3 6H2a1 1 0 01-1-1V4z"
-                  />
-                </svg>
-                Filters
-              </button>
-            </Popover.Trigger>
-
-            <Popover.Content
-              side="bottom"
-              align="end"
-              className="bg-white shadow-xl border rounded-lg p-4 w-80 z-50"
-            >
-              <div className="space-y-3">
-                {/* DATE RANGE */}
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={filters.from}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, from: e.target.value }))
-                    }
-                    className="border rounded px-2 py-1 text-sm"
-                  />
-                  <input
-                    type="date"
-                    value={filters.to}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, to: e.target.value }))
-                    }
-                    className="border rounded px-2 py-1 text-sm"
-                  />
-                </div>
-
-                {/* COMPANY */}
-                <select
-                  value={filters.companyId}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, companyId: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                >
-                  <option value="">All Companies</option>
-                  {companies.map((c) => (
-                    <option key={c._id} value={c._id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-
-                {/* PRODUCT */}
-                <select
-                  value={filters.productTypeId}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, productTypeId: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                >
-                  <option value="">All Products</option>
-                  {products.map((p) => (
-                    <option key={p._id} value={p._id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-
-                {/* OUT ONLY: RATE TYPE */}
-                {form.rateType !== undefined && (
-                  <select
-                    value={filters.rateType}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, rateType: e.target.value }))
-                    }
-                    className="border rounded px-3 py-1 w-full text-sm"
-                  >
-                    <option value="">All Rate Types</option>
-                    <option value="per_bag">Per Bag</option>
-                    <option value="per_kg">Per Kg</option>
-                  </select>
-                )}
-
-                {/* SEARCH */}
-                <input
-                  type="text"
-                  placeholder="Search GP, Company, Product..."
-                  value={filters.search}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, search: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                />
-
-                {/* BUTTONS */}
-                <div className="flex justify-between mt-2">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Customer <span className="text-red-500">*</span>
+            </label>
+            <input
+              name="customer"
+              value={form.customer}
+              onChange={handleChange}
+              placeholder="Customer name"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.customer ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.customer && (
+              <p className="text-xs text-red-500 mt-1">{errors.customer}</p>
+            )}
+            {customerSuggestions.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                <span className="text-xs text-gray-400 mr-1">Suggestions:</span>
+                {customerSuggestions.map((s) => (
                   <button
-                    onClick={() =>
-                      setFilters({
-                        from: "",
-                        to: "",
-                        companyId: "",
-                        productTypeId: "",
-                        rateType: "",
-                        search: "",
-                      })
-                    }
-                    className="text-sm px-3 py-1 bg-gray-100 border rounded hover:bg-gray-200"
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setForm((f) => ({ ...f, customer: s }));
+                      clearFieldError("customer");
+                    }}
+                    className="text-xs px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100"
                   >
-                    Clear
+                    {s}
                   </button>
-
-                  <Popover.Close asChild>
-                    <button className="text-sm px-4 py-1 bg-red-700 text-white rounded hover:bg-red-800">
-                      Apply
-                    </button>
-                  </Popover.Close>
-                </div>
+                ))}
               </div>
-            </Popover.Content>
-          </Popover.Root>
+            )}
+          </div>
 
-          {/* Pagination */}
-          <div className="flex items-center gap-2">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Item Type <span className="text-red-500">*</span>
+            </label>
+            <select
+              name="itemType"
+              value={form.itemType}
+              onChange={handleChange}
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.itemType ? "border-red-500" : "border-gray-300"
+              }`}
+            >
+              <option value="">Select item</option>
+              <option value="Rice">Rice</option>
+              <option value="Broken Rice">Broken Rice</option>
+              <option value="Bran">Bran</option>
+              <option value="Husk">Husk</option>
+              <option value="Packaging">Packaging Material</option>
+              <option value="Other">Other</option>
+            </select>
+            {errors.itemType && (
+              <p className="text-xs text-red-500 mt-1">{errors.itemType}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Quantity <span className="text-red-500">*</span>
+            </label>
+            <div className="flex gap-2">
+              <input
+                name="quantity"
+                value={form.quantity}
+                onChange={handleChange}
+                placeholder="0"
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${
+                  errors.quantity ? "border-red-500" : "border-gray-300"
+                }`}
+              />
+              <select
+                name="unit"
+                value={form.unit}
+                onChange={handleChange}
+                className="w-24 rounded-lg border px-2 py-2 text-sm outline-none border-gray-300"
+              >
+                <option value="kg">kg</option>
+                <option value="ton">ton</option>
+                <option value="bags">bags</option>
+                <option value="pcs">pcs</option>
+              </select>
+            </div>
+            {errors.quantity && (
+              <p className="text-xs text-red-500 mt-1">{errors.quantity}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Transporter
+            </label>
+            <input
+              name="transporter"
+              value={form.transporter}
+              onChange={handleChange}
+              placeholder="Optional"
+              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Driver Name
+            </label>
+            <input
+              name="driverName"
+              value={form.driverName}
+              onChange={handleChange}
+              placeholder="Driver name"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.driverName ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.driverName && (
+              <p className="text-xs text-red-500 mt-1">{errors.driverName}</p>
+            )}
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-sm font-medium mb-1">Remarks</label>
+            <textarea
+              name="remarks"
+              value={form.remarks}
+              onChange={handleChange}
+              rows={2}
+              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm shadow hover:bg-emerald-700"
+          >
+            {editingId ? "Update Gate Pass" : "Save Gate Pass"}
+          </button>
+          {editingId && (
             <button
-              className="px-3 py-1 border rounded"
+              type="button"
+              onClick={() => {
+                setEditingId(null);
+                setForm({
+                  truckNo: "",
+                  customer: "",
+                  itemType: "",
+                  quantity: "",
+                  unit: "kg",
+                  transporter: "",
+                  driverName: "",
+                  remarks: "",
+                });
+                setErrors({});
+              }}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-xs"
+            >
+              Cancel Edit
+            </button>
+          )}
+        </div>
+      </form>
+
+      {/* filter + download (overlay + menu) */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 relative">
+          <button
+            onClick={() => setFilterOpen((s) => !s)}
+            className="p-2 rounded bg-emerald-50 hover:bg-emerald-100"
+          >
+            <Funnel className="w-4 h-4 text-emerald-700" />
+          </button>
+          {filterOpen && (
+            <div className="fixed top-24 right-6 z-40 bg-white border rounded p-3 shadow">
+              <div className="flex gap-2 items-center">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="search truck/customer/gp no"
+                  className="rounded border px-2 py-1 text-sm outline-none"
+                />
+                <select
+                  value={itemFilter}
+                  onChange={(e) => setItemFilter(e.target.value)}
+                  className="rounded border px-2 py-1 text-sm outline-none"
+                >
+                  <option value="">All item types</option>
+                  <option value="Rice">Rice</option>
+                  <option value="Broken Rice">Broken Rice</option>
+                  <option value="Bran">Bran</option>
+                  <option value="Husk">Husk</option>
+                  <option value="Packaging">Packaging</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={applyFilter}
+                  className="px-2 py-1 bg-emerald-600 text-white rounded text-sm"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={() => {
+                    setFilterOpen(false);
+                    setSearchQuery("");
+                    setItemFilter("");
+                    fetchRows();
+                  }}
+                  className="px-2 py-1 bg-gray-100 rounded text-sm"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="relative">
+          <button
+            onClick={() => setDownloadMenuOpen((s) => !s)}
+            className="flex items-center gap-2 px-3 py-1 rounded bg-emerald-50 hover:bg-emerald-100"
+          >
+            <Download className="w-4 h-4 text-emerald-700" />
+            <span className="text-sm text-emerald-700">Download</span>
+            <ChevronDown className="w-4 h-4 text-emerald-700" />
+          </button>
+
+          {downloadMenuOpen && (
+            <div className="absolute right-0 mt-2 bg-white border rounded shadow p-2 z-40">
+              <button
+                onClick={() => {
+                  exportCsv();
+                  setDownloadMenuOpen(false);
+                }}
+                className="block w-full text-left px-3 py-1 text-sm hover:bg-emerald-50"
+              >
+                Excel / CSV
+              </button>
+              <button
+                onClick={() => {
+                  exportPdf();
+                  setDownloadMenuOpen(false);
+                }}
+                className="block w-full text-left px-3 py-1 text-sm hover:bg-emerald-50"
+              >
+                PDF
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* table */}
+      <div className="bg-white rounded-xl shadow overflow-x-auto transition-all">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="bg-emerald-50 text-emerald-900">
+              <th className="px-3 py-2 text-left">Date</th>
+              <th className="px-3 py-2 text-left">Gate Pass No</th>
+              <th className="px-3 py-2 text-left">Truck No</th>
+              <th className="px-3 py-2 text-left">Customer</th>
+              <th className="px-3 py-2 text-left">Item Type</th>
+              <th className="px-3 py-2 text-left">Quantity</th>
+              <th className="px-3 py-2 text-left">Transporter</th>
+              <th className="px-3 py-2 text-left">Driver</th>
+              <th className="px-3 py-2 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={9} className="px-3 py-4 text-center text-gray-400">
+                  Loading...
+                </td>
+              </tr>
+            )}
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={9} className="px-3 py-4 text-center text-gray-400">
+                  No outward gate passes found.
+                </td>
+              </tr>
+            )}
+            {!loading &&
+              rows.map((row) => (
+                <tr
+                  key={row._id}
+                  className="border-t border-gray-100 hover:bg-gray-50"
+                >
+                  <td className="px-3 py-2">
+                    {row.createdAt
+                      ? new Date(row.createdAt).toLocaleDateString()
+                      : "-"}
+                  </td>
+                  <td className="px-3 py-2">{row.gatePassNo || "-"}</td>
+                  <td className="px-3 py-2">{row.truckNo || "-"}</td>
+                  <td className="px-3 py-2">{row.customer || "-"}</td>
+                  <td className="px-3 py-2">{row.itemType || "-"}</td>
+                  <td className="px-3 py-2">
+                    {row.quantity || "-"} {row.unit || ""}
+                  </td>
+                  <td className="px-3 py-2">{row.transporter || "-"}</td>
+                  <td className="px-3 py-2">{row.driverName || "-"}</td>
+                  <td className="px-3 py-2 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => handleEdit(row)}
+                        className="p-1 rounded hover:bg-emerald-50"
+                        title="Edit"
+                      >
+                        <Edit2 className="w-4 h-4 text-emerald-600" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(row)}
+                        className="p-1 rounded hover:bg-red-50"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-500" />
+                      </button>
+                      <button
+                        onClick={() => openPrintWindow(row)}
+                        className="p-1 rounded hover:bg-gray-100"
+                        title="Print"
+                      >
+                        <Printer className="w-4 h-4 text-gray-700" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+
+        <div className="flex items-center justify-between px-3 py-2 border-t border-gray-100 text-xs">
+          <span className="text-gray-500">
+            Page {page} of {totalPages}
+          </span>
+          <div className="flex gap-2">
+            <button
               disabled={page <= 1}
-              onClick={() => goToPage(page - 1)}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className={`px-3 py-1 rounded border ${
+                page <= 1
+                  ? "border-gray-200 text-gray-300"
+                  : "border-gray-300 text-gray-700"
+              }`}
             >
               Previous
             </button>
-
-            {Array.from({ length: totalPages }).map((_, i) => {
-              const p = i + 1;
-              return (
-                <button
-                  key={`page-${p}`}
-                  className={`px-3 py-1 rounded ${
-                    page === p ? "bg-red-700 text-white" : "border"
-                  }`}
-                  onClick={() => goToPage(p)}
-                >
-                  {p}
-                </button>
-              );
-            })}
-
             <button
-              className="px-3 py-1 border rounded"
               disabled={page >= totalPages}
-              onClick={() => goToPage(page + 1)}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className={`px-3 py-1 rounded border ${
+                page >= totalPages
+                  ? "border-gray-200 text-gray-300"
+                  : "border-gray-300 text-gray-700"
+              }`}
             >
               Next
             </button>
           </div>
         </div>
-
-        <table className="w-full text-sm">
-          <thead className="bg-[#FDECEC] text-red-800">
-            <tr>
-              <th className="p-3 text-left">GP No</th>
-              <th className="p-3">Date</th>
-              <th className="p-3">Company</th>
-              <th className="p-3">Product</th>
-              <th className="p-3 text-right">Bags</th>
-              <th className="p-3 text-right">Net Wt</th>
-              <th className="p-3 text-right">Rate</th>
-              <th className="p-3 text-right">Amount</th>
-              <th className="p-3">Send To</th>
-              <th className="p-3 text-center">Actions</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {pagedList.map((g, idx) => (
-              <tr
-                key={g._id}
-                onClick={() => onRowClick(g._id)}
-                className={`border-b cursor-pointer ${
-                  idx % 2 ? "bg-white" : "bg-red-50/30"
-                } ${selectedId === g._id ? "ring-2 ring-red-200" : ""}`}
-              >
-                <td className="p-3">{g.gatePassNo}</td>
-                <td className="p-3">{new Date(g.date).toLocaleDateString()}</td>
-                <td className="p-3">{g.companyName}</td>
-                <td className="p-3">{g.productTypeName}</td>
-                <td className="p-3 text-right">{g.numBags}</td>
-                <td className="p-3 text-right">{g.netWeightKg}</td>
-                <td className="p-3 text-right">
-                  {g.rate} ({g.rateType})
-                </td>
-                <td className="p-3 text-right">{g.totalAmount}</td>
-                <td className="p-3">{g.sendTo}</td>
-
-                <td className="p-3 text-center flex justify-center gap-3">
-                  <Edit
-                    className="text-blue-600 cursor-pointer"
-                    size={18}
-                    onClick={() => openEdit(g)}
-                  />
-                  <Trash2
-                    className="text-red-600 cursor-pointer"
-                    size={18}
-                    onClick={() => confirmDelete(g._id)}
-                  />
-                  <Printer
-                    className="text-red-700 cursor-pointer"
-                    size={18}
-                    onClick={() => openPrint(g._id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
-
-      {/* ========================= */}
-      {/* CSV EXPORT DIALOG */}
-      {/* ========================= */}
-      <Dialog.Root open={csvOpen} onOpenChange={setCsvOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl p-5 w-[420px] shadow-xl">
-            <Dialog.Title className="text-lg font-semibold">
-              Export CSV
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 mb-3">
-              Select filename and scope.
-            </Dialog.Description>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm block mb-1">Filename</label>
-                <input
-                  value={csvFilename}
-                  onChange={(e) => setCsvFilename(e.target.value)}
-                  placeholder={`OUT-GatePass-${todayISODate()}.csv`}
-                  className="border rounded w-full px-3 py-2"
-                />
-              </div>
-
-              <div>
-                <div className="text-sm mb-1">Scope</div>
-                <div className="flex gap-3">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={csvScope === "current"}
-                      onChange={() => setCsvScope("current")}
-                    />
-                    Current Page
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={csvScope === "all"}
-                      onChange={() => setCsvScope("all")}
-                    />
-                    All Entries
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-3">
-                <button
-                  className="border rounded px-4 py-2"
-                  onClick={() => setCsvOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleExportCSV}
-                  className="bg-red-700 text-white px-4 py-2 rounded"
-                >
-                  Export
-                </button>
-              </div>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-      {/* ========================= */}
-      {/* PRINT DIALOG */}
-      {/* ========================= */}
-      {printData && (
-        <Dialog.Root open={true} onOpenChange={() => setPrintData(null)}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-
-            <Dialog.Content className="print-card fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white w-[380px] rounded-xl p-5 shadow-xl">
-              <Dialog.Title className="text-lg font-semibold text-center">
-                OUT Gate Pass
-              </Dialog.Title>
-              <Dialog.Description className="text-center text-sm text-gray-500 mb-3">
-                Card-sized print preview
-              </Dialog.Description>
-
-              <div className="space-y-1 text-sm">
-                <div>
-                  <strong>GP No:</strong> {printData.gatePassNo}
-                </div>
-                <div>
-                  <strong>Date:</strong>{" "}
-                  {new Date(printData.date).toLocaleString()}
-                </div>
-                <div>
-                  <strong>Company:</strong> {printData.companyName}
-                </div>
-                <div>
-                  <strong>Product:</strong> {printData.productTypeName}
-                </div>
-                <div>
-                  <strong>Bags:</strong> {printData.numBags}
-                </div>
-                <div>
-                  <strong>Net Wt:</strong> {printData.netWeightKg} kg
-                </div>
-                <div>
-                  <strong>Rate:</strong> {printData.rate} ({printData.rateType})
-                </div>
-                <div>
-                  <strong>Total Amount:</strong> Rs {printData.totalAmount}
-                </div>
-                <div>
-                  <strong>Send To:</strong> {printData.sendTo}
-                </div>
-                <div>
-                  <strong>Remarks:</strong> {printData.remarks || "-"}
-                </div>
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <button
-                  className="flex-1 bg-red-700 text-white py-2 rounded"
-                  onClick={() => window.print()}
-                >
-                  Print
-                </button>
-                <button
-                  className="flex-1 border py-2 rounded"
-                  onClick={() => setPrintData(null)}
-                >
-                  Close
-                </button>
-              </div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-      )}
-
-      {/* ========================= */}
-      {/* EDIT DIALOG */}
-      {/* ========================= */}
-      <Dialog.Root open={editOpen} onOpenChange={setEditOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white w-[480px] rounded-xl p-5 shadow-xl">
-            <Dialog.Title className="text-lg font-semibold">
-              Edit OUT GatePass
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 mb-3">
-              GatePassNo cannot be changed.
-            </Dialog.Description>
-
-            {editData && (
-              <div className="space-y-3">
-                <input
-                  className="border bg-gray-100 rounded px-3 py-2 w-full"
-                  value={editData.companyName}
-                  disabled
-                />
-
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.numBags}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        numBags: e.target.value.replace(/^0+(?=\d)/, ""),
-                      }))
-                    }
-                  />
-
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.bagWeightKg}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        bagWeightKg: e.target.value.replace(/^0+(?=\d)/, ""),
-                      }))
-                    }
-                  />
-
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.emptyBagWeightKg}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        emptyBagWeightKg: e.target.value.replace(
-                          /^0+(?=\d)/,
-                          ""
-                        ),
-                      }))
-                    }
-                  />
-
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.rate}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        rate: e.target.value.replace(/^0+(?=\d)/, ""),
-                      }))
-                    }
-                  />
-                </div>
-
-                <select
-                  className="border rounded px-3 py-2 w-full"
-                  value={editData.rateType}
-                  onChange={(e) =>
-                    setEditData((d) => ({ ...d, rateType: e.target.value }))
-                  }
-                >
-                  <option value="per_bag">Per Bag</option>
-                  <option value="per_kg">Per Kg</option>
-                </select>
-
-                <input
-                  className="border rounded px-3 py-2 w-full"
-                  value={editData.sendTo}
-                  onChange={(e) =>
-                    setEditData((d) => ({ ...d, sendTo: e.target.value }))
-                  }
-                />
-
-                <input
-                  className="border rounded px-3 py-2 w-full"
-                  value={editData.remarks || ""}
-                  onChange={(e) =>
-                    setEditData((d) => ({ ...d, remarks: e.target.value }))
-                  }
-                />
-
-                <div className="flex justify-end gap-3 mt-4">
-                  <button
-                    className="px-4 py-2 border rounded"
-                    onClick={() => setEditOpen(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="px-4 py-2 bg-red-700 text-white rounded"
-                    onClick={handleUpdate}
-                  >
-                    Update
-                  </button>
-                </div>
-              </div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      {/* ========================= */}
-      {/* DELETE DIALOG */}
-      {/* ========================= */}
-      <Dialog.Root open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white w-[380px] rounded-xl p-5 shadow-xl">
-            <Dialog.Title className="text-lg font-semibold text-center">
-              Confirm Delete
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 text-center mb-4">
-              This action cannot be undone.
-            </Dialog.Description>
-
-            <div className="flex justify-center gap-3">
-              <button
-                className="border px-4 py-2 rounded"
-                onClick={() => setDeleteOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="bg-red-700 text-white px-4 py-2 rounded"
-                onClick={doDelete}
-              >
-                Delete
-              </button>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
     </div>
   );
 }

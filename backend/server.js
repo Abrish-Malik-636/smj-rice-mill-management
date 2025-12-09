@@ -32,11 +32,11 @@ const stockRoutes = require("./routes/stockRoutes");
 app.use("/api/stock", stockRoutes);
 const productionRoutes = require("./routes/productionRoutes");
 app.use("/api/production", productionRoutes);
-// backend/server.js
 const transactionRoutes = require("./routes/transactionRoutes");
 app.use("/api/transactions", transactionRoutes);
 const gatePassesRoutes = require("./routes/gatePassesRoutes");
 app.use("/api/gatepasses", gatePassesRoutes);
+
 // Connect MongoDB
 mongoose
   .connect(process.env.MONGO_URI)

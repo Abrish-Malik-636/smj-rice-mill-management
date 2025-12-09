@@ -1,1073 +1,755 @@
-// src/components/GatePass/GatePassIN.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
+import {
+  Edit2,
+  Trash2,
+  Printer,
+  Download,
+  Funnel,
+  ChevronDown,
+} from "lucide-react";
+import { toast } from "react-hot-toast";
 import api from "../../services/api";
-import * as Dialog from "@radix-ui/react-dialog";
-import toast, { Toaster } from "react-hot-toast";
-import { LogIn, Edit, Trash2, Printer, Download } from "lucide-react";
-import * as Popover from "@radix-ui/react-popover";
 
 const PAGE_SIZE = 10;
 
-function todayISODate() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function rowsToCsv(rows) {
+  const cols = [
+    "createdAt",
+    "gatePassNo",
+    "truckNo",
+    "supplier",
+    "itemType",
+    "transporter",
+    "driverName",
+    "remarks",
+  ];
+  const header = cols.join(",");
+  const lines = rows.map((r) =>
+    cols
+      .map((c) => {
+        const v = r[c] == null ? "" : String(r[c]).replace(/"/g, '""');
+        return `"${v}"`;
+      })
+      .join(",")
+  );
+  return [header, ...lines].join("\n");
 }
 
 export default function GatePassIN() {
-  // Form
   const [form, setForm] = useState({
-    date: todayISODate(),
-    companyId: "",
-    companyName: "",
-    productTypeId: "",
-    productTypeName: "",
-    numBags: "",
-    bagWeightKg: "",
-    emptyBagWeightKg: "",
+    truckNo: "",
+    supplier: "",
+    itemType: "",
+    transporter: "",
+    driverName: "",
     remarks: "",
   });
-
-  // FILTERS
-  const [filters, setFilters] = useState({
-    from: "",
-    to: "",
-    companyId: "",
-    productTypeId: "",
-    rateType: "", // OUT only
-    search: "",
-  });
-
-  // Lists and data
-  const [companies, setCompanies] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [allList, setAllList] = useState([]); // full list from backend
-
-  // Pagination
+  const [errors, setErrors] = useState({});
+  const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
-  const pageSize = PAGE_SIZE;
-
-  // APPLY FILTERS
-  const filteredList = allList.filter((g) => {
-    // date filter
-    if (filters.from && new Date(g.date) < new Date(filters.from)) return false;
-    if (filters.to && new Date(g.date) > new Date(filters.to)) return false;
-
-    // company
-    if (filters.companyId && g.companyId !== filters.companyId) return false;
-
-    // product
-    if (filters.productTypeId && g.productTypeId !== filters.productTypeId)
-      return false;
-
-    // rateType (OUT only)
-    if (filters.rateType && g.rateType !== filters.rateType) return false;
-
-    // search text (gpno, company, product, sendTo)
-    if (filters.search) {
-      const s = filters.search.toLowerCase();
-      const target =
-        `${g.gatePassNo} ${g.companyName} ${g.productTypeName} ${g.sendTo}`.toLowerCase();
-      if (!target.includes(s)) return false;
-    }
-
-    return true;
-  });
-
-  // final pagination
-  const pagedList = filteredList.slice((page - 1) * pageSize, page * pageSize);
-  const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize));
-
-  // Stats object
-  const [stats, setStats] = useState({
-    count: 0,
-    totalNetWeight: 0,
-    lastUpdatedTime: "-",
-    nextGatePassNo: "",
-  });
-
-  // UI & modal states
+  const [total, setTotal] = useState(0);
+  const [itemFilter, setItemFilter] = useState("");
   const [loading, setLoading] = useState(false);
-  const [printData, setPrintData] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [settings, setSettings] = useState(null);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
 
-  const [csvOpen, setCsvOpen] = useState(false);
-  const [csvFilename, setCsvFilename] = useState("");
-  const [csvScope, setCsvScope] = useState("current"); // 'current' | 'all'
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [editData, setEditData] = useState(null);
+  // regex: names allow letters, spaces, dot, apostrophe (NO hyphen), per your request
+  const nameRegex = /^[A-Za-z\s.']+$/;
+  const truckRegex = /^[A-Z]{2,4}-\d{3,4}$/; // AB-123 or ABC-1234
 
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteId, setDeleteId] = useState(null);
+  // helper: set/clear errors
+  const setFieldError = (field, msg) =>
+    setErrors((p) => ({ ...p, [field]: msg }));
+  const clearFieldError = (field) =>
+    setErrors((p) => {
+      const c = { ...p };
+      delete c[field];
+      return c;
+    });
 
-  // selection for keyboard print
-  const [selectedId, setSelectedId] = useState(null);
+  // Validation functions (same messages as backend)
+  const validateTruckNo = (v) => {
+    if (!v) return "Truck number is required.";
+    if (v.length < 6) return "Truck number too short.";
+    if (v.length > 12) return "Truck number too long.";
+    if (!truckRegex.test(v))
+      return "Format: ABC-123 or AB-1234 (caps letters, hyphen, digits).";
+    return "";
+  };
+  const validateSupplier = (v) => {
+    if (!v || v.trim() === "") return "Supplier is required for IN gate pass.";
+    if (!nameRegex.test(v))
+      return "Supplier name invalid. Use letters, spaces, dot or apostrophe only.";
+    return "";
+  };
+  const validateItemType = (v) => (!v ? "Please select item type." : "");
+  const validateDriver = (v) =>
+    !v
+      ? ""
+      : nameRegex.test(v)
+      ? ""
+      : "Driver name invalid. No numbers or special characters.";
 
-  // refs for Enter navigation
-  const inputRefs = useRef([]);
-
-  // --- Lifecycle: load initial data ---
-  useEffect(() => {
-    refreshAll();
-
-    const handleKey = (e) => {
-      // Scope Enter navigation to our inputs only
-      const active = document.activeElement;
-      const isInside = inputRefs.current.some((r) => r && r === active);
-
-      // Ctrl+P -> print selected
-      if (e.ctrlKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        if (selectedId) {
-          openPrint(selectedId);
-        } else {
-          toast.error("No gate pass selected to print (click a row first).");
-        }
-      }
-
-      // Ctrl+L -> reload
-      if (e.ctrlKey && e.key.toLowerCase() === "l") {
-        e.preventDefault();
-        refreshAll();
-        toast.success("Reloaded");
-      }
-
-      // Shift+Enter -> save
-      if (e.shiftKey && e.key === "Enter") {
-        e.preventDefault();
-        handleSave();
-      }
-
-      // Enter -> next input (only inside our inputs)
-      if (!e.shiftKey && e.key === "Enter" && isInside) {
-        e.preventDefault();
-        const idx = inputRefs.current.findIndex((r) => r === active);
-        const next = inputRefs.current[idx + 1];
-        if (next) next.focus();
-      }
-    };
-
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
-
-  // --- Data loaders ---
-  async function refreshAll() {
-    await Promise.all([
-      loadCompanies(),
-      loadProducts(),
-      loadList(),
-      loadStats(),
-    ]);
-    setPage(1);
-  }
-
-  async function loadCompanies() {
-    try {
-      const res = await api.get("/companies");
-      setCompanies(res.data.data || []);
-    } catch (err) {
-      console.error("loadCompanies", err);
-    }
-  }
-
-  async function loadProducts() {
-    try {
-      const res = await api.get("/product-types");
-      setProducts(res.data.data || []);
-    } catch (err) {
-      console.error("loadProducts", err);
-    }
-  }
-
-  async function loadList() {
-    try {
-      const res = await api.get("/gatepasses?type=IN");
-      const data = res.data.data || [];
-      // sort by date desc then createdAt desc for stable order
-      data.sort(
-        (a, b) =>
-          new Date(b.date) - new Date(a.date) ||
-          new Date(b.updatedAt) - new Date(a.updatedAt)
-      );
-      setAllList(data);
-    } catch (err) {
-      console.error("loadList", err);
-    }
-  }
-
-  async function loadStats() {
-    try {
-      const res = await api.get("/gatepasses/stats/today");
-      const full = res.data.data || {};
-      const s = full.stats?.IN || { count: 0, totalNetWeight: 0 };
-      setStats({
-        count: s.count || 0,
-        totalNetWeight: s.totalNetWeight || 0,
-        lastUpdatedTime: full.lastUpdatedTime
-          ? new Date(full.lastUpdatedTime).toLocaleTimeString()
-          : "-",
-        nextGatePassNo: full.nextGatePassNo || "",
-      });
-    } catch (err) {
-      console.error("loadStats", err);
-    }
-  }
-
-  // --- Form handlers ---
-  function handleNumeric(e) {
-    const name = e.target.name;
-    let v = String(e.target.value || "");
-    v = v.replace(/^0+(?=\d)/, ""); // remove leading zeros but allow single 0
-    setForm((s) => ({ ...s, [name]: v }));
-  }
-
-  function handleChange(e) {
-    const { name, value } = e.target;
-    setForm((s) => ({ ...s, [name]: value }));
-  }
-
-  function computeNet(f) {
-    const numBags = Number(f.numBags) || 0;
-    const bagWeightKg = Number(f.bagWeightKg) || 0;
-    const empty = Number(f.emptyBagWeightKg) || 0;
-    const perBagNet = Math.max(bagWeightKg - empty, 0);
-    return +(numBags * perBagNet).toFixed(3);
-  }
-
-  // --- Save ---
-  async function handleSave() {
-    if (
-      !form.date ||
-      !form.companyId ||
-      !form.productTypeId ||
-      !form.numBags ||
-      !form.bagWeightKg
-    ) {
-      toast.error(
-        "Please fill required fields: Date, Company, Product, Bags, Bag Weight"
-      );
-      return;
-    }
-
-    const payload = {
-      ...form,
-      numBags: Number(form.numBags),
-      bagWeightKg: Number(form.bagWeightKg),
-      emptyBagWeightKg: Number(form.emptyBagWeightKg || 0),
-    };
-
-    setLoading(true);
-    try {
-      await api.post("/gatepasses", { ...payload, type: "IN" });
-      toast.success("IN Gate Pass saved");
-      setForm({
-        date: todayISODate(),
-        companyId: "",
-        companyName: "",
-        productTypeId: "",
-        productTypeName: "",
-        numBags: "",
-        bagWeightKg: "",
-        emptyBagWeightKg: 0,
-        remarks: "",
-      });
-      await refreshAll();
-    } catch (err) {
-      console.error("save error", err);
-      toast.error(err.response?.data?.message || "Save failed");
-    }
-    setLoading(false);
-  }
-
-  // --- Edit flow ---
-  function openEdit(g) {
-    setEditData({ ...g });
-    setEditOpen(true);
-  }
-
-  async function handleUpdate() {
-    if (!editData) return;
-    const payload = { ...editData };
-    delete payload.gatePassNo;
-    setLoading(true);
-    try {
-      await api.put(`/gatepasses/${editData._id}`, payload);
-      toast.success("Updated");
-      setEditOpen(false);
-      await refreshAll();
-    } catch (err) {
-      console.error("update error", err);
-      toast.error(err.response?.data?.message || "Update failed");
-    }
-    setLoading(false);
-  }
-
-  // --- Delete flow ---
-  function confirmDelete(id) {
-    setDeleteId(id);
-    setDeleteOpen(true);
-  }
-
-  async function doDelete() {
-    if (!deleteId) return;
-    setLoading(true);
-    try {
-      await api.delete(`/gatepasses/${deleteId}`);
-      toast.success("Deleted");
-      setDeleteOpen(false);
-      if (selectedId === deleteId) setSelectedId(null);
-      await refreshAll();
-    } catch (err) {
-      console.error("delete error", err);
-      toast.error("Delete failed");
-    }
-    setLoading(false);
-  }
-
-  // --- Print flow ---
-  async function openPrint(id) {
-    try {
-      const res = await api.get(`/gatepasses/print/${id}`);
-      setPrintData(res.data.data);
-    } catch (err) {
-      console.error("print error", err);
-      toast.error("Cannot load print preview");
-    }
-  }
-
-  // --- CSV Export helpers (in-file) ---
-  function arrayToCSV(rows) {
-    if (!rows || rows.length === 0) return "";
-    const headers = Object.keys(rows[0]);
-    const escape = (v) => {
-      if (v === null || v === undefined) return "";
-      const s = String(v);
-      if (s.includes(",") || s.includes('"') || s.includes("\n")) {
-        return `"${s.replace(/"/g, '""')}"`;
-      }
-      return s;
-    };
-    const lines = [headers.join(",")].concat(
-      rows.map((r) => headers.map((h) => escape(r[h])).join(","))
-    );
-    return lines.join("\n");
-  }
-
-  function downloadCSV(rows, filename) {
-    const csv = arrayToCSV(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.href = url;
-    link.setAttribute("download", filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }
-
-  function handleExportCSV() {
-    const defaultName = `IN-GatePass-${new Date()
-      .toISOString()
-      .slice(0, 10)}.csv`;
-    const fname = csvFilename.trim() || defaultName;
-    const rows = (csvScope === "current" ? pagedList : filteredList).map(
-      (g) => ({
-        gatePassNo: g.gatePassNo,
-        date: new Date(g.date).toLocaleString(),
-        companyName: g.companyName,
-        productTypeName: g.productTypeName,
-        numBags: g.numBags,
-        bagWeightKg: g.bagWeightKg,
-        emptyBagWeightKg: g.emptyBagWeightKg,
-        netWeightKg: g.netWeightKg,
-        remarks: g.remarks || "",
-      })
-    );
-    downloadCSV(rows, fname);
-    setCsvOpen(false);
-    setCsvFilename("");
-    toast.success("CSV exported");
-  }
-
-  // --- Row selection ---
-  function onRowClick(id) {
-    setSelectedId((s) => (s === id ? null : id));
-  }
-
-  // --- Pagination helpers ---
-  function goToPage(p) {
-    const next = Math.min(
-      Math.max(1, p),
-      Math.max(1, Math.ceil(allList.length / pageSize))
-    );
-    setPage(next);
-  }
-
-  // --- Input refs registration (Enter navigation) ---
-  const setInputRef = (el, idx) => {
-    inputRefs.current[idx] = el;
+  const validateField = (name, value) => {
+    let msg = "";
+    if (name === "truckNo") msg = validateTruckNo(value);
+    if (name === "supplier") msg = validateSupplier(value);
+    if (name === "itemType") msg = validateItemType(value);
+    if (name === "driverName") msg = validateDriver(value);
+    if (msg) setFieldError(name, msg);
+    else clearFieldError(name);
   };
 
-  // Print-only CSS for the card
-  const printStyles = `
-    @media print {
-      body * { visibility: hidden; }
-      .print-card, .print-card * { visibility: visible; }
-      .print-card { position: absolute; left: 50%; top: 10mm; transform: translateX(-50%); }
+  const validateForm = () => {
+    const e1 = validateTruckNo(form.truckNo);
+    const e2 = validateSupplier(form.supplier);
+    const e3 = validateItemType(form.itemType);
+    const e4 = validateDriver(form.driverName);
+    const newErr = {};
+    if (e1) newErr.truckNo = e1;
+    if (e2) newErr.supplier = e2;
+    if (e3) newErr.itemType = e3;
+    if (e4) newErr.driverName = e4;
+    setErrors(newErr);
+    return Object.keys(newErr).length === 0;
+  };
+
+  // format truck input: uppercase, keep letters then digits, insert hyphen automatically
+  const formatTruckInput = (raw) => {
+    let s = raw.toUpperCase();
+    // remove any char not letter/digit
+    s = s.replace(/[^A-Z0-9]/g, "");
+    // split leading letters and trailing digits
+    const letters = s.match(/^[A-Z]*/)[0] || "";
+    const digits = s.slice(letters.length) || "";
+    if (!digits) return letters;
+    return `${letters}-${digits}`.slice(0, 12); // limit overall length
+  };
+
+  // load settings (optional)
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const res = await api.get("/settings/general");
+        if (res.data && res.data.success !== false) {
+          setSettings(res.data.data || res.data);
+        }
+      } catch {
+        // optional - ignore 404
+      }
+    };
+    loadSettings();
+  }, []);
+
+  // fetch rows
+  const fetchRows = async () => {
+    try {
+      setLoading(true);
+      const params = {
+        page,
+        limit: PAGE_SIZE,
+        type: "IN",
+        search: searchQuery || "",
+      };
+      const res = await api.get("/gatepasses", { params });
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Failed");
+      let list = res.data.data || [];
+      if (itemFilter) list = list.filter((r) => r.itemType === itemFilter);
+      setRows(list);
+      setTotal(res.data.total || list.length);
+    } catch (err) {
+      toast.error(err.message || "Unable to fetch gate passes.");
+    } finally {
+      setLoading(false);
     }
-  `;
+  };
+
+  useEffect(() => {
+    fetchRows(); /* eslint-disable-next-line */
+  }, [page, itemFilter]);
+
+  // supplier suggestions – show only if supplier field currently has error (per your request)
+  const supplierSuggestions = errors.supplier
+    ? Array.from(new Set(rows.map((r) => r.supplier).filter(Boolean))).slice(
+        0,
+        6
+      )
+    : [];
+
+  // handlers
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    let v = value;
+    if (name === "truckNo") {
+      v = formatTruckInput(value);
+    }
+    if (name === "supplier" || name === "driverName") {
+      v = value.replace(/\s+/g, " ");
+    }
+    setForm((prev) => ({ ...prev, [name]: v }));
+    validateField(name, v);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) {
+      toast.error("Please fix the highlighted fields.");
+      return;
+    }
+    const payload = { ...form, type: "IN" };
+    try {
+      const url = editingId ? `/gatepasses/${editingId}` : "/gatepasses";
+      const method = editingId ? "put" : "post";
+      const res = await api[method](url, payload);
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Save failed");
+      toast.success(editingId ? "Gate pass updated." : "Gate pass created.");
+      setForm({
+        truckNo: "",
+        supplier: "",
+        itemType: "",
+        transporter: "",
+        driverName: "",
+        remarks: "",
+      });
+      setEditingId(null);
+      setErrors({});
+      fetchRows();
+    } catch (err) {
+      toast.error(err.message || "Unable to save.");
+    }
+  };
+
+  // edit: populate and CLEAR previous errors (per your request)
+  const handleEdit = (row) => {
+    setForm({
+      truckNo: row.truckNo || "",
+      supplier: row.supplier || "",
+      itemType: row.itemType || "",
+      transporter: row.transporter || "",
+      driverName: row.driverName || "",
+      remarks: row.remarks || "",
+    });
+    setEditingId(row._id);
+    setErrors({});
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleDelete = async (row) => {
+    if (!window.confirm(`Delete Gate Pass ${row.gatePassNo || ""}?`)) return;
+    try {
+      const res = await api.delete(`/gatepasses/${row._id}`);
+      if (res.data && res.data.success === false)
+        throw new Error(res.data.message || "Delete failed");
+      toast.success("Gate pass deleted.");
+      fetchRows();
+    } catch (err) {
+      toast.error(err.message || "Unable to delete");
+    }
+  };
+
+  // open print window (PDF via browser print) — uses settings.logo if present
+  const openPrintWindow = (row) => {
+    const win = window.open("", "_blank", "width=700,height=900");
+    if (!win) return;
+    const millName = settings?.name || settings?.companyName || "Rice Mill";
+    const millAddress = settings?.address || settings?.companyAddress || "";
+    const logo = settings?.logoUrl || settings?.logo || ""; // adapt to your settings shape
+    const gateTypeLabel = "INWARD";
+
+    const logoHtml = logo
+      ? `<img src="${logo}" style="height:40px;margin-right:10px;border-radius:6px" alt="logo" />`
+      : `<div style="width:40px;height:40px;border-radius:6px;background:#ecfdf5;color:#047857;display:inline-flex;align-items:center;justify-content:center;font-weight:700;margin-right:10px">GP</div>`;
+
+    const html = `
+      <html><head><title>Gate Pass ${row.gatePassNo || ""}</title>
+      <style>
+        body{font-family:system-ui, -apple-system, "Segoe UI"; background:#f3f4f6; margin:0;}
+        .card{max-width:520px;margin:28px auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,0.08)}
+        .header{display:flex;align-items:center}
+        .title{font-weight:700;color:#047857;font-size:18px}
+        .addr{font-size:12px;color:#6b7280}
+        .tag{display:inline-block;margin-top:6px;padding:4px 10px;border-radius:999px;background:#d1fae5;color:#047857;font-weight:600;font-size:12px}
+        .row{display:flex;justify-content:space-between;margin:8px 0;font-size:13px}
+        hr{border:0;border-top:1px solid #e6e6e6;margin:12px 0}
+      </style></head><body>
+      <div class="card">
+        <div class="header">${logoHtml}<div>
+          <div class="title">${millName}</div>
+          <div class="addr">${millAddress}</div>
+          <div class="tag">${gateTypeLabel}</div>
+        </div></div>
+        <hr/>
+        <div class="row"><div>Gate Pass No</div><div>${
+          row.gatePassNo || "-"
+        }</div></div>
+        <div class="row"><div>Date</div><div>${
+          row.createdAt ? new Date(row.createdAt).toLocaleString() : "-"
+        }</div></div>
+        <div class="row"><div>Truck No</div><div>${
+          row.truckNo || "-"
+        }</div></div>
+        <div class="row"><div>Supplier</div><div>${
+          row.supplier || "-"
+        }</div></div>
+        <div class="row"><div>Item</div><div>${row.itemType || "-"}</div></div>
+        <div class="row"><div>Transporter</div><div>${
+          row.transporter || "-"
+        }</div></div>
+        <div class="row"><div>Driver</div><div>${
+          row.driverName || "-"
+        }</div></div>
+        <hr/>
+        <div style="color:#6b7280;font-size:12px">${row.remarks || ""}</div>
+      </div>
+      <script>window.print();</script>
+      </body></html>
+    `;
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // CSV export (current filtered visible rows)
+  const exportCsv = () => {
+    if (!rows || rows.length === 0) {
+      toast.error("No rows to export.");
+      return;
+    }
+    const csv = rowsToCsv(rows);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `GatePass_IN_page${page}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Download PDF via print: open print for whole filtered table (we can create a printable view of the table)
+  const exportPdf = () => {
+    // create printable HTML for current rows
+    const millName = settings?.name || settings?.companyName || "Rice Mill";
+    const millAddress = settings?.address || settings?.companyAddress || "";
+    const logo = settings?.logoUrl || settings?.logo || "";
+
+    let rowsHtml = rows
+      .map(
+        (r) => `
+      <tr>
+        <td>${
+          r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "-"
+        }</td>
+        <td>${r.gatePassNo || ""}</td>
+        <td>${r.truckNo || ""}</td>
+        <td>${r.supplier || ""}</td>
+        <td>${r.itemType || ""}</td>
+        <td>${r.transporter || ""}</td>
+        <td>${r.driverName || ""}</td>
+      </tr>
+    `
+      )
+      .join("");
+
+    const html = `
+      <html><head><title>Gate Passes</title>
+      <style>
+        body{font-family:system-ui;padding:20px}
+        .hdr{display:flex;align-items:center;gap:10px}
+        table{width:100%;border-collapse:collapse;margin-top:12px}
+        th,td{border:1px solid #e5e7eb;padding:6px;text-align:left;font-size:12px}
+        th{background:#f0fdf4;color:#065f46}
+      </style></head><body>
+      <div class="hdr">${
+        logo
+          ? `<img src="${logo}" style="height:36px"/>`
+          : '<div style="width:36px;height:36px;background:#ecfdf5;color:#047857;display:inline-flex;align-items:center;justify-content:center;border-radius:6px">GP</div>'
+      }<div><div style="font-weight:700">${millName}</div><div style="font-size:12px;color:#6b7280">${millAddress}</div></div></div>
+      <table><thead><tr><th>Date</th><th>GatePassNo</th><th>Truck</th><th>Supplier</th><th>Item</th><th>Transporter</th><th>Driver</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+      <script>window.print();</script></body></html>
+    `;
+    const win = window.open("", "_blank", "width=900,height=700");
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // filter apply helper
+  const applyFilter = () => {
+    setPage(1);
+    setFilterOpen(false);
+    fetchRows();
+  };
 
   return (
-    <div className="space-y-6">
-      <Toaster />
-      <style>{printStyles}</style>
+    <div className="space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        className="bg-white rounded-xl shadow p-4 space-y-4"
+      >
+        <h2 className="text-lg font-semibold text-emerald-700">
+          Inward Gate Pass
+        </h2>
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded-2xl shadow-sm p-4 border-l-4 border-emerald-400">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-gray-500">Today IN count</div>
-              <div className="text-2xl font-bold text-emerald-800">
-                {stats.count || 0}
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Truck No <span className="text-red-500">*</span>
+            </label>
+            <input
+              name="truckNo"
+              value={form.truckNo}
+              onChange={handleChange}
+              placeholder="ABC-1234"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none transition ${
+                errors.truckNo ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.truckNo && (
+              <p className="text-xs text-red-500 mt-1">{errors.truckNo}</p>
+            )}
+            <p className="text-xs text-gray-400 mt-1">
+              Format: ABC-123 or AB-1234 (caps letters, hyphen, digits)
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Supplier <span className="text-red-500">*</span>
+            </label>
+            <input
+              name="supplier"
+              value={form.supplier}
+              onChange={handleChange}
+              placeholder="Supplier name"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.supplier ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.supplier && (
+              <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
+            )}
+            {/* suggestions only when there is an error */}
+            {supplierSuggestions.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                <span className="text-xs text-gray-400 mr-1">Suggestions:</span>
+                {supplierSuggestions.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => {
+                      setForm((f) => ({ ...f, supplier: s }));
+                      clearFieldError("supplier");
+                    }}
+                    className="text-xs px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Item Type <span className="text-red-500">*</span>
+            </label>
+            <select
+              name="itemType"
+              value={form.itemType}
+              onChange={handleChange}
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.itemType ? "border-red-500" : "border-gray-300"
+              }`}
+            >
+              <option value="">Select item</option>
+              <option value="Paddy">Paddy</option>
+              <option value="Machinery">Machinery</option>
+              <option value="Raw Material">Raw Material</option>
+              <option value="Packaging">Packaging Material</option>
+              <option value="Other">Other</option>
+            </select>
+            {errors.itemType && (
+              <p className="text-xs text-red-500 mt-1">{errors.itemType}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Transporter
+            </label>
+            <input
+              name="transporter"
+              value={form.transporter}
+              onChange={handleChange}
+              placeholder="Optional"
+              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Driver Name
+            </label>
+            <input
+              name="driverName"
+              value={form.driverName}
+              onChange={handleChange}
+              placeholder="Driver name"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.driverName ? "border-red-500" : "border-gray-300"
+              }`}
+            />
+            {errors.driverName && (
+              <p className="text-xs text-red-500 mt-1">{errors.driverName}</p>
+            )}
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-sm font-medium mb-1">Remarks</label>
+            <textarea
+              name="remarks"
+              value={form.remarks}
+              onChange={handleChange}
+              rows={2}
+              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm shadow hover:bg-emerald-700"
+          >
+            {editingId ? "Update Gate Pass" : "Save Gate Pass"}
+          </button>
+
+          {editingId && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditingId(null);
+                setForm({
+                  truckNo: "",
+                  supplier: "",
+                  itemType: "",
+                  transporter: "",
+                  driverName: "",
+                  remarks: "",
+                });
+                setErrors({});
+              }}
+              className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-xs"
+            >
+              Cancel Edit
+            </button>
+          )}
+        </div>
+      </form>
+
+      {/* Filter overlay + download controls */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 relative">
+          <button
+            onClick={() => setFilterOpen((s) => !s)}
+            className="p-2 rounded bg-emerald-50 hover:bg-emerald-100"
+          >
+            <Funnel className="w-4 h-4 text-emerald-700" />
+          </button>
+
+          {/* filter panel as overlay to avoid layout jump */}
+          {filterOpen && (
+            <div className="fixed top-24 right-6 z-40 bg-white border rounded p-3 shadow transition">
+              <div className="flex gap-2 items-center">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="search truck/supplier/gp no"
+                  className="rounded border px-2 py-1 text-sm outline-none"
+                />
+                <select
+                  value={itemFilter}
+                  onChange={(e) => setItemFilter(e.target.value)}
+                  className="rounded border px-2 py-1 text-sm outline-none"
+                >
+                  <option value="">All item types</option>
+                  <option value="Paddy">Paddy</option>
+                  <option value="Machinery">Machinery</option>
+                  <option value="Raw Material">Raw Material</option>
+                  <option value="Packaging">Packaging</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={applyFilter}
+                  className="px-2 py-1 bg-emerald-600 text-white rounded text-sm"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={() => {
+                    setFilterOpen(false);
+                    setSearchQuery("");
+                    setItemFilter("");
+                    fetchRows();
+                  }}
+                  className="px-2 py-1 bg-gray-100 rounded text-sm"
+                >
+                  Clear
+                </button>
               </div>
             </div>
-            <div className="bg-emerald-100 p-2 rounded-full">
-              <LogIn className="text-emerald-700" />
-            </div>
-          </div>
-          <div className="mt-2 text-xs text-gray-400">
-            Last updated: {stats.lastUpdatedTime}
-          </div>
+          )}
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm p-4 border-l-4 border-emerald-300">
-          <div>
-            <div className="text-sm text-gray-500">
-              Total IN net weight (today)
-            </div>
-            <div className="text-2xl font-bold text-emerald-800">
-              {stats.totalNetWeight || 0} kg
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm p-4 border-l-4 border-emerald-200">
-          <div>
-            <div className="text-sm text-gray-500">Next GatePass (preview)</div>
-            <div className="text-lg font-semibold text-emerald-800">
-              {stats.nextGatePassNo || "Auto"}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Form */}
-      <div className="bg-[#E8F9F1] rounded-xl p-6 border border-emerald-100 shadow-sm">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold text-emerald-800">
-            Add IN Gate Pass
-          </h3>
-        </div>
-
-        <div className="grid grid-cols-4 gap-4">
-          <input
-            ref={(el) => setInputRef(el, 0)}
-            className="bg-white border rounded px-3 py-2"
-            type="date"
-            name="date"
-            value={form.date}
-            onChange={handleChange}
-            placeholder="Date"
-            aria-label="date"
-          />
-
-          <select
-            ref={(el) => setInputRef(el, 1)}
-            className="bg-white border rounded px-3 py-2"
-            name="companyId"
-            value={form.companyId}
-            onChange={(e) => {
-              const id = e.target.value;
-              const c = companies.find((x) => x._id === id);
-              setForm((s) => ({
-                ...s,
-                companyId: id,
-                companyName: c?.name || "",
-              }));
-            }}
-            aria-label="company"
+        <div className="relative">
+          <button
+            onClick={() => setDownloadMenuOpen((s) => !s)}
+            className="flex items-center gap-2 px-3 py-1 rounded bg-emerald-50 hover:bg-emerald-100"
           >
-            <option value="">Select Company</option>
-            {companies.map((c) => (
-              <option key={c._id} value={c._id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+            <Download className="w-4 h-4 text-emerald-700" />
+            <span className="text-sm text-emerald-700">Download</span>
+            <ChevronDown className="w-4 h-4 text-emerald-700" />
+          </button>
 
-          <select
-            ref={(el) => setInputRef(el, 2)}
-            className="bg-white border rounded px-3 py-2"
-            name="productTypeId"
-            value={form.productTypeId}
-            onChange={(e) => {
-              const id = e.target.value;
-              const p = products.find((x) => x._id === id);
-              setForm((s) => ({
-                ...s,
-                productTypeId: id,
-                productTypeName: p?.name || "",
-              }));
-            }}
-            aria-label="product"
-          >
-            <option value="">Select Product</option>
-            {products.map((p) => (
-              <option key={p._id} value={p._id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-
-          <input
-            ref={(el) => setInputRef(el, 3)}
-            className="bg-white border rounded px-3 py-2"
-            type="number"
-            name="numBags"
-            value={form.numBags}
-            onChange={handleNumeric}
-            placeholder="No. of bags"
-            aria-label="numBags"
-          />
-
-          <input
-            ref={(el) => setInputRef(el, 4)}
-            className="bg-white border rounded px-3 py-2"
-            type="number"
-            name="bagWeightKg"
-            value={form.bagWeightKg}
-            onChange={handleNumeric}
-            placeholder="Bag weight (kg)"
-            aria-label="bagWeightKg"
-          />
-
-          <input
-            ref={(el) => setInputRef(el, 5)}
-            className="bg-white border rounded px-3 py-2"
-            type="number"
-            name="emptyBagWeightKg"
-            value={form.emptyBagWeightKg}
-            onChange={handleNumeric}
-            placeholder="Empty bag weight"
-            aria-label="emptyBagWeightKg"
-          />
-
-          {/* Remarks spanning full row to avoid stray empty cell */}
-          <input
-            ref={(el) => setInputRef(el, 6)}
-            className="bg-white border rounded px-3 py-2 col-span-4"
-            type="text"
-            name="remarks"
-            value={form.remarks}
-            onChange={handleChange}
-            placeholder="Remarks"
-            aria-label="remarks"
-          />
-        </div>
-
-        <div className="mt-4 flex justify-between items-center">
-          <div className="text-sm text-gray-600">
-            Net weight (auto):{" "}
-            <span className="font-semibold text-emerald-700">
-              {computeNet(form)} kg
-            </span>
-          </div>
-          <div>
-            <button
-              onClick={handleSave}
-              disabled={loading}
-              className="bg-emerald-700 text-white px-5 py-2 rounded shadow hover:bg-emerald-800"
-            >
-              {loading ? "Saving..." : "Save IN GatePass"}
-            </button>
-          </div>
+          {downloadMenuOpen && (
+            <div className="absolute right-0 mt-2 bg-white border rounded shadow p-2 z-40">
+              <button
+                onClick={() => {
+                  exportCsv();
+                  setDownloadMenuOpen(false);
+                }}
+                className="block w-full text-left px-3 py-1 text-sm hover:bg-emerald-50"
+              >
+                Excel / CSV
+              </button>
+              <button
+                onClick={() => {
+                  exportPdf();
+                  setDownloadMenuOpen(false);
+                }}
+                className="block w-full text-left px-3 py-1 text-sm hover:bg-emerald-50"
+              >
+                PDF
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl shadow-sm border">
-        <div className="flex items-center justify-between p-3 border-b">
-          <div className="flex items-center gap-3">
+      <div className="bg-white rounded-xl shadow overflow-x-auto transition-all">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="bg-emerald-50 text-emerald-900">
+              <th className="px-3 py-2 text-left">Date</th>
+              <th className="px-3 py-2 text-left">Gate Pass No</th>
+              <th className="px-3 py-2 text-left">Truck No</th>
+              <th className="px-3 py-2 text-left">Supplier</th>
+              <th className="px-3 py-2 text-left">Item Type</th>
+              <th className="px-3 py-2 text-left">Transporter</th>
+              <th className="px-3 py-2 text-left">Driver</th>
+              <th className="px-3 py-2 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
+              <tr>
+                <td colSpan={8} className="px-3 py-4 text-center text-gray-400">
+                  Loading...
+                </td>
+              </tr>
+            )}
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-3 py-4 text-center text-gray-400">
+                  No inward gate passes found.
+                </td>
+              </tr>
+            )}
+            {!loading &&
+              rows.map((row) => (
+                <tr
+                  key={row._id}
+                  className="border-t border-gray-100 hover:bg-gray-50"
+                >
+                  <td className="px-3 py-2">
+                    {row.createdAt
+                      ? new Date(row.createdAt).toLocaleDateString()
+                      : "-"}
+                  </td>
+                  <td className="px-3 py-2">{row.gatePassNo || "-"}</td>
+                  <td className="px-3 py-2">{row.truckNo || "-"}</td>
+                  <td className="px-3 py-2">{row.supplier || "-"}</td>
+                  <td className="px-3 py-2">{row.itemType || "-"}</td>
+                  <td className="px-3 py-2">{row.transporter || "-"}</td>
+                  <td className="px-3 py-2">{row.driverName || "-"}</td>
+                  <td className="px-3 py-2 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => handleEdit(row)}
+                        className="p-1 rounded hover:bg-emerald-50"
+                        title="Edit"
+                      >
+                        <Edit2 className="w-4 h-4 text-emerald-600" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(row)}
+                        className="p-1 rounded hover:bg-red-50"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-500" />
+                      </button>
+                      <button
+                        onClick={() => openPrintWindow(row)}
+                        className="p-1 rounded hover:bg-gray-100"
+                        title="Print"
+                      >
+                        <Printer className="w-4 h-4 text-gray-700" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+
+        <div className="flex items-center justify-between px-3 py-2 border-t border-gray-100 text-xs">
+          <span className="text-gray-500">
+            Page {page} of {totalPages}
+          </span>
+          <div className="flex gap-2">
             <button
-              className="flex items-center gap-2 px-3 py-1 bg-emerald-50 border rounded hover:bg-emerald-100"
-              onClick={() => setCsvOpen(true)}
-            >
-              <Download size={16} /> Export CSV
-            </button>
-          </div>
-
-          {/* FILTER BUTTON */}
-          <Popover.Root>
-            <Popover.Trigger asChild>
-              <button className="flex gap-2 items-center px-3 py-1 bg-gray-100 border rounded hover:bg-gray-200">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M3 4a1 1 0 012 0v1h14V4a1 1 0 112 0v1a1 1 0 01-1 1h-1l-5 7v6a1 1 0 01-.553.894l-4 2A1 1 0 018 20v-8L3 6H2a1 1 0 01-1-1V4z"
-                  />
-                </svg>
-                Filters
-              </button>
-            </Popover.Trigger>
-
-            <Popover.Content
-              side="bottom"
-              align="end"
-              className="bg-white shadow-xl border rounded-lg p-4 w-80 z-50"
-            >
-              <div className="space-y-3">
-                {/* DATE RANGE */}
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={filters.from}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, from: e.target.value }))
-                    }
-                    className="border rounded px-2 py-1 text-sm"
-                  />
-                  <input
-                    type="date"
-                    value={filters.to}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, to: e.target.value }))
-                    }
-                    className="border rounded px-2 py-1 text-sm"
-                  />
-                </div>
-
-                {/* COMPANY */}
-                <select
-                  value={filters.companyId}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, companyId: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                >
-                  <option value="">All Companies</option>
-                  {companies.map((c) => (
-                    <option key={c._id} value={c._id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-
-                {/* PRODUCT */}
-                <select
-                  value={filters.productTypeId}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, productTypeId: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                >
-                  <option value="">All Products</option>
-                  {products.map((p) => (
-                    <option key={p._id} value={p._id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-
-                {/* OUT ONLY: RATE TYPE */}
-                {form.rateType !== undefined && (
-                  <select
-                    value={filters.rateType}
-                    onChange={(e) =>
-                      setFilters((f) => ({ ...f, rateType: e.target.value }))
-                    }
-                    className="border rounded px-3 py-1 w-full text-sm"
-                  >
-                    <option value="">All Rate Types</option>
-                    <option value="per_bag">Per Bag</option>
-                    <option value="per_kg">Per Kg</option>
-                  </select>
-                )}
-
-                {/* SEARCH */}
-                <input
-                  type="text"
-                  placeholder="Search GP, Company, Product..."
-                  value={filters.search}
-                  onChange={(e) =>
-                    setFilters((f) => ({ ...f, search: e.target.value }))
-                  }
-                  className="border rounded px-3 py-1 w-full text-sm"
-                />
-
-                {/* BUTTONS */}
-                <div className="flex justify-between mt-2">
-                  <button
-                    onClick={() =>
-                      setFilters({
-                        from: "",
-                        to: "",
-                        companyId: "",
-                        productTypeId: "",
-                        rateType: "",
-                        search: "",
-                      })
-                    }
-                    className="text-sm px-3 py-1 bg-gray-100 border rounded hover:bg-gray-200"
-                  >
-                    Clear
-                  </button>
-
-                  <Popover.Close asChild>
-                    <button className="text-sm px-4 py-1 bg-red-700 text-white rounded hover:bg-red-800">
-                      Apply
-                    </button>
-                  </Popover.Close>
-                </div>
-              </div>
-            </Popover.Content>
-          </Popover.Root>
-
-          {/* Pagination controls */}
-          <div className="flex items-center gap-2">
-            <button
-              className="px-3 py-1 border rounded"
-              onClick={() => goToPage(page - 1)}
               disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className={`px-3 py-1 rounded border ${
+                page <= 1
+                  ? "border-gray-200 text-gray-300"
+                  : "border-gray-300 text-gray-700"
+              }`}
             >
               Previous
             </button>
-
-            {Array.from({ length: totalPages }).map((_, i) => {
-              const p = i + 1;
-              return (
-                <button
-                  key={`pg-${p}`}
-                  onClick={() => goToPage(p)}
-                  className={`px-3 py-1 rounded ${
-                    p === page ? "bg-emerald-700 text-white" : "border"
-                  }`}
-                >
-                  {p}
-                </button>
-              );
-            })}
-
             <button
-              className="px-3 py-1 border rounded"
-              onClick={() => goToPage(page + 1)}
               disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className={`px-3 py-1 rounded border ${
+                page >= totalPages
+                  ? "border-gray-200 text-gray-300"
+                  : "border-gray-300 text-gray-700"
+              }`}
             >
               Next
             </button>
           </div>
         </div>
-
-        <table className="w-full text-sm">
-          <thead className="bg-[#E6F9F0] text-emerald-800">
-            <tr>
-              <th className="p-3 text-left">GP No</th>
-              <th className="p-3 text-left">Date</th>
-              <th className="p-3 text-left">Company</th>
-              <th className="p-3 text-left">Product</th>
-              <th className="p-3 text-right">Bags</th>
-              <th className="p-3 text-right">Net Wt (kg)</th>
-              <th className="p-3 text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pagedList.map((g, idx) => (
-              <tr
-                key={g._id}
-                className={`${idx % 2 ? "bg-white" : "bg-gray-50"} border-b ${
-                  selectedId === g._id ? "ring-2 ring-emerald-200" : ""
-                }`}
-                onClick={() => onRowClick(g._id)}
-              >
-                <td className="p-3">{g.gatePassNo}</td>
-                <td className="p-3">{new Date(g.date).toLocaleDateString()}</td>
-                <td className="p-3">{g.companyName}</td>
-                <td className="p-3">{g.productTypeName}</td>
-                <td className="p-3 text-right">{g.numBags}</td>
-                <td className="p-3 text-right">{g.netWeightKg}</td>
-                <td className="p-3 text-center flex justify-center gap-3">
-                  <Edit
-                    className="cursor-pointer text-blue-600"
-                    size={18}
-                    onClick={() => openEdit(g)}
-                  />
-                  <Trash2
-                    className="cursor-pointer text-red-600"
-                    size={18}
-                    onClick={() => confirmDelete(g._id)}
-                  />
-                  <Printer
-                    className="cursor-pointer text-emerald-700"
-                    size={18}
-                    onClick={() => openPrint(g._id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
-
-      {/* CSV Export Dialog */}
-      <Dialog.Root open={csvOpen} onOpenChange={setCsvOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl shadow-xl p-5 w-[420px]">
-            <Dialog.Title className="text-lg font-semibold">
-              Export CSV
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 mb-3">
-              Choose filename and scope (current page or all entries).
-            </Dialog.Description>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm block mb-1">Filename</label>
-                <input
-                  value={csvFilename}
-                  onChange={(e) => setCsvFilename(e.target.value)}
-                  className="w-full border rounded px-3 py-2"
-                  placeholder={`IN-GatePass-${new Date()
-                    .toISOString()
-                    .slice(0, 10)}.csv`}
-                />
-              </div>
-
-              <div>
-                <label className="text-sm block mb-1">Scope</label>
-                <div className="flex gap-3">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      name="scope-in"
-                      checked={csvScope === "current"}
-                      onChange={() => setCsvScope("current")}
-                    />{" "}
-                    Current page
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      name="scope-in"
-                      checked={csvScope === "all"}
-                      onChange={() => setCsvScope("all")}
-                    />{" "}
-                    All entries
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-3">
-                <button
-                  className="px-4 py-2 border rounded"
-                  onClick={() => setCsvOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="px-4 py-2 bg-emerald-700 text-white rounded"
-                  onClick={handleExportCSV}
-                >
-                  Export
-                </button>
-              </div>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      {/* Print Dialog (card-sized) */}
-      {printData && (
-        <Dialog.Root open={true} onOpenChange={() => setPrintData(null)}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-            <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl shadow-xl p-5 w-[380px] print-card">
-              <Dialog.Title className="text-center text-lg font-semibold">
-                Gate Pass (IN)
-              </Dialog.Title>
-              <Dialog.Description className="text-center text-sm text-gray-500 mb-3">
-                Card-sized print preview
-              </Dialog.Description>
-
-              <div className="text-sm space-y-1">
-                <div>
-                  <strong>GP No:</strong> {printData.gatePassNo}
-                </div>
-                <div>
-                  <strong>Date:</strong>{" "}
-                  {new Date(printData.date).toLocaleString()}
-                </div>
-                <div>
-                  <strong>Company:</strong> {printData.companyName}
-                </div>
-                <div>
-                  <strong>Product:</strong> {printData.productTypeName}
-                </div>
-                <div>
-                  <strong>Bags:</strong> {printData.numBags}
-                </div>
-                <div>
-                  <strong>Net Wt:</strong> {printData.netWeightKg} kg
-                </div>
-                <div>
-                  <strong>Remarks:</strong> {printData.remarks || "-"}
-                </div>
-              </div>
-
-              <div className="mt-4 flex gap-2">
-                <button
-                  className="flex-1 bg-emerald-700 text-white py-2 rounded"
-                  onClick={() => window.print()}
-                >
-                  Print
-                </button>
-                <button
-                  className="flex-1 border py-2 rounded"
-                  onClick={() => setPrintData(null)}
-                >
-                  Close
-                </button>
-              </div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-      )}
-
-      {/* Edit Dialog */}
-      <Dialog.Root open={editOpen} onOpenChange={setEditOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl shadow-xl p-5 w-[480px]">
-            <Dialog.Title className="text-lg font-semibold">
-              Edit IN Gate Pass
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 mb-3">
-              Modify fields and click Update. GatePassNo cannot be changed.
-            </Dialog.Description>
-
-            {editData && (
-              <div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    className="bg-gray-100 border rounded px-3 py-2"
-                    value={editData.companyName || ""}
-                    disabled
-                  />
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.numBags || ""}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        numBags: e.target.value.replace(/^0+(?=\d)/, ""),
-                      }))
-                    }
-                  />
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.bagWeightKg || ""}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        bagWeightKg: e.target.value.replace(/^0+(?=\d)/, ""),
-                      }))
-                    }
-                  />
-                  <input
-                    className="border rounded px-3 py-2"
-                    type="number"
-                    value={editData.emptyBagWeightKg || ""}
-                    onChange={(e) =>
-                      setEditData((d) => ({
-                        ...d,
-                        emptyBagWeightKg: e.target.value.replace(
-                          /^0+(?=\d)/,
-                          ""
-                        ),
-                      }))
-                    }
-                  />
-                  <input
-                    className="col-span-2 border rounded px-3 py-2"
-                    value={editData.remarks || ""}
-                    onChange={(e) =>
-                      setEditData((d) => ({ ...d, remarks: e.target.value }))
-                    }
-                  />
-                </div>
-
-                <div className="mt-4 flex justify-end gap-3">
-                  <button
-                    className="px-4 py-2 border rounded"
-                    onClick={() => setEditOpen(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="px-4 py-2 bg-emerald-700 text-white rounded"
-                    onClick={handleUpdate}
-                  >
-                    Update
-                  </button>
-                </div>
-              </div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      {/* Delete Dialog */}
-      <Dialog.Root open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/40" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-xl shadow-xl p-5 w-[400px]">
-            <Dialog.Title className="text-lg font-semibold text-center">
-              Confirm Delete
-            </Dialog.Title>
-            <Dialog.Description className="text-sm text-gray-500 text-center mb-3">
-              This action cannot be undone.
-            </Dialog.Description>
-
-            <div className="mt-4 flex justify-center gap-3">
-              <button
-                className="px-4 py-2 border rounded"
-                onClick={() => setDeleteOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 bg-red-600 text-white rounded"
-                onClick={doDelete}
-              >
-                Delete
-              </button>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
     </div>
   );
 }
