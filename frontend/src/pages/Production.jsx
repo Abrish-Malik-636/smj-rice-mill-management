@@ -14,18 +14,6 @@ import {
   Printer,
   X,
 } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  CartesianGrid,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-  BarChart,
-  Bar,
-} from "recharts";
 
 function todayISODate() {
   const d = new Date();
@@ -40,9 +28,6 @@ export default function Production() {
     totalOutputWeightKg: 0,
     batchCount: 0,
   });
-
-  const [weeklyData, setWeeklyData] = useState([]);
-  const [shiftCompareData, setShiftCompareData] = useState([]);
 
   const [activeTab, setActiveTab] = useState("IN_PROCESS");
   const [inProcessBatches, setInProcessBatches] = useState([]);
@@ -96,10 +81,6 @@ export default function Production() {
     loadBatches();
     loadMillInfo();
   }, []);
-
-  useEffect(() => {
-    buildChartsFromBatches(completedBatches);
-  }, [completedBatches]);
 
   // Auto net weight = bags * perBagWeightKg
   useEffect(() => {
@@ -209,57 +190,6 @@ export default function Production() {
     } catch {
       toast.error("Failed to load batch details");
     }
-  }
-
-  function buildChartsFromBatches(batches) {
-    const days = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      days.push({ key, date: d });
-    }
-
-    const lineData = days.map((d) => {
-      const dayStr = d.key;
-      const sameDayBatches = batches.filter((b) => {
-        const bDay = new Date(b.date).toISOString().slice(0, 10);
-        return bDay === dayStr;
-      });
-
-      let total = 0;
-      let day = 0;
-      let night = 0;
-      sameDayBatches.forEach((b) => {
-        total += b.totalOutputWeightKg || 0;
-        day += b.dayShiftOutputWeightKg || 0;
-        night += b.nightShiftOutputWeightKg || 0;
-      });
-
-      return {
-        label: d.date.toLocaleDateString(undefined, {
-          day: "2-digit",
-          month: "short",
-        }),
-        total: +total.toFixed(3),
-        day: +day.toFixed(3),
-        night: +night.toFixed(3),
-      };
-    });
-
-    setWeeklyData(lineData);
-
-    let sumDay = 0;
-    let sumNight = 0;
-    batches.forEach((b) => {
-      sumDay += b.dayShiftOutputWeightKg || 0;
-      sumNight += b.nightShiftOutputWeightKg || 0;
-    });
-
-    setShiftCompareData([
-      { name: "Day Shift", day: sumDay, night: 0 },
-      { name: "Night Shift", day: 0, night: sumNight },
-    ]);
   }
 
   async function handleCreateBatch() {
@@ -1016,85 +946,6 @@ export default function Production() {
               Select a batch from the left or create a new one.
             </div>
           )}
-        </div>
-      </div>
-
-      {/* Charts below */}
-      <div className="grid grid-cols-5 gap-4">
-        {/* Weekly line chart */}
-        <div className="col-span-3 bg-white rounded-xl shadow p-4 border">
-          <div className="flex justify-between mb-2">
-            <div>
-              <div className="text-sm font-semibold text-emerald-800">
-                Weekly Production
-              </div>
-              <div className="text-xs text-gray-500">
-                Total, day & night shift output over last 7 days
-              </div>
-            </div>
-          </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={weeklyData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="total"
-                  name="Total"
-                  stroke="#0EA5E9"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="day"
-                  name="Day"
-                  stroke="#22C55E"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="night"
-                  name="Night"
-                  stroke="#F97316"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Day vs Night bar */}
-        <div className="col-span-2 bg-white rounded-xl shadow p-4 border">
-          <div className="flex justify-between mb-2">
-            <div>
-              <div className="text-sm font-semibold text-emerald-800">
-                Day vs Night Output
-              </div>
-              <div className="text-xs text-gray-500">
-                Comparison of last 7 days production
-              </div>
-            </div>
-          </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={shiftCompareData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="day" name="Day" fill="#22C55E" />
-                <Bar dataKey="night" name="Night" fill="#F97316" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
         </div>
       </div>
 

@@ -5,14 +5,16 @@ import { toast } from "react-hot-toast";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
 
-const TYPE_OPTIONS = ["Operational", "Administrative", "Capital", "Payroll", "Utilities", "Maintenance", "Other"];
+const CATEGORY_OPTIONS = ["Machinery", "Equipment", "Vehicle", "Furniture", "IT & Electronics", "Other"];
+const CONDITION_OPTIONS = ["Good", "Fair", "Poor", "Under Maintenance"];
 
-export default function ExpenseCategoryManager() {
-  const [categories, setCategories] = useState([]);
+export default function ManagerialStockManager() {
+  const [items, setItems] = useState([]);
   const [formData, setFormData] = useState({
     name: "",
-    code: "",
-    type: "",
+    category: "",
+    unit: "Nos",
+    condition: "",
     description: "",
   });
   const [errors, setErrors] = useState({});
@@ -22,17 +24,17 @@ export default function ExpenseCategoryManager() {
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState({ open: false, id: null, name: "" });
 
-  const fetchCategories = async () => {
+  const fetchItems = async () => {
     try {
-      const res = await api.get("/expense-categories");
-      setCategories(res.data.data || []);
+      const res = await api.get("/managerial-stock");
+      setItems(res.data.data || []);
     } catch (err) {
-      toast.error("Failed to load expense categories");
+      toast.error("Failed to load managerial stock");
     }
   };
 
   useEffect(() => {
-    fetchCategories();
+    fetchItems();
   }, []);
 
   const normalizeText = (text) => (text ? text.toLowerCase().trim().replace(/\s+/g, " ") : "");
@@ -42,11 +44,11 @@ export default function ExpenseCategoryManager() {
     setCheckingDuplicate(true);
     try {
       const normalized = normalizeText(name);
-      const existing = categories.find(
-        (c) =>
-          (excludeId && c._id === excludeId) ||
-          normalizeText(c.name) === normalized ||
-          normalizeText(c.name).includes(normalized)
+      const existing = items.find(
+        (i) =>
+          (excludeId && i._id === excludeId) ||
+          normalizeText(i.name) === normalized ||
+          normalizeText(i.name).includes(normalized)
       );
       return existing ? existing.name : null;
     } finally {
@@ -57,19 +59,22 @@ export default function ExpenseCategoryManager() {
   const getFieldError = (name, value) => {
     switch (name) {
       case "name":
-        if (!value || !String(value).trim()) return "Category name is required";
-        if (String(value).trim().length < 2) return "Category name must be at least 2 characters";
-        if (String(value).trim().length > 50) return "Category name must not exceed 50 characters";
+        if (!value.trim()) return "Item name is required";
+        if (value.trim().length < 2) return "Item name must be at least 2 characters";
+        if (value.trim().length > 80) return "Item name must not exceed 80 characters";
         return null;
-      case "code":
-        if (String(value).trim().length > 20) return "Code must not exceed 20 characters";
+      case "category":
+        if (!value.trim()) return "Category is required";
         return null;
-      case "type":
-        if (!value || !String(value).trim()) return "Category type is required for financial reporting";
-        if (!TYPE_OPTIONS.includes(String(value).trim())) return "Select a valid type";
+      case "unit":
+        if (!value.trim()) return "Unit is required";
+        if (value.trim().length > 20) return "Unit must not exceed 20 characters";
+        return null;
+      case "condition":
+        if (value.trim() && !CONDITION_OPTIONS.includes(value.trim())) return "Select a valid condition";
         return null;
       case "description":
-        if (String(value).trim().length > 200) return "Description must not exceed 200 characters";
+        if (value.trim().length > 200) return "Description must not exceed 200 characters";
         return null;
       default:
         return null;
@@ -78,69 +83,70 @@ export default function ExpenseCategoryManager() {
 
   const validateField = async (name, value) => {
     let msg = getFieldError(name, value);
-    if (name === "name" && value && String(value).trim() && !msg) {
+    if (name === "name" && !msg) {
       const dup = await checkDuplicate(value, editingId);
-      if (dup) msg = `Similar category exists: "${dup}"`;
+      if (dup) msg = `Similar item exists: "${dup}"`;
     }
     setErrors((prev) => (msg ? { ...prev, [name]: msg } : { ...prev, [name]: undefined }));
     setTouched((prev) => ({ ...prev, [name]: true }));
   };
 
   const validateAll = async () => {
-    setTouched({ name: true, code: true, type: true, description: true });
+    setTouched({ name: true, category: true, unit: true, condition: true, description: true });
     const newErrors = {};
-    ["name", "code", "type", "description"].forEach((name) => {
+    ["name", "category", "unit", "condition", "description"].forEach((name) => {
       const msg = getFieldError(name, formData[name]);
       if (msg) newErrors[name] = msg;
     });
-    if (!newErrors.name && formData.name && formData.name.trim()) {
+    if (!newErrors.name && formData.name.trim()) {
       const dup = await checkDuplicate(formData.name, editingId);
-      if (dup) newErrors.name = `Similar category exists: "${dup}"`;
+      if (dup) newErrors.name = `Similar item exists: "${dup}"`;
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleChange = async (e) => {
+  const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    if (touched[name] || value.length > 0) await validateField(name, value);
+    if (touched[name] || value.length > 0) validateField(name, value);
   };
 
-  const handleBlur = async (e) => {
+  const handleBlur = (e) => {
     const { name, value } = e.target;
-    await validateField(name, value);
+    validateField(name, value);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const isValid = await validateAll();
     if (!isValid) {
-      toast.error("Please fill all required fields (Name and Type are required).");
+      toast.error("Please fill all required fields correctly.");
       return;
     }
     setLoading(true);
     try {
       const payload = {
         name: formData.name.trim(),
-        code: formData.code.trim() || "",
-        type: formData.type.trim(),
+        category: formData.category.trim(),
+        unit: formData.unit.trim() || "Nos",
+        condition: formData.condition.trim() || "",
         description: formData.description.trim() || "",
       };
       if (editingId) {
-        await api.put(`/expense-categories/${editingId}`, payload);
-        toast.success("Expense category updated successfully");
+        await api.put(`/managerial-stock/${editingId}`, payload);
+        toast.success("Item updated successfully");
       } else {
-        await api.post("/expense-categories", payload);
-        toast.success("Expense category added successfully");
+        await api.post("/managerial-stock", payload);
+        toast.success("Item added successfully");
       }
-      setFormData({ name: "", code: "", type: "", description: "" });
+      setFormData({ name: "", category: "", unit: "Nos", condition: "", description: "" });
       setEditingId(null);
       setErrors({});
       setTouched({});
-      fetchCategories();
+      fetchItems();
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to save category");
+      toast.error(err.response?.data?.message || "Failed to save item");
     } finally {
       setLoading(false);
     }
@@ -151,12 +157,12 @@ export default function ExpenseCategoryManager() {
   const handleDeleteConfirm = async () => {
     if (!confirmDelete.id) return;
     try {
-      await api.delete(`/expense-categories/${confirmDelete.id}`);
-      toast.success("Expense category deleted successfully");
+      await api.delete(`/managerial-stock/${confirmDelete.id}`);
+      toast.success("Item deleted successfully");
       setConfirmDelete({ open: false, id: null, name: "" });
-      fetchCategories();
+      fetchItems();
     } catch (err) {
-      toast.error("Failed to delete category");
+      toast.error("Failed to delete item");
     }
   };
 
@@ -164,8 +170,9 @@ export default function ExpenseCategoryManager() {
     setEditingId(row._id);
     setFormData({
       name: row.name || "",
-      code: row.code || "",
-      type: row.type || "",
+      category: row.category || "",
+      unit: row.unit || "Nos",
+      condition: row.condition || "",
       description: row.description || "",
     });
     setErrors({});
@@ -174,16 +181,16 @@ export default function ExpenseCategoryManager() {
 
   const cancelEdit = () => {
     setEditingId(null);
-    setFormData({ name: "", code: "", type: "", description: "" });
+    setFormData({ name: "", category: "", unit: "Nos", condition: "", description: "" });
     setErrors({});
     setTouched({});
   };
 
-  const typesFromData = categories.length ? [...new Set(categories.map((c) => c.type).filter(Boolean))].sort() : [];
   const tableColumns = [
-    { key: "name", label: "Name", filterOptions: categories.map((c) => c.name) },
-    { key: "code", label: "Code" },
-    { key: "type", label: "Type", filterOptions: typesFromData.length ? typesFromData : TYPE_OPTIONS },
+    { key: "name", label: "Name", filterOptions: items.length ? [...new Set(items.map((i) => i.name))] : [] },
+    { key: "category", label: "Category", filterOptions: CATEGORY_OPTIONS },
+    { key: "unit", label: "Unit", filterOptions: items.length ? [...new Set(items.map((i) => i.unit))] : [] },
+    { key: "condition", label: "Condition", filterOptions: CONDITION_OPTIONS },
     { key: "description", label: "Description" },
     {
       key: "actions",
@@ -206,59 +213,74 @@ export default function ExpenseCategoryManager() {
     <div className="space-y-4">
       <form onSubmit={handleSubmit} className="grid grid-cols-4 gap-4 bg-emerald-50 p-4 rounded-lg">
         <div>
-          <label className="block text-xs text-gray-600 mb-1">Category Name *</label>
+          <label className="block text-xs text-gray-600 mb-1">Item Name *</label>
           <input
             type="text"
             name="name"
             value={formData.name}
             onChange={handleChange}
             onBlur={handleBlur}
-            maxLength={50}
-            placeholder="e.g. Raw Material"
-            className={`border p-2 rounded text-sm w-full ${errors.name && touched.name ? "border-red-500 bg-red-50" : touched.name && formData.name ? "border-green-500 bg-green-50" : "border-gray-300"}`}
+            maxLength={80}
+            placeholder="e.g. Rice Mill Machine"
+            className={`border p-2 rounded text-sm w-full ${errors.name && touched.name ? "border-red-500 bg-red-50" : "border-gray-300"}`}
           />
           {errors.name && touched.name && (
             <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
               <AlertCircle size={12} /> {errors.name}
-              {formData.name && formData.name.length > 45 && <span className="text-red-400">({formData.name.length}/50)</span>}
+              {formData.name && formData.name.length > 70 && <span className="text-red-400">({formData.name.length}/80)</span>}
             </p>
           )}
         </div>
         <div>
-          <label className="block text-xs text-gray-600 mb-1">Code (for reports)</label>
-          <input
-            type="text"
-            name="code"
-            value={formData.code}
-            onChange={handleChange}
-            onBlur={handleBlur}
-            maxLength={20}
-            placeholder="e.g. OP-01"
-            className={`border p-2 rounded text-sm w-full ${errors.code && touched.code ? "border-red-500 bg-red-50" : "border-gray-300"}`}
-          />
-          {errors.code && touched.code && (
-            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.code}</p>
-          )}
-        </div>
-        <div>
-          <label className="block text-xs text-gray-600 mb-1">Type * (for financial/HR reports)</label>
+          <label className="block text-xs text-gray-600 mb-1">Category *</label>
           <select
-            name="type"
-            value={formData.type}
+            name="category"
+            value={formData.category}
             onChange={handleChange}
             onBlur={handleBlur}
-            className={`border p-2 rounded text-sm w-full ${errors.type && touched.type ? "border-red-500 bg-red-50" : "border-gray-300"}`}
+            className={`border p-2 rounded text-sm w-full ${errors.category && touched.category ? "border-red-500 bg-red-50" : "border-gray-300"}`}
           >
-            <option value="">Select type</option>
-            {TYPE_OPTIONS.map((opt) => (
+            <option value="">Select</option>
+            {CATEGORY_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
-          {errors.type && touched.type && (
-            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.type}</p>
+          {errors.category && touched.category && (
+            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.category}</p>
           )}
         </div>
         <div>
+          <label className="block text-xs text-gray-600 mb-1">Unit *</label>
+          <input
+            type="text"
+            name="unit"
+            value={formData.unit}
+            onChange={handleChange}
+            onBlur={handleBlur}
+            maxLength={20}
+            placeholder="Nos, etc."
+            className={`border p-2 rounded text-sm w-full ${errors.unit && touched.unit ? "border-red-500 bg-red-50" : "border-gray-300"}`}
+          />
+          {errors.unit && touched.unit && (
+            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.unit}</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-xs text-gray-600 mb-1">Condition</label>
+          <select
+            name="condition"
+            value={formData.condition}
+            onChange={handleChange}
+            onBlur={handleBlur}
+            className="border p-2 rounded text-sm w-full border-gray-300"
+          >
+            <option value="">—</option>
+            {CONDITION_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        </div>
+        <div className="col-span-4">
           <label className="block text-xs text-gray-600 mb-1">Description</label>
           <input
             type="text"
@@ -288,26 +310,26 @@ export default function ExpenseCategoryManager() {
             </>
           ) : (
             <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
-              <Plus size={16} /> {loading ? "Adding..." : "Add Category"}
+              <Plus size={16} /> {loading ? "Adding..." : "Add Item"}
             </button>
           )}
         </div>
       </form>
 
       <DataTable
-        title="Expense Categories"
+        title="Managerial Stock"
         columns={tableColumns}
-        data={categories}
+        data={items}
         idKey="_id"
-        searchPlaceholder="Search categories..."
-        emptyMessage="No expense categories found"
+        searchPlaceholder="Search items..."
+        emptyMessage="No managerial stock items found. Quantity is managed via Gate Pass Inward."
       />
 
       <ConfirmDialog
         open={confirmDelete.open}
         onClose={() => setConfirmDelete({ open: false, id: null, name: "" })}
         onConfirm={handleDeleteConfirm}
-        title="Delete Expense Category"
+        title="Delete Item"
         message={`Are you sure you want to delete "${confirmDelete.name}"?`}
         confirmLabel="Delete"
         variant="danger"

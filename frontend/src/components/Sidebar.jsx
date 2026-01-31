@@ -22,23 +22,52 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
 
   const menu = [
     { name: "Dashboard", icon: <Home size={18} />, path: "/" },
-    { name: "Transactions", icon: <Wallet size={18} />, path: "/financial" },
-    { name: "Stock", icon: <Box size={18} />, path: "/stock" },
-    { name: "IN/OUT Gate Pass", icon: <Truck size={18} />, path: "/gatepass" },
 
     {
-      name: "Production",
+      name: "Accounts & Finance",
+      icon: <Wallet size={18} />,
+      path: "/financial",
+    },
+
+    {
+      name: "Stock Management",
+      icon: <Box size={18} />,
+      path: "/stock",
+    },
+
+    {
+      name: "Gate Pass Management",
+      icon: <Truck size={18} />,
+      path: "/gatepass",
+    },
+
+    {
+      name: "Production Management",
       icon: <FactoryIcon size={18} />,
       path: "/production",
     },
-    { name: "Reports", icon: <BarChart2 size={18} />, path: "/reports" },
-    { name: "Notifications", icon: <Bell size={18} />, path: "/notifications" },
-    { name: "Master Data", icon: <Settings size={18} />, path: "/masterdata" },
-    // Add AI menu item
+
     {
-      name: "AI ",
+      name: "Reports & Analytics",
+      icon: <BarChart2 size={18} />,
+      path: "/reports",
+    },
+
+    {
+      name: "Notifications & Alerts",
+      icon: <Bell size={18} />,
+      path: "/notifications",
+    },
+
+    {
+      name: "System Setup",
+      icon: <Settings size={18} />,
+      path: "/masterdata", // backend unchanged
+    },
+
+    {
+      name: "AI Assistant",
       icon: <Lightbulb className="w-5 h-5" />,
-      label: "AI Suggestions",
       path: "/ai/suggestions",
     },
   ];
@@ -59,11 +88,7 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
           fixed top-0 left-0 h-full z-50 
           bg-gradient-to-b from-teal-700 to-emerald-900 text-white shadow-xl overflow-hidden
           transition-transform duration-300 ease-in-out
-
-          /* Desktop width */
           ${isOpen ? "md:w-64" : "md:w-16"}
-
-          /* Mobile: full drawer */
           ${
             isOpen
               ? "translate-x-0 w-64"
@@ -72,23 +97,19 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
         `}
       >
         <div className="h-full flex flex-col justify-between">
-          {/* TOP SECTION */}
+          {/* TOP */}
           <div>
             <div className="flex items-center gap-3 px-4 py-4 border-b border-emerald-700">
-              {/* Toggle Button */}
               <button
                 onClick={toggleSidebar}
-                className="p-1.5 rounded-lg bg-emerald-800/40 hover:bg-emerald-800 text-white transition"
+                className="p-1.5 rounded-lg bg-emerald-800/40 hover:bg-emerald-800 transition"
               >
                 <Menu size={18} />
               </button>
 
-              {/* Branding */}
               {isOpen && (
-                <div className="flex flex-col">
-                  <h1 className="text-lg font-bold tracking-wide">
-                    SMJ Rice Mill
-                  </h1>
+                <div>
+                  <h1 className="text-lg font-bold">SMJ Rice Mill</h1>
                   <p className="text-xs text-emerald-200">
                     Mirza Virkan Road, Sheikhupura
                   </p>
@@ -96,7 +117,7 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
               )}
             </div>
 
-            {/* MENU LINKS */}
+            {/* MENU */}
             <nav className="px-2 py-4 space-y-1">
               {menu.map((m) => {
                 const active = location.pathname === m.path;
@@ -107,16 +128,16 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
                     onClick={() => {
                       if (window.innerWidth < 768 && isOpen) toggleSidebar();
                     }}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all
+                    className={`flex items-center gap-3 px-3 py-2 rounded-lg transition
                       ${
                         active
-                          ? "bg-emerald-600 shadow-inner text-white"
+                          ? "bg-emerald-600 text-white"
                           : "hover:bg-emerald-700 text-emerald-100"
                       }
                       ${isOpen ? "" : "justify-center"}
                     `}
                   >
-                    <div>{m.icon}</div>
+                    {m.icon}
                     {isOpen && <span className="text-sm">{m.name}</span>}
                   </Link>
                 );
@@ -124,7 +145,7 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
             </nav>
           </div>
 
-          {/* BOTTOM PROFILE */}
+          {/* PROFILE */}
           <div className="px-3 py-4 border-t border-emerald-700">
             <div
               className={`flex items-center gap-3 ${isOpen ? "" : "flex-col"}`}
@@ -134,7 +155,7 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
               </div>
 
               {isOpen && (
-                <div className="flex-1">
+                <div>
                   <div className="text-sm font-semibold">Admin User</div>
                   <div className="text-xs text-emerald-200">
                     admin@smjrice.pk

@@ -1,21 +1,26 @@
 // src/pages/MasterData.jsx
 import React, { useState } from "react";
-import { Building2, Wheat, Wallet2, Settings, Users } from "lucide-react";
+import { Users, Package, Wallet2, Settings } from "lucide-react";
 import CompanyManager from "../components/MasterData/CompanyManager";
 import ProductManager from "../components/MasterData/ProductManager";
 import ExpenseCategoryManager from "../components/MasterData/ExpenseCategoryManager";
 import SystemSettings from "../components/MasterData/SystemSettings";
+import StockManagement from "../components/MasterData/StockManagement";
 
 export default function MasterData() {
-  const [activeTab, setActiveTab] = useState("company");
+  const [activeTab, setActiveTab] = useState("parties");
 
   const tabs = [
     {
-      key: "company",
-      label: "Company Management",
-      icon: <Building2 size={18} />,
+      key: "parties",
+      label: "Parties Management",
+      icon: <Users size={18} />,
     },
-    { key: "product", label: "Product Types", icon: <Wheat size={18} /> },
+    {
+      key: "stock",
+      label: "Stock Management",
+      icon: <Package size={18} />,
+    },
     {
       key: "expense",
       label: "Expense Categories",
@@ -26,17 +31,15 @@ export default function MasterData() {
 
   return (
     <div className="space-y-6">
-      {/* Title */}
       <div>
         <h2 className="text-3xl font-bold text-emerald-900">
           Master Data & Settings
         </h2>
         <p className="text-gray-500 text-sm">
-          Manage companies, products, system configuration and users
+          Manage parties, stock types, expense categories and system configuration
         </p>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-4 border-b border-gray-200">
         {tabs.map((tab) => (
           <button
@@ -54,10 +57,9 @@ export default function MasterData() {
         ))}
       </div>
 
-      {/* Content area */}
       <div className="bg-white rounded-lg shadow-sm p-6">
-        {activeTab === "company" && <CompanyManager />}
-        {activeTab === "product" && <ProductManager />}
+        {activeTab === "parties" && <CompanyManager />}
+        {activeTab === "stock" && <StockManagement />}
         {activeTab === "expense" && <ExpenseCategoryManager />}
         {activeTab === "system" && <SystemSettings />}
       </div>
