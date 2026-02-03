@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
+const SystemSettings = require("../models/systemSettingsModel");
 
 // PB-YYYYMMDD-HHMMSS
 function generateBatchNo() {
@@ -37,9 +38,25 @@ function recomputeAggregates(batch) {
 }
 
 /**
+ * Get current paddy balance (kg) from stock ledger (Paddy only).
+ */
+async function getPaddyBalanceKg() {
+  const rows = await StockLedger.find({
+    productTypeId: null,
+    productTypeName: "Paddy",
+  }).lean();
+  let balance = 0;
+  rows.forEach((r) => {
+    const qty = Number(r.netWeightKg) || 0;
+    balance += r.type === "OUT" ? -qty : qty;
+  });
+  return balance;
+}
+
+/**
  * POST /api/production/batches
  * Body: { date, paddyWeightKg, remarks? }
- * Creates batch and reserves paddy (OUT).
+ * Creates batch and reserves paddy (OUT). Requires sufficient paddy in stock.
  */
 exports.createBatch = async (req, res) => {
   try {
@@ -55,6 +72,21 @@ exports.createBatch = async (req, res) => {
         .json({ success: false, message: "Field 'paddyWeightKg' is required" });
     }
 
+    const requestedKg = Number(paddyWeightKg);
+    if (requestedKg <= 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Paddy weight must be greater than 0" });
+    }
+
+    const paddyBalance = await getPaddyBalanceKg();
+    if (paddyBalance < requestedKg) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient paddy stock. Available: ${paddyBalance.toFixed(3)} kg. Add paddy via Gate Pass Inward.`,
+      });
+    }
+
     let batchNo = generateBatchNo();
     let attempts = 0;
     while (attempts < 5) {
@@ -68,7 +100,7 @@ exports.createBatch = async (req, res) => {
       batchNo,
       date,
       status: "IN_PROCESS",
-      paddyWeightKg: Number(paddyWeightKg),
+      paddyWeightKg: requestedKg,
       outputs: [],
       remarks: remarks || "",
     });
@@ -123,14 +155,18 @@ exports.updateBatch = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Batch not found" });
 
-    if (batch.status !== "IN_PROCESS") {
-      return res.status(400).json({
-        success: false,
-        message: "Completed batch cannot be edited.",
-      });
-    }
+    const { date, paddyWeightKg, remarks, adminPin } = req.body;
 
-    const { date, paddyWeightKg, remarks } = req.body;
+    if (batch.status === "COMPLETED") {
+      const settings = await SystemSettings.findOne({}).select("adminPin").lean();
+      const expectedPin = (settings && settings.adminPin) || "0000";
+      if (!adminPin || String(adminPin).trim() !== String(expectedPin).trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid or missing admin PIN. Completed batch requires admin PIN to edit.",
+        });
+      }
+    }
 
     if (date) batch.date = date;
 
@@ -148,8 +184,8 @@ exports.updateBatch = async (req, res) => {
     recomputeAggregates(batch);
     const saved = await batch.save();
 
-    // Adjust raw paddy stock for delta
-    if (delta !== 0) {
+    // Adjust raw paddy stock for delta (only for IN_PROCESS; completed batch edit does not change stock)
+    if (delta !== 0 && batch.status === "IN_PROCESS") {
       try {
         const isIncrease = delta > 0; // more paddy consumed
         const ledger = new StockLedger({
@@ -251,8 +287,7 @@ exports.deleteBatch = async (req, res) => {
       if (ledgerOps.length > 0) {
         await StockLedger.insertMany(ledgerOps);
       }
-    } catch (e) {
-      console.error("StockLedger (deleteBatch) error:", e);
+    } catch {
       // don’t crash if ledger fails; batch is already removed
     }
 
@@ -263,7 +298,6 @@ exports.deleteBatch = async (req, res) => {
         : "Batch deleted and paddy returned to stock.",
     });
   } catch (err) {
-    console.error("deleteBatch error:", err);
     return res
       .status(500)
       .json({ success: false, message: "Error deleting batch." });
@@ -326,8 +360,8 @@ exports.getBatchById = async (req, res) => {
 
 /**
  * POST /api/production/batches/:id/outputs
- * Body: { productTypeId, productTypeName, companyId?, companyName?, numBags, perBagWeightKg, shift }
- * netWeight = numBags * perBagWeightKg (computed here).
+ * Body: { productTypeId, productTypeName, companyId?, companyName?, numBags, perBagWeightKg, shift, adminPin? }
+ * For COMPLETED batch, adminPin is required; adds output and creates IN stock entry.
  */
 exports.addOutput = async (req, res) => {
   try {
@@ -340,6 +374,7 @@ exports.addOutput = async (req, res) => {
       numBags,
       perBagWeightKg,
       shift,
+      adminPin,
     } = req.body;
 
     if (
@@ -356,10 +391,10 @@ exports.addOutput = async (req, res) => {
       });
     }
 
-    if (!companyId) {
+    if (!companyId && !companyName) {
       return res.status(400).json({
         success: false,
-        message: "Company is required for each finished output.",
+        message: "Brand/Company is required for each finished output.",
       });
     }
 
@@ -375,10 +410,19 @@ exports.addOutput = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Batch not found" });
 
-    if (batch.status !== "IN_PROCESS") {
+    if (batch.status === "COMPLETED") {
+      const settings = await SystemSettings.findOne({}).select("adminPin").lean();
+      const expectedPin = (settings && settings.adminPin) || "0000";
+      if (!adminPin || String(adminPin).trim() !== String(expectedPin).trim()) {
+        return res.status(403).json({
+          success: false,
+          message: "Valid admin PIN required to add output to completed batch.",
+        });
+      }
+    } else if (batch.status !== "IN_PROCESS") {
       return res.status(400).json({
         success: false,
-        message: "Cannot add output to completed batch.",
+        message: "Cannot add output to this batch.",
       });
     }
 
@@ -400,12 +444,131 @@ exports.addOutput = async (req, res) => {
     recomputeAggregates(batch);
     const saved = await batch.save();
 
+    if (batch.status === "COMPLETED") {
+      try {
+        await StockLedger.create({
+          date: saved.date,
+          type: "IN",
+          companyId: output.companyId || null,
+          companyName: output.companyName || "",
+          productTypeId: output.productTypeId,
+          productTypeName: output.productTypeName,
+          numBags: output.numBags,
+          netWeightKg: output.netWeightKg,
+          gatePassId: null,
+          gatePassNo: "",
+          remarks: `Production output (${output.shift}) - ${saved.batchNo}`,
+        });
+      } catch {
+        // don't crash if ledger fails
+      }
+    }
+
     return res.json({ success: true, data: saved });
   } catch (err) {
     console.error("addOutput error:", err);
     return res
       .status(500)
       .json({ success: false, message: "Error adding output." });
+  }
+};
+
+/**
+ * PATCH /api/production/batches/:id/outputs/:outputId
+ * Body: { numBags?, perBagWeightKg?, shift?, companyId?, companyName?, productTypeId?, productTypeName? }
+ * Edit output and adjust stock (OUT old, IN new) for COMPLETED batch. No admin PIN required.
+ */
+exports.updateOutput = async (req, res) => {
+  try {
+    const { id, outputId } = req.params;
+    const {
+      numBags,
+      perBagWeightKg,
+      shift,
+      companyId,
+      companyName,
+      productTypeId,
+      productTypeName,
+    } = req.body;
+
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(outputId)) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+
+    const batch = await ProductionBatch.findById(id);
+    if (!batch)
+      return res.status(404).json({ success: false, message: "Batch not found" });
+
+    const output = batch.outputs.id(outputId);
+    if (!output) {
+      return res.status(404).json({ success: false, message: "Output not found" });
+    }
+
+    const oldNet = Number(output.netWeightKg) || 0;
+    const oldProductTypeId = output.productTypeId;
+    const oldProductTypeName = output.productTypeName;
+    const oldCompanyId = output.companyId;
+    const oldCompanyName = output.companyName;
+    const oldNumBags = output.numBags;
+    const oldShift = output.shift;
+
+    if (numBags != null) output.numBags = Number(numBags);
+    if (perBagWeightKg != null) {
+      const bags = output.numBags || 0;
+      output.netWeightKg = +(bags * Number(perBagWeightKg)).toFixed(3);
+    } else if (numBags != null && output.numBags) {
+      const perBag = oldNet / output.numBags;
+      output.netWeightKg = +(Number(numBags) * perBag).toFixed(3);
+    }
+    if (shift && ["DAY", "NIGHT"].includes(shift)) output.shift = shift;
+    if (companyId !== undefined) output.companyId = companyId || null;
+    if (companyName !== undefined) output.companyName = companyName || "";
+    if (productTypeId !== undefined) output.productTypeId = productTypeId;
+    if (productTypeName !== undefined) output.productTypeName = productTypeName || "";
+
+    const newNet = Number(output.netWeightKg) || 0;
+    recomputeAggregates(batch);
+    const saved = await batch.save();
+
+    if (batch.status === "COMPLETED" && (oldNet !== newNet || oldProductTypeId !== output.productTypeId)) {
+      try {
+        await StockLedger.create({
+          date: batch.date,
+          type: "OUT",
+          companyId: oldCompanyId || null,
+          companyName: oldCompanyName || "",
+          productTypeId: oldProductTypeId,
+          productTypeName: oldProductTypeName,
+          numBags: oldNumBags,
+          netWeightKg: oldNet,
+          gatePassId: null,
+          gatePassNo: "",
+          remarks: `Production output edit reverse - ${batch.batchNo}`,
+        });
+        await StockLedger.create({
+          date: batch.date,
+          type: "IN",
+          companyId: output.companyId || null,
+          companyName: output.companyName || "",
+          productTypeId: output.productTypeId,
+          productTypeName: output.productTypeName,
+          numBags: output.numBags,
+          netWeightKg: newNet,
+          gatePassId: null,
+          gatePassNo: "",
+          remarks: `Production output (${output.shift}) - ${batch.batchNo}`,
+        });
+      } catch {
+        // don't crash if ledger fails
+      }
+    }
+
+    return res.json({ success: true, data: saved });
+  } catch (err) {
+    console.error("updateOutput error:", err);
+    return res
+      .status(500)
+      .json({ success: false, message: "Error updating output." });
   }
 };
 
@@ -459,13 +622,12 @@ exports.completeBatch = async (req, res) => {
       if (ops.length > 0) {
         await StockLedger.insertMany(ops);
       }
-    } catch (e) {
-      console.error("StockLedger (completeBatch) error:", e);
+    } catch {
+      // Stock ledger update failed. Do not log to console.
     }
 
     return res.json({ success: true, data: saved });
   } catch (err) {
-    console.error("completeBatch error:", err);
     return res
       .status(500)
       .json({ success: false, message: "Error completing batch." });
@@ -504,12 +666,22 @@ exports.getTodaySummary = async (req, res) => {
     let day = 0;
     let night = 0;
     let totalOutput = 0;
+    const productWise = {};
 
     batches.forEach((b) => {
       day += b.dayShiftOutputWeightKg || 0;
       night += b.nightShiftOutputWeightKg || 0;
       totalOutput += b.totalOutputWeightKg || 0;
+      (b.outputs || []).forEach((o) => {
+        const name = o.productTypeName || "Other";
+        productWise[name] = (productWise[name] || 0) + (Number(o.netWeightKg) || 0);
+      });
     });
+
+    const productWiseOutput = Object.entries(productWise).map(([productTypeName, totalKg]) => ({
+      productTypeName,
+      totalKg: +Number(totalKg).toFixed(3),
+    }));
 
     return res.json({
       success: true,
@@ -518,6 +690,7 @@ exports.getTodaySummary = async (req, res) => {
         nightShiftOutputWeightKg: +night.toFixed(3),
         totalOutputWeightKg: +totalOutput.toFixed(3),
         batchCount: batches.length,
+        productWiseOutput,
       },
     });
   } catch (err) {

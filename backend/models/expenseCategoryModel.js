@@ -12,12 +12,6 @@ const expenseCategorySchema = new mongoose.Schema(
         return value ? value.trim() : value;
       },
     },
-    code: {
-      type: String,
-      trim: true,
-      maxlength: [20, "Code must not exceed 20 characters"],
-      default: "",
-    },
     type: {
       type: String,
       required: [true, "Category type is required for financial reporting"],
@@ -38,17 +32,13 @@ const expenseCategorySchema = new mongoose.Schema(
 );
 
 expenseCategorySchema.index({ name: 1 });
-expenseCategorySchema.index({ code: 1 }, { sparse: true });
 
 expenseCategorySchema.pre("save", async function (next) {
   if (this.isModified("name")) {
     const normalizedName = this.name.toLowerCase().trim();
     const existing = await mongoose.model("ExpenseCategory").findOne({
       _id: { $ne: this._id },
-      $or: [
-        { name: { $regex: new RegExp(`^${normalizedName}$`, "i") } },
-        { name: { $regex: new RegExp(normalizedName, "i") } },
-      ],
+      name: { $regex: new RegExp(`^${normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
     });
     if (existing) {
       const error = new Error(`Expense category with similar name already exists: "${existing.name}"`);

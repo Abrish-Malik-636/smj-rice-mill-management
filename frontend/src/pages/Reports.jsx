@@ -207,7 +207,7 @@ export default function Reports() {
   return (
     <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-blue-50">
             <BarChart3 className="w-5 h-5 text-blue-600" />
@@ -225,7 +225,7 @@ export default function Reports() {
         <button
           type="button"
           onClick={fetchTransactions}
-          className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 shadow-sm"
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 shadow-sm w-full md:w-auto justify-center"
         >
           <RefreshCcw className="w-4 h-4" />
           Refresh
@@ -400,7 +400,7 @@ export default function Reports() {
         {/* Chart + table */}
         <div className="xl:col-span-2 space-y-4">
           {/* Chart */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 h-72">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 h-72 min-h-[288px] min-w-[200px]">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-gray-700">
                 Sales vs Purchases (by Date)

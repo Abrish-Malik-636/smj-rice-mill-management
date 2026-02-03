@@ -1,5 +1,6 @@
 // src/pages/Financial.jsx
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   CreditCard,
   ArrowDownCircle,
@@ -10,11 +11,16 @@ import {
   Trash2,
   Save,
   Printer,
+  Lock,
 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 import api from "../services/api";
+import Pin4Input from "../components/Pin4Input";
 
 const PAGE_SIZE = 10;
+
+const CATEGORY_OPTIONS = ["Machinery", "Equipment", "Vehicle", "Furniture", "IT & Electronics", "Other"];
+const CONDITION_OPTIONS = ["Good", "Fair", "Poor", "Under Maintenance"];
 
 function todayISO() {
   const d = new Date();
@@ -34,7 +40,8 @@ const emptyForm = {
   remarks: "",
 };
 
-const makeEmptyItem = () => ({
+const makeEmptySaleItem = () => ({
+  brand: "",
   productTypeId: "",
   numBags: "",
   perBagWeightKg: "",
@@ -43,20 +50,34 @@ const makeEmptyItem = () => ({
   rateType: "per_bag",
 });
 
+const makeEmptyPurchaseItem = () => ({
+  managerialItemId: "",
+  itemName: "",
+  isCustom: false,
+  isManagerial: true,
+  category: "",
+  condition: "",
+  unit: "Nos",
+  quantity: "",
+  rate: "",
+});
+
 export default function Financial() {
+  const [searchParams, setSearchParams] = useSearchParams();
   // Tabs
   const [activeTab, setActiveTab] = useState("sale");
 
   // Masters
   const [companies, setCompanies] = useState([]);
   const [products, setProducts] = useState([]);
+  const [managerialItems, setManagerialItems] = useState([]);
 
-  // Stock balances: [{ companyId, companyName, productTypeId, productTypeName, balanceKg }]
+  // Stock balances: [{ companyId, companyName(brand), productTypeId, productTypeName, balanceKg }]
   const [stockBalances, setStockBalances] = useState([]);
 
   // PURCHASE state
   const [purchaseForm, setPurchaseForm] = useState({ ...emptyForm });
-  const [purchaseItems, setPurchaseItems] = useState([makeEmptyItem()]);
+  const [purchaseItems, setPurchaseItems] = useState([makeEmptyPurchaseItem()]);
   const [purchaseEditingId, setPurchaseEditingId] = useState(null);
   const [purchaseList, setPurchaseList] = useState([]);
   const [purchaseTotal, setPurchaseTotal] = useState(0);
@@ -65,12 +86,29 @@ export default function Financial() {
 
   // SALE state
   const [saleForm, setSaleForm] = useState({ ...emptyForm });
-  const [saleItems, setSaleItems] = useState([makeEmptyItem()]);
+  const [saleItems, setSaleItems] = useState([makeEmptySaleItem()]);
   const [saleEditingId, setSaleEditingId] = useState(null);
   const [saleList, setSaleList] = useState([]);
   const [saleTotal, setSaleTotal] = useState(0);
   const [salePage, setSalePage] = useState(1);
   const [saleLoading, setSaleLoading] = useState(false);
+
+  const [settings, setSettings] = useState({
+    additionalStockSettingsEnabled: false,
+    adminPin: "0000",
+  });
+  const [saleDateUnlocked, setSaleDateUnlocked] = useState(false);
+  const [saleDatePinDialog, setSaleDatePinDialog] = useState({
+    open: false,
+    pin: "",
+    pinError: "",
+  });
+  const [purchaseDateUnlocked, setPurchaseDateUnlocked] = useState(false);
+  const [purchaseDatePinDialog, setPurchaseDatePinDialog] = useState({
+    open: false,
+    pin: "",
+    pinError: "",
+  });
 
   // Delete dialog
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -103,12 +141,14 @@ export default function Financial() {
   useEffect(() => {
     const loadMasters = async () => {
       try {
-        const [cRes, pRes] = await Promise.all([
+        const [cRes, pRes, mRes] = await Promise.all([
           api.get("/companies"),
           api.get("/product-types"),
+          api.get("/managerial-stock"),
         ]);
         setCompanies(cRes.data.data || []);
         setProducts(pRes.data.data || []);
+        setManagerialItems(mRes.data.data || []);
       } catch (err) {
         console.error("Error loading masters:", err);
         toast.error("Failed to load master data");
@@ -119,6 +159,23 @@ export default function Financial() {
     loadStockBalances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const res = await api.get("/settings");
+        if (res.data?.data) setSettings(res.data.data);
+      } catch {}
+    };
+    loadSettings();
+  }, []);
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "sale" || tab === "purchase") {
+      setActiveTab(tab);
+    }
+  }, [searchParams]);
 
   // Initial transactions
   useEffect(() => {
@@ -181,14 +238,164 @@ export default function Financial() {
     const list = type === "PURCHASE" ? [...purchaseItems] : [...saleItems];
     const item = { ...list[index], [field]: value };
 
-    // Auto net weight = bags × perBagWeight
+    if (type === "PURCHASE") {
+      if (field === "itemSelect") {
+        if (value === "__OTHER__") {
+          item.isCustom = true;
+          item.managerialItemId = "";
+          item.itemName = "";
+          item.category = "";
+          item.condition = "";
+          item.unit = "Nos";
+        } else {
+          const selected = managerialItems.find((m) => String(m._id) === String(value));
+          item.isCustom = false;
+          item.managerialItemId = value;
+          item.itemName = selected?.name || "";
+          item.category = selected?.category || "";
+          item.condition = selected?.condition || "";
+          item.unit = selected?.unit || "Nos";
+        }
+      }
+
+      if (field === "itemName") {
+        item.itemName = value;
+        item.isCustom = true;
+      }
+
+      if (field === "quantity") {
+        const digits = String(value || "").replace(/\D/g, "").slice(0, 5);
+        item.quantity = digits;
+      }
+
+      if (field === "rate") {
+        const digits = String(value || "").replace(/\D/g, "");
+        item.rate = digits;
+      }
+
+      if (field === "category") item.category = value;
+      if (field === "condition") item.condition = value;
+      if (field === "unit") item.unit = value;
+
+      list[index] = item;
+      setPurchaseItems(list);
+      return;
+    }
+
+    if (field === "numBags") {
+      const digits = String(value || "").replace(/\D/g, "").slice(0, 5);
+      item.numBags = digits;
+      value = digits;
+    }
+
+    const product =
+      item.productTypeId &&
+      products.find((p) => String(p._id) === String(item.productTypeId));
+    const factors = product?.conversionFactors || {};
+    const tonKg = Number(factors.Ton || 1000) || 1000;
+    const bagKg = Number(factors.Bag || 65) || 0;
+
+    const unitWeightForRate = (rateType) => {
+      if (rateType === "per_kg") return 1;
+      if (rateType === "per_ton") return tonKg;
+      return bagKg;
+    };
+
+    const rateForRateType = (rateType) => {
+      if (!product) return "";
+      if (rateType === "per_bag" && product.pricePerBag != null) {
+        return String(product.pricePerBag);
+      }
+      if (rateType === "per_ton" && product.pricePerTon != null) {
+        return String(product.pricePerTon);
+      }
+      if (rateType === "per_kg" && product.pricePerKg != null) {
+        return String(product.pricePerKg);
+      }
+      return item.rate || "";
+    };
+
+    if (field === "brand" && type === "SALE") {
+      item.productTypeId = "";
+      item.perBagWeightKg = "";
+      item.netWeightKg = "";
+    }
+
+    if (field === "productTypeId" && value) {
+      const selected = products.find((p) => String(p._id) === String(value));
+      if (selected && type === "SALE" && selected.brand) {
+        item.brand = selected.brand;
+      }
+
+      const units = Array.isArray(selected?.allowableSaleUnits)
+        ? selected.allowableSaleUnits
+        : [];
+      const preferredUnit = units.includes("Bag")
+        ? "Bag"
+        : units.includes("Ton")
+        ? "Ton"
+        : "KG";
+      const nextRateType =
+        preferredUnit === "Bag"
+          ? "per_bag"
+          : preferredUnit === "Ton"
+          ? "per_ton"
+          : "per_kg";
+
+      item.rateType = nextRateType;
+      const unitKg = unitWeightForRate(nextRateType);
+      item.perBagWeightKg = unitKg ? String(unitKg) : "";
+      item.rate = rateForRateType(nextRateType);
+
+      const qty = Number(item.numBags || 0);
+      if (qty) {
+        if (nextRateType === "per_kg") {
+          item.netWeightKg = qty.toFixed(3);
+        } else if (unitKg) {
+          item.netWeightKg = (qty * unitKg).toFixed(3);
+        } else {
+          item.netWeightKg = "";
+        }
+      } else {
+        item.netWeightKg = "";
+      }
+    }
+
+    if (field === "rateType") {
+      const unitKg = unitWeightForRate(value);
+      if (unitKg) {
+        item.perBagWeightKg = String(unitKg);
+      }
+      item.rate = rateForRateType(value);
+      const qty = Number(item.numBags || 0);
+      if (qty) {
+        if (value === "per_kg") {
+          item.netWeightKg = qty.toFixed(3);
+        } else if (unitKg) {
+          item.netWeightKg = (qty * unitKg).toFixed(3);
+        } else {
+          item.netWeightKg = "";
+        }
+      } else {
+        item.netWeightKg = "";
+      }
+    }
+
     if (field === "numBags" || field === "perBagWeightKg") {
-      const bags = Number(field === "numBags" ? value : item.numBags || 0) || 0;
-      const perBag =
-        Number(field === "perBagWeightKg" ? value : item.perBagWeightKg || 0) ||
-        0;
-      if (bags && perBag) {
-        item.netWeightKg = (bags * perBag).toFixed(3);
+      const qty =
+        Number(field === "numBags" ? value : item.numBags || 0) || 0;
+      const unitKg =
+        Number(
+          field === "perBagWeightKg"
+            ? value
+            : item.perBagWeightKg || 0
+        ) || 0;
+      if (!qty) {
+        item.netWeightKg = "";
+      } else if (item.rateType === "per_kg") {
+        item.netWeightKg = qty.toFixed(3);
+      } else if (unitKg) {
+        item.netWeightKg = (qty * unitKg).toFixed(3);
       } else {
         item.netWeightKg = "";
       }
@@ -201,35 +408,41 @@ export default function Financial() {
 
   const addItemRow = (type) => {
     if (type === "PURCHASE")
-      setPurchaseItems((items) => [...items, makeEmptyItem()]);
-    else setSaleItems((items) => [...items, makeEmptyItem()]);
+      setPurchaseItems((items) => [...items, makeEmptyPurchaseItem()]);
+    else setSaleItems((items) => [...items, makeEmptySaleItem()]);
   };
 
   const computeLineAmount = (item) => {
-    const bags = Number(item.numBags || 0);
-    const perBag = Number(item.perBagWeightKg || 0);
     const rate = Number(item.rate || 0);
-    const net =
-      item.netWeightKg !== "" && item.netWeightKg != null
-        ? Number(item.netWeightKg)
-        : bags && perBag
-        ? bags * perBag
-        : 0;
-
     if (!rate) return 0;
-    if (item.rateType === "per_bag") return bags * rate;
-    return net * rate;
+
+    if (item.itemName || item.isManagerial) {
+      const qty = Number(item.quantity || 0);
+      return qty * rate;
+    }
+
+    const qty = Number(item.numBags || 0);
+    if (!qty) return 0;
+    if (item.rateType === "per_kg") return qty * rate;
+    return qty * rate;
+  };
+
+  const computeNetWeightKg = (item) => {
+    const qty = Number(item.numBags || 0);
+    const unitKg = Number(item.perBagWeightKg || 0);
+    if (!qty) return 0;
+    if (item.rateType === "per_kg") return qty;
+    if (!unitKg) return 0;
+    return qty * unitKg;
   };
 
   const computeInvoiceTotal = (items) =>
     items.reduce((sum, it) => sum + computeLineAmount(it), 0);
 
   // Stock helper
-  const getStockBalance = (companyId, productTypeId) => {
-    if (!companyId || !productTypeId) return null;
-    const row = stockBalances.find(
-      (b) => b.companyId === companyId && b.productTypeId === productTypeId
-    );
+  const getStockBalance = (productTypeId) => {
+    if (!productTypeId) return null;
+    const row = stockBalances.find((b) => b.productTypeId === productTypeId);
     if (!row) return null;
     return Number(row.balanceKg || 0);
   };
@@ -243,8 +456,17 @@ export default function Financial() {
       return false;
     }
     if (!form.companyId) {
-      toast.error("Please select a company");
+      toast.error("Please select a customer");
       return false;
+    }
+
+    if (type === "SALE") {
+      for (const it of items) {
+        if (!it.brand) {
+          toast.error("Please select a brand for all sale items");
+          return false;
+        }
+      }
     }
 
     const total = computeInvoiceTotal(items);
@@ -274,6 +496,32 @@ export default function Financial() {
 
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
+      if (type === "PURCHASE") {
+        if (!it.itemName || !it.itemName.trim()) {
+          toast.error(`Item ${i + 1}: Select or enter an item name`);
+          return false;
+        }
+        if (!it.category || !it.category.trim()) {
+          toast.error(`Item ${i + 1}: Category is required`);
+          return false;
+        }
+        if (!it.condition || !it.condition.trim()) {
+          toast.error(`Item ${i + 1}: Condition is required`);
+          return false;
+        }
+        const qty = Number(it.quantity || 0);
+        if (!qty || qty <= 0) {
+          toast.error(`Item ${i + 1}: Quantity must be greater than 0`);
+          return false;
+        }
+        const rate = Number(it.rate || 0);
+        if (!rate || rate <= 0) {
+          toast.error(`Item ${i + 1}: Rate must be greater than 0`);
+          return false;
+        }
+        continue;
+      }
+
       if (!it.productTypeId) {
         toast.error(`Item ${i + 1}: Select a product`);
         return false;
@@ -283,10 +531,7 @@ export default function Financial() {
         toast.error(`Item ${i + 1}: Rate must be greater than 0`);
         return false;
       }
-      const net =
-        it.netWeightKg !== "" && it.netWeightKg != null
-          ? Number(it.netWeightKg)
-          : Number(it.numBags || 0) * Number(it.perBagWeightKg || 0);
+      const net = computeNetWeightKg(it);
       if (!net || net <= 0) {
         toast.error(`Item ${i + 1}: Net weight must be > 0`);
         return false;
@@ -297,12 +542,9 @@ export default function Financial() {
     if (type === "SALE" && stockBalances.length && form.companyId) {
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        const net =
-          it.netWeightKg !== "" && it.netWeightKg != null
-            ? Number(it.netWeightKg)
-            : Number(it.numBags || 0) * Number(it.perBagWeightKg || 0);
+        const net = computeNetWeightKg(it);
 
-        const bal = getStockBalance(form.companyId, it.productTypeId);
+        const bal = getStockBalance(it.productTypeId);
 
         if (bal != null && net > bal + 0.0001) {
           toast.error(
@@ -324,19 +566,28 @@ export default function Financial() {
     const total = computeInvoiceTotal(items);
 
     const mappedItems = items.map((it) => {
-      const bags = Number(it.numBags || 0);
-      const perBag = Number(it.perBagWeightKg || 0);
-      const net =
-        it.netWeightKg !== "" && it.netWeightKg != null
-          ? Number(it.netWeightKg)
-          : bags && perBag
-          ? bags * perBag
-          : 0;
+      if (type === "PURCHASE") {
+        return {
+          managerialItemId: it.managerialItemId || null,
+          itemName: it.itemName || "",
+          category: it.category || "",
+          condition: it.condition || "",
+          unit: it.unit || "Nos",
+          quantity: Number(it.quantity || 0),
+          rate: Number(it.rate || 0),
+          rateType: "per_unit",
+          isManagerial: true,
+        };
+      }
+
+      const qty = Number(it.numBags || 0);
+      const perUnit = Number(it.perBagWeightKg || 0);
+      const net = computeNetWeightKg(it);
 
       return {
         productTypeId: it.productTypeId,
-        numBags: bags,
-        perBagWeightKg: perBag,
+        numBags: qty,
+        perBagWeightKg: perUnit,
         netWeightKg: net,
         rate: Number(it.rate || 0),
         rateType: it.rateType || "per_kg",
@@ -349,9 +600,7 @@ export default function Financial() {
     if (form.paymentStatus === "PARTIAL") {
       const paid = Number(form.partialPaid || 0);
       const remaining = Math.max(total - paid, 0);
-      const extra = `Paid: Rs ${paid.toFixed(
-        2
-      )}, Remaining: Rs ${remaining.toFixed(2)}, Due: ${form.dueDate || "-"}`;
+      const extra = `Paid: Rs ${Math.round(paid)}, Remaining: Rs ${Math.round(remaining)}, Due: ${form.dueDate || "-"}`;
       finalRemarks = baseRemarks ? `${baseRemarks} | ${extra}` : extra;
     }
 
@@ -364,17 +613,18 @@ export default function Financial() {
       dueDate: form.paymentStatus === "PAID" ? null : form.dueDate || null,
       remarks: finalRemarks,
       items: mappedItems,
+      partialPaid: form.paymentStatus === "PARTIAL" ? Number(form.partialPaid || 0) : 0,
     };
   };
 
   const resetForm = (type) => {
     if (type === "PURCHASE") {
       setPurchaseForm({ ...emptyForm });
-      setPurchaseItems([makeEmptyItem()]);
+      setPurchaseItems([makeEmptyPurchaseItem()]);
       setPurchaseEditingId(null);
     } else {
       setSaleForm({ ...emptyForm });
-      setSaleItems([makeEmptyItem()]);
+      setSaleItems([makeEmptySaleItem()]);
       setSaleEditingId(null);
     }
   };
@@ -400,6 +650,10 @@ export default function Financial() {
       fetchTransactions(type, 1);
       // reload stock after any transaction
       loadStockBalances();
+      if (type === "PURCHASE") {
+        const mRes = await api.get("/managerial-stock");
+        setManagerialItems(mRes.data.data || []);
+      }
     } catch (err) {
       console.error("Save transaction error:", err);
       const msg = err?.response?.data?.message || "Failed to save transaction";
@@ -420,35 +674,46 @@ export default function Financial() {
       dueDate: txn.dueDate
         ? new Date(txn.dueDate).toISOString().slice(0, 10)
         : "",
-      partialPaid: "",
+      partialPaid: txn.partialPaid != null ? String(txn.partialPaid) : "",
       remarks: txn.remarks || "",
     };
 
-    const items = (txn.items || []).map((it) => ({
-      productTypeId: it.productTypeId || "",
-      numBags:
-        it.numBags !== null && it.numBags !== undefined
-          ? String(it.numBags)
-          : "",
-      perBagWeightKg:
-        it.perBagWeightKg !== null && it.perBagWeightKg !== undefined
-          ? String(it.perBagWeightKg)
-          : "",
-      netWeightKg:
-        it.netWeightKg !== null && it.netWeightKg !== undefined
-          ? String(it.netWeightKg)
-          : "",
-      rate: it.rate !== null && it.rate !== undefined ? String(it.rate) : "",
-      rateType: it.rateType || "per_kg",
-    }));
+    const items = (txn.items || []).map((it) => {
+      if (type === "PURCHASE" && (it.isManagerial || it.itemName)) {
+        const matched = managerialItems.find(
+          (m) => String(m._id) === String(it.managerialItemId || "")
+        );
+        return {
+          managerialItemId: it.managerialItemId || matched?._id || "",
+          itemName: it.itemName || matched?.name || "",
+          isCustom: !it.managerialItemId,
+          category: it.category || matched?.category || "",
+          condition: it.condition || matched?.condition || "",
+          unit: it.unit || matched?.unit || "Nos",
+          quantity: it.quantity != null ? String(it.quantity) : "",
+          rate: it.rate != null ? String(it.rate) : "",
+        };
+      }
+
+      const product = products.find((p) => String(p._id) === String(it.productTypeId));
+      return {
+        brand: product?.brand || "",
+        productTypeId: it.productTypeId || "",
+        numBags: it.numBags !== null && it.numBags !== undefined ? String(it.numBags) : "",
+        perBagWeightKg: it.perBagWeightKg !== null && it.perBagWeightKg !== undefined ? String(it.perBagWeightKg) : "",
+        netWeightKg: it.netWeightKg !== null && it.netWeightKg !== undefined ? String(it.netWeightKg) : "",
+        rate: it.rate !== null && it.rate !== undefined ? String(it.rate) : "",
+        rateType: it.rateType || "per_kg",
+      };
+    });
 
     if (type === "PURCHASE") {
       setPurchaseForm(form);
-      setPurchaseItems(items.length ? items : [makeEmptyItem()]);
+      setPurchaseItems(items.length ? items : [makeEmptyPurchaseItem()]);
       setPurchaseEditingId(txn._id);
     } else {
       setSaleForm(form);
-      setSaleItems(items.length ? items : [makeEmptyItem()]);
+      setSaleItems(items.length ? items : [makeEmptySaleItem()]);
       setSaleEditingId(txn._id);
     }
   };
@@ -521,7 +786,7 @@ export default function Financial() {
     ];
 
     return (
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {cards.map((c, idx) => (
           <div
             key={idx}
@@ -554,28 +819,72 @@ export default function Financial() {
     const partialRemaining =
       form.paymentStatus === "PARTIAL" ? Math.max(total - partialPaid, 0) : 0;
 
+    const dateLocked =
+      type === "SALE"
+        ? !saleDateUnlocked
+        : type === "PURCHASE"
+        ? !purchaseDateUnlocked
+        : false;
+
     return (
       <form
         onSubmit={(e) => handleSubmit(type, e)}
         className="space-y-4 bg-emerald-50 p-4 rounded-lg"
       >
-        {/* Row 1: Date + Company */}
-        <div className="grid grid-cols-4 gap-3">
-          <div className="col-span-1">
+        {/* Row 1: Date + Customer */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="col-span-1 md:col-span-1">
             <label className="text-xs text-gray-600 flex items-center gap-1">
               Date <span className="text-red-500">*</span>
             </label>
-            <input
-              type="date"
-              className="w-full border p-2 rounded text-sm"
-              value={form.date}
-              onChange={(e) => handleFormChange(type, "date", e.target.value)}
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                className={`w-full border p-2 rounded text-sm ${
+                  dateLocked ? "bg-gray-100 text-gray-600" : ""
+                }`}
+                value={form.date}
+                readOnly={dateLocked}
+                onChange={(e) => handleFormChange(type, "date", e.target.value)}
+              />
+              {settings.additionalStockSettingsEnabled && (type === "SALE" || type === "PURCHASE") && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (type === "SALE") {
+                      if (saleDateUnlocked) {
+                        setSaleDateUnlocked(false);
+                        return;
+                      }
+                      setSaleDatePinDialog({ open: true, pin: "", pinError: "" });
+                      return;
+                    }
+                    if (purchaseDateUnlocked) {
+                      setPurchaseDateUnlocked(false);
+                      return;
+                    }
+                    setPurchaseDatePinDialog({ open: true, pin: "", pinError: "" });
+                  }}
+                  className="p-2 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50"
+                  title={
+                    type === "SALE"
+                      ? saleDateUnlocked
+                        ? "Lock date"
+                        : "Unlock date"
+                      : purchaseDateUnlocked
+                      ? "Lock date"
+                      : "Unlock date"
+                  }
+                >
+                  <Lock size={14} />
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="col-span-3">
+          <div className="col-span-1 md:col-span-3">
             <label className="text-xs text-gray-600 flex items-center gap-1">
-              Company <span className="text-red-500">*</span>
+              Customer <span className="text-red-500">*</span>
             </label>
             <select
               className="w-full border p-2 rounded text-sm"
@@ -584,214 +893,462 @@ export default function Financial() {
                 handleFormChange(type, "companyId", e.target.value)
               }
             >
-              <option value="">Select company</option>
+              <option value="">Select customer</option>
               {companies.map((c) => (
                 <option key={c._id} value={c._id}>
-                  {c.name} ({c.type})
+                  {c.name}
                 </option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Row 2: Remarks */}
-        <div>
-          <label className="text-xs text-gray-600">Remarks</label>
-          <input
-            type="text"
-            className="w-full border p-2 rounded text-sm"
-            value={form.remarks}
-            onChange={(e) => handleFormChange(type, "remarks", e.target.value)}
-            placeholder="Optional notes"
-          />
-        </div>
+        {/* Row 2: Remarks (purchase only) */}
+        {type === "PURCHASE" && (
+          <div>
+            <label className="text-xs text-gray-600">Remarks</label>
+            <input
+              type="text"
+              className="w-full border p-2 rounded text-sm"
+              value={form.remarks}
+              onChange={(e) => handleFormChange(type, "remarks", e.target.value)}
+              placeholder="Optional notes"
+            />
+          </div>
+        )}
 
         {/* Items table */}
-        <div className="bg-white border rounded-lg">
-          <div className="flex items-center justify-between px-3 py-2 border-b">
-            <div className="text-sm font-semibold text-emerald-800">
-              {type === "PURCHASE" ? "Purchase Items" : "Sale Items"}
+        {type === "PURCHASE" ? (
+          <div className="bg-white border rounded-lg">
+            <div className="flex items-center justify-between px-3 py-2 border-b">
+              <div className="text-sm font-semibold text-emerald-800">
+                Purchase Items
+              </div>
+              <button
+                type="button"
+                onClick={() => addItemRow(type)}
+                className="flex items-center gap-1 text-xs px-2 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+              >
+                <Plus size={14} /> Add Item
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => addItemRow(type)}
-              className="flex items-center gap-1 text-xs px-2 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700"
-            >
-              <Plus size={14} /> Add Item
-            </button>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-emerald-100 text-emerald-800">
+                  <tr>
+                    <th className="p-2 text-left">Item</th>
+                    <th className="p-2 text-left">Category</th>
+                    <th className="p-2 text-left">Condition</th>
+                    <th className="p-2 text-left">Unit</th>
+                    <th className="p-2 text-right">Qty</th>
+                    <th className="p-2 text-right">Rate</th>
+                    <th className="p-2 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it, idx) => {
+                    const lineAmount = computeLineAmount(it);
+                    return (
+                      <tr key={idx} className="border-t align-top">
+                        <td className="p-2">
+                          {!it.isCustom ? (
+                            <select
+                              className="border p-1 rounded w-full"
+                              value={it.managerialItemId || ""}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  type,
+                                  idx,
+                                  "itemSelect",
+                                  e.target.value
+                                )
+                              }
+                            >
+                              <option value="">Select item</option>
+                              {managerialItems.map((m) => (
+                                <option key={m._id} value={m._id}>
+                                  {m.name}
+                                </option>
+                              ))}
+                              <option value="__OTHER__">Other...</option>
+                            </select>
+                          ) : (
+                            <div className="space-y-1">
+                              <input
+                                type="text"
+                                className="border p-1 rounded w-full"
+                                placeholder="Type item name"
+                                value={it.itemName}
+                                onChange={(e) =>
+                                  handleItemChange(
+                                    type,
+                                    idx,
+                                    "itemName",
+                                    e.target.value
+                                  )
+                                }
+                              />
+                              <button
+                                type="button"
+                                className="text-[10px] text-emerald-700 hover:underline"
+                                onClick={() =>
+                                  handleItemChange(type, idx, "itemSelect", "")
+                                }
+                              >
+                                Choose from list
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2">
+                          {it.isCustom ? (
+                            <select
+                              className="border p-1 rounded w-full"
+                              value={it.category}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  type,
+                                  idx,
+                                  "category",
+                                  e.target.value
+                                )
+                              }
+                            >
+                              <option value="">Select</option>
+                              {CATEGORY_OPTIONS.map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-gray-700">{it.category || "-"}</span>
+                          )}
+                        </td>
+                        <td className="p-2">
+                          <select
+                            className="border p-1 rounded w-full"
+                            value={it.condition}
+                            onChange={(e) =>
+                              handleItemChange(
+                                type,
+                                idx,
+                                "condition",
+                                e.target.value
+                              )
+                            }
+                          >
+                            <option value="">Select</option>
+                            {CONDITION_OPTIONS.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          {it.isCustom ? (
+                            <input
+                              type="text"
+                              className="border p-1 rounded w-full"
+                              value={it.unit || "Nos"}
+                              onChange={(e) =>
+                                handleItemChange(
+                                  type,
+                                  idx,
+                                  "unit",
+                                  e.target.value
+                                )
+                              }
+                            />
+                          ) : (
+                            <span className="text-gray-700">{it.unit || "Nos"}</span>
+                          )}
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0"
+                            max="99999"
+                            className="border p-1 rounded w-full text-right"
+                            value={it.quantity}
+                            onChange={(e) =>
+                              handleItemChange(
+                                type,
+                                idx,
+                                "quantity",
+                                e.target.value
+                              )
+                            }
+                          />
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            className="border p-1 rounded w-full text-right"
+                            value={it.rate}
+                            onChange={(e) =>
+                              handleItemChange(
+                                type,
+                                idx,
+                                "rate",
+                                e.target.value
+                              )
+                            }
+                          />
+                        </td>
+                        <td className="p-2 text-right">{Math.round(lineAmount)}</td>
+                      </tr>
+                    );
+                  })}
+                  {items.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="text-center text-gray-400 p-3">
+                        No items added
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
+        ) : (
+          <div className="bg-white border rounded-lg">
+            <div className="flex items-center justify-between px-3 py-2 border-b">
+              <div className="text-sm font-semibold text-emerald-800">
+                Sale Items
+              </div>
+              <button
+                type="button"
+                onClick={() => addItemRow(type)}
+                className="flex items-center gap-1 text-xs px-2 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+              >
+                <Plus size={14} /> Add Item
+              </button>
+            </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-emerald-100 text-emerald-800">
-                <tr>
-                  <th className="p-2 text-left">Product</th>
-                  <th className="p-2 text-right">Bags</th>
-                  <th className="p-2 text-right">Per Bag (kg)</th>
-                  <th className="p-2 text-right">Net Weight (kg)</th>
-                  <th className="p-2 text-right">Rate</th>
-                  <th className="p-2 text-left">Rate Type</th>
-                  <th className="p-2 text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((it, idx) => {
-                  const lineAmount = computeLineAmount(it);
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-emerald-100 text-emerald-800">
+                  <tr>
+                    <th className="p-2 text-left">Brand</th>
+                    <th className="p-2 text-left">Product</th>
+                    <th className="p-2 text-left">Rate Type</th>
+                    <th className="p-2 text-right">Qty</th>
+                    <th className="p-2 text-right">Unit Weight (kg)</th>
+                    <th className="p-2 text-right">Net Weight (kg)</th>
+                    <th className="p-2 text-right">Rate</th>
+                    <th className="p-2 text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it, idx) => {
+                    const lineAmount = computeLineAmount(it);
+                    const product = products.find((p) => String(p._id) === String(it.productTypeId));
+                    const tonKg = Number(product?.conversionFactors?.Ton || 1000) || 1000;
 
-                  // Stock-aware product options for SALE
-                  let productOptions = products;
-                  if (
-                    type === "SALE" &&
-                    form.companyId &&
-                    stockBalances.length
-                  ) {
-                    const availableIds = new Set(
-                      stockBalances
-                        .filter(
-                          (b) =>
-                            b.companyId === form.companyId &&
-                            Number(b.balanceKg || 0) > 0
+                    // Stock-aware product options for SALE
+                    let productOptions = products;
+                    let brandOptions = [];
+                    if (type === "SALE" && stockBalances.length) {
+                      const availableIds = new Set(
+                        stockBalances
+                          .filter((b) => Number(b.balanceKg || 0) > 0)
+                          .map((b) => b.productTypeId)
+                      );
+                      const availableProducts = products.filter((p) =>
+                        availableIds.has(p._id)
+                      );
+                      brandOptions = Array.from(
+                        new Set(
+                          availableProducts.map((p) => p.brand).filter(Boolean)
                         )
-                        .map((b) => b.productTypeId)
-                    );
-                    productOptions = products.filter((p) =>
-                      availableIds.has(p._id)
-                    );
-                  }
+                      ).sort();
+                      if (it.brand) {
+                        productOptions = availableProducts.filter(
+                          (p) => p.brand === it.brand
+                        );
+                      } else {
+                        productOptions = availableProducts;
+                      }
+                    }
 
-                  const balance =
-                    type === "SALE" && form.companyId && it.productTypeId
-                      ? getStockBalance(form.companyId, it.productTypeId)
-                      : null;
+                    const balance =
+                      type === "SALE" && it.productTypeId
+                        ? getStockBalance(it.productTypeId)
+                        : null;
+                    const netKg = Number(it.netWeightKg || 0);
+                    const unitKg =
+                      Number(it.perBagWeightKg || 0) ||
+                      (it.rateType === "per_kg" ? 1 : 0);
+                    const exceeds = balance != null && netKg > balance;
+                    const unitLabel =
+                      it.rateType === "per_kg"
+                        ? "kg"
+                        : it.rateType === "per_ton"
+                        ? "ton"
+                        : "bags";
+                    const suggestedQty =
+                      exceeds && unitKg
+                        ? Math.max(0, Math.floor(balance / unitKg))
+                        : null;
+                    const perBagReadOnly =
+                      type === "SALE" || it.rateType !== "per_bag";
+                    const canShowPerTon =
+                      type === "SALE"
+                        ? balance != null
+                          ? balance >= tonKg
+                          : true
+                        : true;
 
-                  return (
-                    <tr key={idx} className="border-t align-top">
-                      <td className="p-2">
-                        <select
-                          className="border p-1 rounded w-full"
-                          value={it.productTypeId}
-                          onChange={(e) =>
-                            handleItemChange(
-                              type,
-                              idx,
-                              "productTypeId",
-                              e.target.value
-                            )
-                          }
-                        >
-                          <option value="">
-                            {type === "SALE" && form.companyId
-                              ? "Select stock item"
-                              : "Select product"}
-                          </option>
-                          {productOptions.map((p) => (
-                            <option key={p._id} value={p._id}>
-                              {p.name}
+                    return (
+                      <tr key={idx} className="border-t align-top">
+                        <td className="p-2">
+                          {type === "SALE" ? (
+                            <select
+                              className="border p-1 rounded w-full"
+                              value={it.brand}
+                              onChange={(e) =>
+                                handleItemChange(type, idx, "brand", e.target.value)
+                              }
+                            >
+                              <option value="">Select brand</option>
+                              {brandOptions.map((b, i) => (
+                                <option key={`${b}-${i}`} value={b}>
+                                  {b}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </td>
+                        <td className="p-2">
+                          <select
+                            className="border p-1 rounded w-full"
+                            value={it.productTypeId}
+                            onChange={(e) =>
+                              handleItemChange(type, idx, "productTypeId", e.target.value)
+                            }
+                          >
+                            <option value="">
+                              {type === "SALE" && it.brand
+                                ? "Select stock item"
+                                : "Select product"}
                             </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="p-2">
-                        <input
-                          type="number"
-                          min="0"
-                          className="border p-1 rounded w-full text-right"
-                          value={it.numBags}
-                          onChange={(e) =>
-                            handleItemChange(
-                              type,
-                              idx,
-                              "numBags",
-                              e.target.value
-                            )
-                          }
-                        />
-                      </td>
-                      <td className="p-2">
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.001"
-                          className="border p-1 rounded w-full text-right"
-                          value={it.perBagWeightKg}
-                          onChange={(e) =>
-                            handleItemChange(
-                              type,
-                              idx,
-                              "perBagWeightKg",
-                              e.target.value
-                            )
-                          }
-                        />
-                      </td>
-                      <td className="p-2">
-                        <input
-                          type="number"
-                          step="0.001"
-                          className="border p-1 rounded w-full text-right bg-gray-50"
-                          value={it.netWeightKg}
-                          readOnly
-                        />
-                        {type === "SALE" &&
-                          form.companyId &&
-                          it.productTypeId && (
+                            {productOptions.map((p) => (
+                              <option key={p._id} value={p._id}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          <select
+                            className="border p-1 rounded w-full"
+                            value={it.rateType}
+                            onChange={(e) =>
+                              handleItemChange(type, idx, "rateType", e.target.value)
+                            }
+                          >
+                            <option value="per_kg">Per Kg</option>
+                            <option value="per_bag">Per Bag</option>
+                            {canShowPerTon && <option value="per_ton">Per Ton</option>}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0"
+                            max="99999"
+                            className={`border p-1 rounded w-full text-right ${exceeds ? "border-red-500 bg-red-50" : ""}`}
+                            value={it.numBags}
+                            placeholder={
+                              it.rateType === "per_kg"
+                                ? "KG"
+                                : it.rateType === "per_ton"
+                                ? "Ton"
+                                : "Bags"
+                            }
+                            onChange={(e) =>
+                              handleItemChange(type, idx, "numBags", e.target.value)
+                            }
+                          />
+                          {exceeds && suggestedQty !== null && (
+                            <div className="mt-1 text-[10px] text-red-600 text-right">
+                              Reduce {unitLabel} to {suggestedQty}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            className={`border p-1 rounded w-full text-right ${perBagReadOnly ? "bg-gray-50 text-gray-600" : ""} ${exceeds ? "border-red-500 bg-red-50" : ""}`}
+                            value={it.perBagWeightKg}
+                            readOnly={perBagReadOnly}
+                            onChange={(e) =>
+                              handleItemChange(type, idx, "perBagWeightKg", e.target.value)
+                            }
+                          />
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            step="0.001"
+                            className={`border p-1 rounded w-full text-right bg-gray-50 ${exceeds ? "border-red-500" : ""}`}
+                            value={it.netWeightKg}
+                            readOnly
+                          />
+                          {type === "SALE" && it.brand && it.productTypeId && (
                             <div className="mt-1 text-[10px] text-gray-500 text-right">
                               {balance != null
                                 ? `Available: ${balance.toFixed(3)} kg in stock`
                                 : "No stock info"}
                             </div>
                           )}
-                      </td>
-                      <td className="p-2">
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          className="border p-1 rounded w-full text-right"
-                          value={it.rate}
-                          onChange={(e) =>
-                            handleItemChange(type, idx, "rate", e.target.value)
-                          }
-                        />
-                      </td>
-                      <td className="p-2">
-                        <select
-                          className="border p-1 rounded w-full"
-                          value={it.rateType}
-                          onChange={(e) =>
-                            handleItemChange(
-                              type,
-                              idx,
-                              "rateType",
-                              e.target.value
-                            )
-                          }
-                        >
-                          <option value="per_kg">Per Kg</option>
-                          <option value="per_bag">Per Bag</option>
-                        </select>
-                      </td>
-                      <td className="p-2 text-right">
-                        {lineAmount.toFixed(2)}
+                        </td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            className="border p-1 rounded w-full text-right"
+                            value={it.rate}
+                            onChange={(e) =>
+                              handleItemChange(
+                                type,
+                                idx,
+                                "rate",
+                                e.target.value.replace(/\D/g, "")
+                              )
+                            }
+                          />
+                        </td>
+                        <td className="p-2 text-right">{Math.round(lineAmount)}</td>
+                      </tr>
+                    );
+                  })}
+                  {items.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="text-center text-gray-400 p-3">
+                        No items added
                       </td>
                     </tr>
-                  );
-                })}
-                {items.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="text-center text-gray-400 p-3">
-                      No items added
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Payment section AFTER items */}
-        <div className="grid grid-cols-4 gap-3 items-end">
-          <div className="col-span-2">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <div className="col-span-1 md:col-span-2">
             <label className="text-xs text-gray-600">Payment Status</label>
             <div className="flex items-center gap-4 mt-1 text-sm">
               <label className="inline-flex items-center gap-1">
@@ -833,7 +1390,7 @@ export default function Financial() {
             </div>
           </div>
 
-          <div className="col-span-1">
+          <div className="col-span-1 md:col-span-1">
             <label className="text-xs text-gray-600">Payment Method</label>
             <select
               className="w-full border p-2 rounded text-sm"
@@ -844,12 +1401,11 @@ export default function Financial() {
             >
               <option value="CASH">Cash</option>
               <option value="CARD">Card</option>
-              <option value="BANK_TRANSFER">Bank Transfer</option>
-              <option value="CREDIT">Credit</option>
+              <option value="ONLINE_TRANSFER">Online Transfer</option>
             </select>
           </div>
 
-          <div className="col-span-1">
+          <div className="col-span-1 md:col-span-1">
             <label className="text-xs text-gray-600 flex items-center gap-1">
               Due Date
               {form.paymentStatus !== "PAID" && (
@@ -867,38 +1423,40 @@ export default function Financial() {
             />
           </div>
 
-          <div className="col-span-1">
-            <label className="text-xs text-gray-600">Total Amount</label>
-            <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
-              Rs. {total.toFixed(2)}
-            </div>
-          </div>
-        </div>
-
-        {/* Partial details */}
-        {form.paymentStatus === "PARTIAL" && (
-          <div className="grid grid-cols-4 gap-3">
-            <div className="col-span-1">
-              <label className="text-xs text-gray-600">Amount Paid (Rs)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                className="w-full border p-2 rounded text-sm text-right"
-                value={form.partialPaid}
-                onChange={(e) =>
-                  handleFormChange(type, "partialPaid", e.target.value)
-                }
-              />
-            </div>
-            <div className="col-span-1">
-              <label className="text-xs text-gray-600">Remaining (Rs)</label>
-              <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
-                Rs. {partialRemaining.toFixed(2)}
+          <div className="col-span-1 md:col-span-1">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div>
+                <label className="text-xs text-gray-600">Total Amount</label>
+                <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
+                  Rs. {Math.round(total)}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">Amount Paid (Rs)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  className="w-full border p-2 rounded text-sm text-right"
+                  value={form.partialPaid}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, "");
+                    const capped = digits
+                      ? String(Math.min(Number(digits), Math.round(total)))
+                      : "";
+                    handleFormChange(type, "partialPaid", capped);
+                  }}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">Remaining (Rs)</label>
+                <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
+                  Rs. {Math.round(partialRemaining)}
+                </div>
               </div>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Buttons */}
         <div className="flex items-center justify-between">
@@ -980,7 +1538,7 @@ export default function Financial() {
               <tr>
                 <th className="p-2 text-left">Date</th>
                 <th className="p-2 text-left">Invoice #</th>
-                <th className="p-2 text-left">Company</th>
+                <th className="p-2 text-left">Customer</th>
                 <th className="p-2 text-right">Items</th>
                 <th className="p-2 text-right">Total Amount</th>
                 <th className="p-2 text-left">Payment</th>
@@ -999,7 +1557,7 @@ export default function Financial() {
                     <td className="p-2">{t.companyName}</td>
                     <td className="p-2 text-right">{t.items?.length || 0}</td>
                     <td className="p-2 text-right">
-                      {t.totalAmount?.toFixed(2)}
+                      {Math.round(t.totalAmount || 0)}
                     </td>
                     <td className="p-2">
                       <div className="flex flex-col gap-0.5">
@@ -1088,21 +1646,21 @@ export default function Financial() {
 
       {/* Title */}
       <div>
-        <h2 className="text-3xl font-bold text-emerald-900">Transactions</h2>
+        <h2 className="text-3xl font-bold text-emerald-900">Sales &amp; Procurement</h2>
         <p className="text-gray-500 text-sm">
           Manage sale and purchase invoices linked with master data and stock.
         </p>
       </div>
 
-      {/* Summary */}
-      {todaySummaryCards()}
-
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-gray-200 mt-4">
+      <div className="flex flex-wrap gap-2 border-b border-gray-200 mt-4">
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => {
+              setActiveTab(tab.key);
+              setSearchParams({ tab: tab.key });
+            }}
             className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition border-b-2 ${
               activeTab === tab.key
                 ? "text-emerald-700 border-emerald-700 bg-emerald-50"
@@ -1130,6 +1688,156 @@ export default function Financial() {
           </>
         )}
       </div>
+
+      {saleDatePinDialog.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Admin PIN
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Enter PIN to unlock the sale date field.
+            </p>
+            <Pin4Input
+              value={saleDatePinDialog.pin}
+              onChange={(v) =>
+                setSaleDatePinDialog((p) => ({
+                  ...p,
+                  pin: v.slice(0, 4),
+                  pinError: "",
+                }))
+              }
+              onComplete={(entered) => {
+                const expected = settings.adminPin || "0000";
+                if (entered === expected) {
+                  setSaleDateUnlocked(true);
+                  setSaleDatePinDialog({ open: false, pin: "", pinError: "" });
+                } else {
+                  setSaleDatePinDialog((p) => ({
+                    ...p,
+                    pinError: "Incorrect PIN.",
+                  }));
+                }
+              }}
+              error={!!saleDatePinDialog.pinError}
+              className="mb-3"
+            />
+            {saleDatePinDialog.pinError && (
+              <p className="text-xs text-red-600 mb-3">
+                {saleDatePinDialog.pinError}
+              </p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() =>
+                  setSaleDatePinDialog({ open: false, pin: "", pinError: "" })
+                }
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const entered = saleDatePinDialog.pin;
+                  const expected = settings.adminPin || "0000";
+                  if (entered === expected) {
+                    setSaleDateUnlocked(true);
+                    setSaleDatePinDialog({
+                      open: false,
+                      pin: "",
+                      pinError: "",
+                    });
+                  } else {
+                    setSaleDatePinDialog((p) => ({
+                      ...p,
+                      pinError: "Incorrect PIN.",
+                    }));
+                  }
+                }}
+                disabled={saleDatePinDialog.pin.length !== 4}
+                className="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm"
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {purchaseDatePinDialog.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Admin PIN
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Enter PIN to unlock the purchase date field.
+            </p>
+            <Pin4Input
+              value={purchaseDatePinDialog.pin}
+              onChange={(v) =>
+                setPurchaseDatePinDialog((p) => ({
+                  ...p,
+                  pin: v.slice(0, 4),
+                  pinError: "",
+                }))
+              }
+              onComplete={(entered) => {
+                const expected = settings.adminPin || "0000";
+                if (entered === expected) {
+                  setPurchaseDateUnlocked(true);
+                  setPurchaseDatePinDialog({ open: false, pin: "", pinError: "" });
+                } else {
+                  setPurchaseDatePinDialog((p) => ({
+                    ...p,
+                    pinError: "Incorrect PIN.",
+                  }));
+                }
+              }}
+              error={!!purchaseDatePinDialog.pinError}
+              className="mb-3"
+            />
+            {purchaseDatePinDialog.pinError && (
+              <p className="text-xs text-red-600 mb-3">
+                {purchaseDatePinDialog.pinError}
+              </p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() =>
+                  setPurchaseDatePinDialog({ open: false, pin: "", pinError: "" })
+                }
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const entered = purchaseDatePinDialog.pin;
+                  const expected = settings.adminPin || "0000";
+                  if (entered === expected) {
+                    setPurchaseDateUnlocked(true);
+                    setPurchaseDatePinDialog({
+                      open: false,
+                      pin: "",
+                      pinError: "",
+                    });
+                  } else {
+                    setPurchaseDatePinDialog((p) => ({
+                      ...p,
+                      pinError: "Incorrect PIN.",
+                    }));
+                  }
+                }}
+                disabled={purchaseDatePinDialog.pin.length !== 4}
+                className="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm"
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete dialog */}
       {deleteTarget && (
@@ -1210,7 +1918,7 @@ export default function Financial() {
                   {printTxn.type}
                 </div>
                 <div>
-                  <span className="font-semibold">Company: </span>
+                  <span className="font-semibold">Customer: </span>
                   {printTxn.companyName}
                 </div>
               </div>
@@ -1234,44 +1942,70 @@ export default function Financial() {
             </div>
 
             <div className="border rounded mb-3 overflow-hidden">
-              <table className="w-full text-[11px]">
-                <thead className="bg-emerald-50 text-emerald-900">
-                  <tr>
-                    <th className="p-1 text-left">Product</th>
-                    <th className="p-1 text-right">Bags</th>
-                    <th className="p-1 text-right">Per Bag</th>
-                    <th className="p-1 text-right">Net (kg)</th>
-                    <th className="p-1 text-right">Rate</th>
-                    <th className="p-1 text-right">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {printTxn.items?.map((it, idx) => (
-                    <tr key={idx} className="border-t">
-                      <td className="p-1">{it.productTypeName}</td>
-                      <td className="p-1 text-right">{it.numBags}</td>
-                      <td className="p-1 text-right">{it.perBagWeightKg}</td>
-                      <td className="p-1 text-right">{it.netWeightKg}</td>
-                      <td className="p-1 text-right">
-                        {it.rate} / {it.rateType === "per_bag" ? "bag" : "kg"}
-                      </td>
-                      <td className="p-1 text-right">
-                        {it.amount?.toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="border-t bg-emerald-50">
-                    <td colSpan={5} className="p-1 text-right font-semibold">
-                      Total
-                    </td>
-                    <td className="p-1 text-right font-semibold">
-                      {printTxn.totalAmount?.toFixed(2)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              {(() => {
+                const printHasManagerial = (printTxn.items || []).some(
+                  (it) => it.itemName || it.isManagerial
+                );
+                return (
+                  <table className="w-full text-[11px]">
+                    <thead className="bg-emerald-50 text-emerald-900">
+                      {printHasManagerial ? (
+                        <tr>
+                          <th className="p-1 text-left">Item</th>
+                          <th className="p-1 text-right">Qty</th>
+                          <th className="p-1 text-right">Unit</th>
+                          <th className="p-1 text-right">Rate</th>
+                          <th className="p-1 text-right">Amount</th>
+                        </tr>
+                      ) : (
+                        <tr>
+                          <th className="p-1 text-left">Product</th>
+                          <th className="p-1 text-right">Qty</th>
+                          <th className="p-1 text-right">Unit (kg)</th>
+                          <th className="p-1 text-right">Net (kg)</th>
+                          <th className="p-1 text-right">Rate</th>
+                          <th className="p-1 text-right">Amount</th>
+                        </tr>
+                      )}
+                    </thead>
+                    <tbody>
+                      {printTxn.items?.map((it, idx) => (
+                        <tr key={idx} className="border-t">
+                          {printHasManagerial ? (
+                            <>
+                              <td className="p-1">{it.itemName || "-"}</td>
+                              <td className="p-1 text-right">{it.quantity}</td>
+                              <td className="p-1 text-right">{it.unit || "Nos"}</td>
+                              <td className="p-1 text-right">{it.rate}</td>
+                              <td className="p-1 text-right">{Math.round(it.amount || 0)}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="p-1">{it.productTypeName}</td>
+                              <td className="p-1 text-right">{it.numBags}</td>
+                              <td className="p-1 text-right">{it.perBagWeightKg}</td>
+                              <td className="p-1 text-right">{it.netWeightKg}</td>
+                              <td className="p-1 text-right">
+                                {it.rate} / {it.rateType === "per_bag" ? "bag" : it.rateType === "per_ton" ? "ton" : "kg"}
+                              </td>
+                              <td className="p-1 text-right">{Math.round(it.amount || 0)}</td>
+                            </>
+                          )}
+                        </tr>
+                      ))}
+                      <tr className="border-t bg-emerald-50">
+                        <td className="p-1 text-right font-semibold" colSpan={printHasManagerial ? 4 : 5}>
+                          Total
+                        </td>
+                        <td className="p-1 text-right font-semibold">
+                          {Math.round(printTxn.totalAmount || 0)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
-
             {printTxn.remarks && (
               <div className="text-[11px] text-gray-600 mb-3">
                 <span className="font-semibold">Remarks: </span>

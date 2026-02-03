@@ -104,28 +104,30 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-3xl font-bold text-emerald-900">Welcome back!</h2>
+          <h2 className="text-2xl md:text-3xl font-bold text-emerald-900">
+            Welcome back!
+          </h2>
           <p className="text-sm text-gray-500 mt-1">
             Here's what's happening today
           </p>
         </div>
 
         {/* calendar badge */}
-        <div className="rounded-lg px-4 py-2 bg-gradient-to-r from-emerald-200 to-teal-100 shadow-sm">
+        <div className="rounded-lg px-4 py-2 bg-gradient-to-r from-emerald-200 to-teal-100 shadow-sm w-full md:w-auto">
           <DatePicker
             selected={date}
             onChange={(d) => setDate(d)}
             dateFormat="EEE, MMM d, yyyy"
-            className="bg-transparent border-none outline-none focus:ring-0 hover:border-none text-sm font-medium text-emerald-900 w-44 text-center cursor-pointer"
+            className="bg-transparent border-none outline-none focus:ring-0 hover:border-none text-sm font-medium text-emerald-900 w-full md:w-44 text-center cursor-pointer"
             readOnly
           />
         </div>
       </div>
 
       {/* Cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {cards.map((c, i) => (
           <div
             key={i}
@@ -150,8 +152,8 @@ export default function Dashboard() {
       </div>
 
       {/* Recent Activities + Graph */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2 bg-white rounded-lg shadow-sm p-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-white rounded-lg shadow-sm p-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold text-emerald-700">
               Recent Activities
@@ -165,7 +167,7 @@ export default function Dashboard() {
             {activities.map((a, idx) => (
               <div
                 key={idx}
-                className="flex items-center justify-between p-3 rounded-md hover:bg-gray-50 transition"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-md hover:bg-gray-50 transition"
               >
                 <div className="flex items-start gap-3">
                   <div
@@ -196,7 +198,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="col-span-1 bg-white rounded-lg shadow-sm p-4">
+        <div className="lg:col-span-1 bg-white rounded-lg shadow-sm p-4">
           <h4 className="font-semibold text-emerald-700 mb-4">Stock Summary</h4>
           <div className="h-44 flex items-center justify-center text-gray-400">
             📊 Graph placeholder

@@ -1,7 +1,20 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { MessageCircle, Send, X, Trash2, Loader } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../../services/api";
+
+const STORAGE_KEY = "ai-chat-position";
+
+function getStoredPosition() {
+  try {
+    const s = localStorage.getItem(STORAGE_KEY);
+    if (s) {
+      const { x, y } = JSON.parse(s);
+      if (typeof x === "number" && typeof y === "number") return { x, y };
+    }
+  } catch (_) {}
+  return null;
+}
 
 export default function AIChatbot() {
   const [isOpen, setIsOpen] = useState(false);
@@ -9,6 +22,12 @@ export default function AIChatbot() {
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId] = useState(() => `session-${Date.now()}`);
+
+  const defaultPos = { x: typeof window !== "undefined" ? window.innerWidth - 80 : 0, y: typeof window !== "undefined" ? window.innerHeight - 80 : 0 };
+  const [position, setPosition] = useState(() => getStoredPosition() || defaultPos);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef({ startX: 0, startY: 0, startLeft: 0, startTop: 0 });
+  const didDragRef = useRef(false);
 
   const messagesEndRef = useRef(null);
 
@@ -98,23 +117,78 @@ export default function AIChatbot() {
     }
   };
 
+  const handleDragStart = useCallback((e) => {
+    e.preventDefault();
+    if (e.button !== 0) return;
+    didDragRef.current = false;
+    setIsDragging(true);
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startLeft: position.x, startTop: position.y };
+  }, [position.x, position.y]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e) => {
+      const { startX, startY, startLeft, startTop } = dragRef.current;
+      if (Math.abs(e.clientX - startX) > 2 || Math.abs(e.clientY - startY) > 2) didDragRef.current = true;
+      const x = Math.max(0, Math.min(window.innerWidth - 56, startLeft + (e.clientX - startX)));
+      const y = Math.max(0, Math.min(window.innerHeight - 56, startTop + (e.clientY - startY)));
+      setPosition({ x, y });
+    };
+    const onUp = () => setIsDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isDragging]);
+
+  useEffect(() => {
+    if (!isDragging) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(position));
+      } catch (_) {}
+    }
+  }, [isDragging, position]);
+
+  // When open: position window so it opens toward screen (e.g. bottom-right button → window opens left and upward)
+  const CHAT_W = 384;
+  const CHAT_H = 500;
+  const GAP = 8;
+  const getChatStyle = () => {
+    if (typeof window === "undefined") return { left: position.x, top: position.y };
+    let left = position.x;
+    let top = position.y;
+    if (position.x + CHAT_W + GAP > window.innerWidth) left = Math.max(0, position.x - CHAT_W - GAP);
+    if (position.y + CHAT_H + GAP > window.innerHeight) top = Math.max(0, position.y - CHAT_H - GAP);
+    return { left, top };
+  };
+  const chatStyle = isOpen ? getChatStyle() : { left: position.x, top: position.y };
+
   return (
     <>
-      {/* Floating Button */}
+      {/* Draggable Floating Button */}
       {!isOpen && (
         <button
-          onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 w-14 h-14 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 flex items-center justify-center z-50 hover:scale-110"
+          type="button"
+          onClick={() => { if (!didDragRef.current) setIsOpen(true); didDragRef.current = false; }}
+          onMouseDown={handleDragStart}
+          className="fixed w-14 h-14 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-full shadow-lg hover:shadow-xl transition-shadow duration-200 flex items-center justify-center z-50 hover:scale-110 cursor-grab active:cursor-grabbing select-none"
+          style={{ left: position.x, top: position.y }}
+          title="Drag to move · Click to open"
         >
-          <MessageCircle className="w-6 h-6" />
+          <MessageCircle className="w-6 h-6 pointer-events-none" />
         </button>
       )}
 
-      {/* Chat Window */}
+      {/* Chat Window (same position as button when opened) */}
       {isOpen && (
-        <div className="fixed bottom-6 right-6 w-96 h-[500px] bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-gray-200">
-          {/* Header */}
-          <div className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 rounded-t-2xl flex items-center justify-between">
+        <div className="fixed w-96 h-[500px] max-h-[90vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-gray-200" style={chatStyle}>
+          {/* Header - drag to move (buttons still clickable) */}
+          <div
+            className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 rounded-t-2xl flex items-center justify-between cursor-grab active:cursor-grabbing select-none"
+            onMouseDown={(e) => { if (!e.target.closest("button")) handleDragStart(e); }}
+          >
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
                 <MessageCircle className="w-5 h-5" />

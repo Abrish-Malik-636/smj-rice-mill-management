@@ -10,6 +10,8 @@ import Production from "./pages/Production";
 import Reports from "./pages/Reports";
 import Notifications from "./pages/Notifications";
 import MasterData from "./pages/MasterData";
+import HRPayroll from "./pages/HRPayroll";
+import AccountingFinance from "./pages/AccountingFinance";
 import AIChatbot from "./components/AI/AIChatbot";
 import AISuggestions from "./components/AI/AISuggestions";
 
@@ -21,10 +23,14 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/financial" element={<Financial />} />
           <Route path="/stock" element={<Stock />} />
+          <Route path="/stock-managerial" element={<Stock initialTab="managerial" />} />
           <Route path="/gatepass" element={<GatePass />} />
+          <Route path="/gatepasses" element={<GatePass />} />
           <Route path="/production" element={<Production />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/notifications" element={<Notifications />} />
+          <Route path="/hr-payroll" element={<HRPayroll />} />
+          <Route path="/accounting-finance" element={<AccountingFinance />} />
           <Route path="/masterdata" element={<MasterData />} />
           <Route path="/ai/suggestions" element={<AISuggestions />} />
         </Routes>

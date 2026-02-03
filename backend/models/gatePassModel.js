@@ -8,6 +8,11 @@ const ItemSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    stockType: {
+      type: String,
+      enum: ["Production", "Managerial"],
+      default: "Production",
+    },
     customItemName: {
       type: String,
       trim: true,
@@ -45,6 +50,17 @@ const GatePassSchema = new mongoose.Schema(
       type: String,
       unique: true,
       sparse: true,
+    },
+
+    invoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Transaction",
+      default: null,
+    },
+    invoiceNo: {
+      type: String,
+      trim: true,
+      default: "",
     },
 
     truckNo: {

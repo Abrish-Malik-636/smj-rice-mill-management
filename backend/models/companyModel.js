@@ -18,27 +18,6 @@ const companySchema = new mongoose.Schema(
         return value ? value.trim() : value;
       },
     },
-    type: {
-      type: String,
-      enum: {
-        values: ["Supplier", "Customer", "Transporter", "Both"],
-        message: "Type must be Supplier, Customer, Transporter, or Both",
-      },
-      required: [true, "Type is required"],
-    },
-    contactPerson: {
-      type: String,
-      required: [true, "Contact person is required"],
-      trim: true,
-      minlength: [2, "Contact person must be at least 2 characters"],
-      maxlength: [50, "Contact person must not exceed 50 characters"],
-      validate: {
-        validator: function (v) {
-          return !v || /^[a-zA-Z\s]+$/.test(v);
-        },
-        message: "Contact person can only contain letters and spaces",
-      },
-    },
     phone: {
       type: String,
       required: [true, "Phone number is required"],
@@ -93,12 +72,10 @@ companySchema.pre("save", async function (next) {
   if (this.isModified("name")) {
     // Check for duplicates (case-insensitive, trimmed)
     const normalizedName = this.name.toLowerCase().trim();
+    const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const existing = await mongoose.model("Company").findOne({
       _id: { $ne: this._id },
-      $or: [
-        { name: { $regex: new RegExp(`^${normalizedName}$`, "i") } },
-        { name: { $regex: new RegExp(normalizedName, "i") } },
-      ],
+      name: { $regex: new RegExp(`^${escaped}$`, "i") },
     });
 
     if (existing) {

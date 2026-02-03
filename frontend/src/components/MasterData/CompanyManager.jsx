@@ -5,14 +5,10 @@ import { toast } from "react-hot-toast";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
 
-const TYPE_OPTIONS = ["Supplier", "Customer", "Transporter", "Both(Supplier & Customer)"];
-
 export default function CompanyManager() {
   const [companies, setCompanies] = useState([]);
   const [formData, setFormData] = useState({
     name: "",
-    type: "",
-    contactPerson: "",
     phone: "",
     email: "",
     address: "",
@@ -29,7 +25,7 @@ export default function CompanyManager() {
       const res = await api.get("/companies");
       setCompanies(res.data.data || []);
     } catch (err) {
-      toast.error("Failed to load parties");
+      toast.error("Failed to load customers");
     }
   };
 
@@ -46,6 +42,8 @@ export default function CompanyManager() {
   const normalizeText = (text) =>
     text ? text.toLowerCase().trim().replace(/\s+/g, " ") : "";
 
+  
+
   const checkDuplicate = async (name, excludeId = null) => {
     if (!name || name.trim().length < 2) return null;
     setCheckingDuplicate(true);
@@ -53,7 +51,7 @@ export default function CompanyManager() {
       const normalized = normalizeText(name);
       const existing = companies.find((c) => {
         if (excludeId && c._id === excludeId) return false;
-        return normalizeText(c.name) === normalized || normalizeText(c.name).includes(normalized) || normalized.includes(normalizeText(c.name));
+        return normalizeText(c.name) === normalized;
       });
       return existing ? existing.name : null;
     } finally {
@@ -65,20 +63,11 @@ export default function CompanyManager() {
   const getFieldError = (name, value) => {
     switch (name) {
       case "name":
-        if (!value.trim()) return "Party name is required";
-        if (/\d/.test(value.trim())) return "Party name cannot contain numbers";
-        if (value.trim().length < 2) return "Party name must be at least 2 characters";
-        if (value.trim().length > 100) return "Party name must not exceed 100 characters";
-        return null;
-      case "type":
-        if (!value.trim()) return "Type is required";
-        if (!TYPE_OPTIONS.includes(value)) return "Select a valid type";
-        return null;
-      case "contactPerson":
-        if (!value.trim()) return "Contact person is required";
-        if (value.trim().length < 2) return "Contact person must be at least 2 characters";
-        if (value.trim().length > 50) return "Contact person must not exceed 50 characters";
-        if (!/^[a-zA-Z\s]+$/.test(value.trim())) return "Contact person can only contain letters and spaces";
+        if (!value.trim()) return "Customer name is required";
+        if (/\d/.test(value.trim())) return "Customer name cannot contain numbers";
+        if (/[^a-zA-Z\s]/.test(value.trim())) return "Customer name cannot contain special characters";
+        if (value.trim().length < 2) return "Customer name must be at least 2 characters";
+        if (value.trim().length > 100) return "Customer name must not exceed 100 characters";
         return null;
       case "phone": {
         const digits = value.replace(/\D/g, "");
@@ -94,6 +83,7 @@ export default function CompanyManager() {
         return null;
       case "address":
         if (!value.trim()) return "Address is required";
+        if (/[^a-zA-Z0-9\s.,\-]/.test(value.trim())) return "Address cannot contain special characters";
         if (value.trim().length < 5) return "Address must be at least 5 characters";
         if (value.trim().length > 200) return "Address must not exceed 200 characters";
         return null;
@@ -106,7 +96,7 @@ export default function CompanyManager() {
     let msg = getFieldError(name, value);
     if (name === "name" && !msg) {
       const dup = await checkDuplicate(value, editingId);
-      if (dup) msg = `Similar party exists: "${dup}"`;
+      if (dup) msg = `Customer with same name already exists: "${dup}"`;
     }
     setErrors((prev) => (msg ? { ...prev, [name]: msg } : { ...prev, [name]: undefined }));
     setTouched((prev) => ({ ...prev, [name]: true }));
@@ -114,17 +104,17 @@ export default function CompanyManager() {
 
   // Validate ALL fields on submit and set all errors at once
   const validateAll = async () => {
-    const allTouched = { name: true, type: true, contactPerson: true, phone: true, email: true, address: true };
+    const allTouched = { name: true, phone: true, email: true, address: true };
     setTouched(allTouched);
     const newErrors = {};
-    const fields = ["name", "type", "contactPerson", "phone", "email", "address"];
+    const fields = ["name", "phone", "email", "address"];
     for (const name of fields) {
       const msg = getFieldError(name, formData[name]);
       if (msg) newErrors[name] = msg;
     }
     if (!newErrors.name && formData.name.trim()) {
       const dup = await checkDuplicate(formData.name, editingId);
-      if (dup) newErrors.name = `Similar party exists: "${dup}"`;
+      if (dup) newErrors.name = `Similar customer exists: "${dup}"`;
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -134,15 +124,22 @@ export default function CompanyManager() {
     const { name, value } = e.target;
     let processed = value;
     if (name === "phone") processed = formatPhone(value);
-    if (name === "contactPerson") processed = value.replace(/[^a-zA-Z\s]/g, "");
-    if (name === "name") processed = value.replace(/[0-9]/g, "");
+    if (name === "name") processed = value.replace(/[0-9]/g, "").replace(/[^a-zA-Z\s]/g, "");
+    if (name === "address") processed = value.replace(/[^a-zA-Z0-9\s.,\-]/g, "");
     setFormData((prev) => ({ ...prev, [name]: processed }));
     if (touched[name] || value.length > 0) await validateField(name, processed);
   };
 
+  const toTitleCase = (str) => str && typeof str === "string" ? str.trim().toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : str;
+
   const handleBlur = async (e) => {
     const { name, value } = e.target;
-    await validateField(name, name === "phone" ? formatPhone(value) : value);
+    let val = name === "phone" ? formatPhone(value) : value;
+    if (name === "name" && val && val.trim()) {
+      val = toTitleCase(val);
+      setFormData((prev) => ({ ...prev, [name]: val }));
+    }
+    await validateField(name, val);
   };
 
   const handleSubmit = async (e) => {
@@ -156,26 +153,24 @@ export default function CompanyManager() {
     try {
       const payload = {
         name: formData.name.trim(),
-        type: formData.type.trim(),
-        contactPerson: formData.contactPerson.trim(),
         phone: formData.phone.trim(),
         email: formData.email.trim().toLowerCase(),
         address: formData.address.trim(),
       };
       if (editingId) {
         await api.put(`/companies/${editingId}`, payload);
-        toast.success("Party updated successfully");
+        toast.success("Customer updated successfully");
       } else {
         await api.post("/companies", payload);
-        toast.success("Party added successfully");
+        toast.success("Customer added successfully");
       }
-      setFormData({ name: "", type: "", contactPerson: "", phone: "", email: "", address: "" });
+      setFormData({ name: "", phone: "", email: "", address: "" });
       setEditingId(null);
       setErrors({});
       setTouched({});
       fetchCompanies();
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to save party");
+      toast.error(err.response?.data?.message || "Failed to save customer");
     } finally {
       setLoading(false);
     }
@@ -187,11 +182,11 @@ export default function CompanyManager() {
     if (!confirmDelete.id) return;
     try {
       await api.delete(`/companies/${confirmDelete.id}`);
-      toast.success("Party deleted successfully");
+      toast.success("Customer deleted successfully");
       setConfirmDelete({ open: false, id: null, name: "" });
       fetchCompanies();
     } catch (err) {
-      toast.error("Failed to delete party");
+      toast.error("Failed to delete customer");
     }
   };
 
@@ -199,8 +194,6 @@ export default function CompanyManager() {
     setEditingId(row._id);
     setFormData({
       name: row.name || "",
-      type: row.type || "",
-      contactPerson: row.contactPerson || "",
       phone: row.phone || "",
       email: row.email || "",
       address: row.address || "",
@@ -211,15 +204,13 @@ export default function CompanyManager() {
 
   const cancelEdit = () => {
     setEditingId(null);
-    setFormData({ name: "", type: "", contactPerson: "", phone: "", email: "", address: "" });
+    setFormData({ name: "", phone: "", email: "", address: "" });
     setErrors({});
     setTouched({});
   };
 
   const tableColumns = [
     { key: "name", label: "Name", filterOptions: companies.length ? [...new Set(companies.map((c) => c.name))] : [] },
-    { key: "type", label: "Type", filterOptions: TYPE_OPTIONS },
-    { key: "contactPerson", label: "Contact Person" },
     { key: "phone", label: "Phone" },
     { key: "email", label: "Email" },
     { key: "address", label: "Address" },
@@ -241,9 +232,7 @@ export default function CompanyManager() {
   ];
 
   const formFields = [
-    { name: "name", label: "Party Name *", span: 2, type: "text", maxLength: 100 },
-    { name: "type", label: "Type *", span: 1, type: "select", options: TYPE_OPTIONS },
-    { name: "contactPerson", label: "Contact Person *", span: 1, type: "text", maxLength: 50 },
+    { name: "name", label: "Customer Name *", span: 2, type: "text", maxLength: 100 },
     { name: "phone", label: "Phone (03XX-XXXXXXX) *", span: 1, type: "tel", maxLength: 12 },
     { name: "email", label: "Email *", span: 2, type: "email", maxLength: 100 },
     { name: "address", label: "Address *", span: 4, type: "text", maxLength: 200 },
@@ -255,40 +244,23 @@ export default function CompanyManager() {
         {formFields.map((field) => (
           <div key={field.name} className={field.span === 2 ? "col-span-2" : field.span === 4 ? "col-span-4" : "col-span-1"}>
             <label className="block text-xs text-gray-600 mb-1">{field.label}</label>
-            {field.type === "select" ? (
-              <select
+            <div className="relative">
+              <input
+                type={field.type}
                 name={field.name}
+                placeholder={field.label}
                 value={formData[field.name]}
                 onChange={handleChange}
                 onBlur={handleBlur}
-                className={`border p-2 rounded text-sm w-full ${
+                maxLength={field.maxLength}
+                className={`border p-2 rounded text-sm w-full pr-8 ${
                   errors[field.name] && touched[field.name] ? "border-red-500 bg-red-50" : touched[field.name] && formData[field.name] ? "border-green-500 bg-green-50" : "border-gray-300"
                 }`}
-              >
-                <option value="">Select</option>
-                {field.options.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
-            ) : (
-              <div className="relative">
-                <input
-                  type={field.type}
-                  name={field.name}
-                  placeholder={field.label}
-                  value={formData[field.name]}
-                  onChange={handleChange}
-                  onBlur={handleBlur}
-                  maxLength={field.maxLength}
-                  className={`border p-2 rounded text-sm w-full pr-8 ${
-                    errors[field.name] && touched[field.name] ? "border-red-500 bg-red-50" : touched[field.name] && formData[field.name] ? "border-green-500 bg-green-50" : "border-gray-300"
-                  }`}
-                />
-                {touched[field.name] && !errors[field.name] && formData[field.name] && (
-                  <CheckCircle2 className="absolute right-2 top-3 text-green-500" size={16} />
-                )}
-              </div>
-            )}
+              />
+              {touched[field.name] && !errors[field.name] && formData[field.name] && (
+                <CheckCircle2 className="absolute right-2 top-3 text-green-500" size={16} />
+              )}
+            </div>
             {errors[field.name] && touched[field.name] && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle size={12} /> {errors[field.name]}
@@ -313,26 +285,26 @@ export default function CompanyManager() {
             </>
           ) : (
             <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
-              <Plus size={16} /> {loading ? "Adding..." : "Add Party"}
+              <Plus size={16} /> {loading ? "Adding..." : "Add Customer"}
             </button>
           )}
         </div>
       </form>
 
       <DataTable
-        title="Parties"
+        title="Customers"
         columns={tableColumns}
         data={companies}
         idKey="_id"
-        searchPlaceholder="Search parties..."
-        emptyMessage="No parties found"
+        searchPlaceholder="Search customers..."
+        emptyMessage="No customers found"
       />
 
       <ConfirmDialog
         open={confirmDelete.open}
         onClose={() => setConfirmDelete({ open: false, id: null, name: "" })}
         onConfirm={handleDeleteConfirm}
-        title="Delete Party"
+        title="Delete Customer"
         message={`Are you sure you want to delete "${confirmDelete.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
         variant="danger"

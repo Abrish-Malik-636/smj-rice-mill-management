@@ -16,6 +16,24 @@ const systemSettingsSchema = new mongoose.Schema(
     dateFormat: { type: String, default: "DD/MM/YYYY" },
     timezone: { type: String, default: "Asia/Karachi" },
     logoUrl: { type: String, default: "" },
+    // Stock management / saleable unit (e.g. bag weight in kg)
+    defaultBagWeightKg: { type: Number, default: 65, min: 1 },
+    // Admin PIN for special actions (e.g. edit completed batch). Default 0000
+    adminPin: { type: String, default: "0000", trim: true },
+    // When true, shows "Remove previous stock" and "Set paddy zero" options. Secured with admin PIN.
+    additionalStockSettingsEnabled: { type: Boolean, default: false },
+    // Email OTP for PIN reset
+    otpCodeHash: { type: String, default: "" },
+    otpExpiresAt: { type: Date, default: null },
+    // Account login (basic)
+    loginUsername: { type: String, default: "" },
+    loginPassword: { type: String, default: "" },
+    // Stock status thresholds (kg): 0 = out of stock; <= extremeLow = Extreme Low; <= low = Low; > low = Okay.
+    stockStatusExtremeLowKg: { type: Number, default: 300, min: 0 },
+    stockStatusLowKg: { type: Number, default: 500, min: 0 },
+    // Managerial stock thresholds (qty): 0 = out of stock; <= extremeLow = Extreme Low; <= low = Low; > low = Okay.
+    managerialStockStatusExtremeLowQty: { type: Number, default: 2, min: 0 },
+    managerialStockStatusLowQty: { type: Number, default: 5, min: 0 },
   },
   { timestamps: true }
 );

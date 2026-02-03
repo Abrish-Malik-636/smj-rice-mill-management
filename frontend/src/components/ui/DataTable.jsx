@@ -1,6 +1,8 @@
-import React, { useMemo, useState } from "react";
-import { Search, ChevronLeft, ChevronRight, Download, Printer, Filter, X, Eye } from "lucide-react";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
+import { Search, ChevronLeft, ChevronRight, Download, Printer, Filter, X, FileText } from "lucide-react";
 import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const PAGE_SIZES = [5, 10, 25, 50, 100];
 
@@ -23,13 +25,24 @@ export default function DataTable({
   searchPlaceholder = "Search...",
   emptyMessage = "No records found",
   pageSize: initialPageSize = 10,
+  rowClassName,
+  showSearch = true,
+  showFilters = true,
+  showClearFilters = true,
+  showExport = true,
+  showPrint = true,
+  exportData,
+  exportColumns,
+  enableKeyboard = true,
+  onRowAction,
+  toolbarActions,
 }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialPageSize);
   const [filters, setFilters] = useState({});
-  const [showFilters, setShowFilters] = useState(false);
-  const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [activeRowIndex, setActiveRowIndex] = useState(-1);
 
   const filteredData = useMemo(() => {
     let result = [...data];
@@ -50,6 +63,10 @@ export default function DataTable({
     return result;
   }, [data, search, columns, filters]);
 
+  useEffect(() => {
+    setActiveRowIndex(filteredData.length ? 0 : -1);
+  }, [filteredData.length]);
+
   const totalPages = Math.max(1, Math.ceil(filteredData.length / pageSize));
   const currentPage = Math.min(Math.max(1, page), totalPages);
   const start = (currentPage - 1) * pageSize;
@@ -68,12 +85,24 @@ export default function DataTable({
 
   const hasActiveFilters = search.trim() || Object.values(filters).some(Boolean);
 
-  const exportColumns = columns.filter((c) => !c.skipExport);
+  const exportCols = exportColumns || columns.filter((c) => !c.skipExport);
+  const exportRows = exportData ? exportData(filteredData, exportCols) : filteredData;
+  const toText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (Array.isArray(value)) return value.map(toText).join(" ");
+    if (value?.props?.children) return toText(value.props.children);
+    return String(value);
+  };
 
   const exportExcel = () => {
-    const headers = exportColumns.map((c) => c.label);
-    const rows = filteredData.map((row) =>
-      exportColumns.map((c) => (c.render ? c.render(row[c.key], row) : row[c.key] ?? ""))
+    const headers = exportCols.map((c) => c.label);
+    const rows = exportRows.map((row) =>
+      exportCols.map((c) =>
+        toText(c.render ? c.render(row[c.key], row) : row[c.key] ?? "")
+      )
     );
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
     const wb = XLSX.utils.book_new();
@@ -81,9 +110,27 @@ export default function DataTable({
     XLSX.writeFile(wb, `${title.replace(/\s/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const openPrintPreview = () => setShowPrintPreview(true);
+  const exportPdf = () => {
+    const headers = exportCols.map((c) => c.label);
+    const rows = exportRows.map((row) =>
+      exportCols.map((c) =>
+        toText(c.render ? c.render(row[c.key], row) : row[c.key] ?? "")
+      )
+    );
+    const doc = new jsPDF();
+    doc.setFontSize(12);
+    doc.text(title, 14, 12);
+    autoTable(doc, {
+      head: [headers],
+      body: rows,
+      startY: 18,
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [236, 253, 245], textColor: 6 },
+    });
+    doc.save(`${title.replace(/\s/g, "_")}_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
 
-  const handlePrint = () => {
+  const handlePrint = useCallback(() => {
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
     const tableHtml = document.getElementById("data-table-print")?.outerHTML ?? "";
@@ -109,122 +156,106 @@ export default function DataTable({
     printWindow.document.close();
     printWindow.focus();
     printWindow.print();
-    printWindow.close();
-    setShowPrintPreview(false);
-  };
+  }, [title, filteredData, exportCols, exportRows, idKey]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.ctrlKey && e.key === "p") {
+        e.preventDefault();
+        handlePrint();
+      }
+      if (e.ctrlKey && e.shiftKey && e.key === "E") {
+        e.preventDefault();
+        exportExcel();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handlePrint]);
+
+  const showToolbar = showSearch || showFilters || showExport || showPrint || toolbarActions;
 
   return (
     <div className="space-y-3">
       {/* Toolbar: search, filters, export, print */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <input
-            type="text"
-            placeholder={searchPlaceholder}
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(1);
-            }}
-            className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowFilters((p) => !p)}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm ${
-            hasActiveFilters ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-gray-300 text-gray-600 hover:bg-gray-50"
-          }`}
-        >
-          <Filter size={16} /> Filter
-        </button>
-        {hasActiveFilters && (
-          <button
-            type="button"
-            onClick={clearFilters}
-            className="flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            <X size={16} /> Clear
-          </button>
-        )}
-        <div className="flex items-center gap-1 ml-auto">
-          <button
-            type="button"
-            onClick={exportExcel}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            <Download size={16} /> Export Excel
-          </button>
-          <button
-            type="button"
-            onClick={openPrintPreview}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            <Eye size={16} /> Print Preview
-          </button>
-          <button
-            type="button"
-            onClick={handlePrint}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
-          >
-            <Printer size={16} /> Print
-          </button>
-        </div>
-      </div>
-
-      {/* Print Preview Modal */}
-      {showPrintPreview && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b">
-              <h3 className="font-semibold text-gray-900">Print Preview — {title}</h3>
-              <div className="flex gap-2">
+      {showToolbar && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          {showSearch && (
+            <div className="relative w-full sm:flex-1 sm:min-w-[200px] sm:max-w-sm">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="text"
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+                data-global-search
+                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              />
+            </div>
+          )}
+          {showFilters && (
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((p) => !p)}
+              className={`w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-sm ${
+                hasActiveFilters ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-gray-300 text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              <Filter size={16} /> Filter
+            </button>
+          )}
+          {showClearFilters && hasActiveFilters && (showSearch || showFilters) && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="w-full sm:w-auto flex items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-600 hover:bg-gray-50"
+            >
+              <X size={16} /> Clear
+            </button>
+          )}
+          {(showExport || showPrint || toolbarActions) && (
+            <div className="flex flex-wrap gap-2 sm:ml-auto">
+              {toolbarActions}
+              {showExport && (
+                <>
+                  <button
+                    type="button"
+                    onClick={exportExcel}
+                    className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                    title="Export Excel (Ctrl+Shift+E)"
+                  >
+                    <Download size={16} /> Export Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={exportPdf}
+                    className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                    title="Export PDF"
+                  >
+                    <FileText size={16} /> Export PDF
+                  </button>
+                </>
+              )}
+              {showPrint && (
                 <button
                   type="button"
                   onClick={handlePrint}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                  title="Print (Ctrl+P)"
                 >
                   <Printer size={16} /> Print
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowPrintPreview(false)}
-                  className="p-1.5 rounded-lg border border-gray-300 hover:bg-gray-50"
-                >
-                  <X size={18} />
-                </button>
-              </div>
+              )}
             </div>
-            <div className="p-4 overflow-auto flex-1">
-              <p className="text-sm text-gray-500 mb-2">Printed on {new Date().toLocaleString()}</p>
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead className="bg-emerald-50 text-emerald-800">
-                    <tr>
-                      {exportColumns.map((col) => (
-                        <th key={col.key} className="p-2 text-left font-medium whitespace-nowrap">{col.label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredData.map((row) => (
-                      <tr key={row[idKey]} className="border-t border-gray-100">
-                        {exportColumns.map((col) => (
-                          <td key={col.key} className="p-2">{col.render ? col.render(row[col.key], row) : row[col.key] ?? "—"}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* Filter dropdowns */}
-      {showFilters && (
+      {showFilters && filtersOpen && (
         <div className="flex flex-wrap gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
           {columns.map(
             (col) =>
@@ -250,8 +281,24 @@ export default function DataTable({
       )}
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-lg border border-gray-200">
-        <table className="w-full text-sm">
+      <div
+        className="overflow-x-auto rounded-lg border border-gray-200 focus:outline-none"
+        tabIndex={enableKeyboard ? 0 : -1}
+        onKeyDown={(e) => {
+          if (!enableKeyboard || filteredData.length === 0) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActiveRowIndex((i) => Math.min((i < 0 ? 0 : i) + 1, filteredData.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveRowIndex((i) => Math.max((i < 0 ? 0 : i) - 1, 0));
+          } else if (e.key === "Enter" && onRowAction && activeRowIndex >= 0) {
+            e.preventDefault();
+            onRowAction(filteredData[activeRowIndex]);
+          }
+        }}
+      >
+        <table className="min-w-[640px] w-full text-sm">
           <thead className="bg-emerald-50 text-emerald-800">
             <tr>
               {columns.map((col) => (
@@ -262,15 +309,22 @@ export default function DataTable({
             </tr>
           </thead>
           <tbody>
-            {pageData.map((row) => (
-              <tr key={row[idKey]} className="border-t border-gray-100 hover:bg-gray-50">
+            {pageData.map((row, idx) => {
+              const globalIndex = start + idx;
+              const isActive = enableKeyboard && globalIndex === activeRowIndex;
+              return (
+              <tr
+                key={row[idKey] ?? idx}
+                onClick={() => setActiveRowIndex(globalIndex)}
+                className={`border-t border-gray-100 hover:bg-gray-50 ${isActive ? "bg-emerald-50" : ""} ${rowClassName ? rowClassName(row) : ""}`}
+              >
                 {columns.map((col) => (
                   <td key={col.key} className="p-2">
-                    {col.render ? col.render(row[col.key], row) : row[col.key] ?? "—"}
+                    {col.render ? col.render(row[col.key], row) : row[col.key] ?? "-"}
                   </td>
                 ))}
               </tr>
-            ))}
+            )})}
             {pageData.length === 0 && (
               <tr>
                 <td colSpan={columns.length} className="p-6 text-center text-gray-400">
@@ -286,16 +340,18 @@ export default function DataTable({
       <table id="data-table-print" className="hidden">
         <thead>
           <tr>
-            {exportColumns.map((col) => (
+            {exportCols.map((col) => (
               <th key={col.key}>{col.label}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {filteredData.map((row) => (
-            <tr key={row[idKey]}>
-              {exportColumns.map((col) => (
-                <td key={col.key}>{col.render ? col.render(row[col.key], row) : row[col.key] ?? "—"}</td>
+          {exportRows.map((row, idx) => (
+            <tr key={row[idKey] ?? idx}>
+              {exportCols.map((col) => (
+                <td key={`${col.key}-${idx}`}>
+                  {col.render ? col.render(row[col.key], row) : row[col.key] ?? "-"}
+                </td>
               ))}
             </tr>
           ))}
@@ -303,8 +359,8 @@ export default function DataTable({
       </table>
 
       {/* Pagination */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm text-gray-600">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
           <span>Rows per page</span>
           <select
             value={pageSize}
@@ -349,3 +405,4 @@ export default function DataTable({
     </div>
   );
 }
+

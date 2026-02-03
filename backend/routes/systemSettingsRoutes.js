@@ -8,6 +8,8 @@ const {
   uploadLogo,
   exportBackup,
   restoreBackup,
+  sendEmailOtp,
+  verifyEmailOtp,
 } = require("../controllers/systemSettingsController");
 
 // Multer storage config (store in backend/uploads)
@@ -29,5 +31,7 @@ router.put("/", saveSettings); // SAVE (upsert)
 router.post("/logo", upload.single("logo"), uploadLogo); // upload logo
 router.get("/backup", exportBackup); // download backup JSON
 router.post("/restore", upload.single("backup"), restoreBackup); // restore from JSON file
+router.post("/otp/send", sendEmailOtp);
+router.post("/otp/verify", verifyEmailOtp);
 
 module.exports = router;

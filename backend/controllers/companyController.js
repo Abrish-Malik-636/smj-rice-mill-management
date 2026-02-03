@@ -52,7 +52,7 @@ exports.createCompany = async (req, res) => {
     if (similar) {
       return res.status(400).json({
         success: false,
-        message: `Party with similar name already exists: "${similar.name}"`,
+        message: `Customer with similar name already exists: "${similar.name}"`,
       });
     }
 
@@ -62,7 +62,6 @@ exports.createCompany = async (req, res) => {
       name: req.body.name?.trim(),
       email: req.body.email?.trim().toLowerCase(),
       phone: req.body.phone?.trim(),
-      contactPerson: req.body.contactPerson?.trim(),
       address: req.body.address?.trim(),
     };
 
@@ -90,7 +89,7 @@ exports.updateCompany = async (req, res) => {
       if (similar) {
         return res.status(400).json({
           success: false,
-          message: `Party with similar name already exists: "${similar.name}"`,
+          message: `Customer with similar name already exists: "${similar.name}"`,
         });
       }
     }
@@ -100,7 +99,6 @@ exports.updateCompany = async (req, res) => {
     if (updateData.name) updateData.name = updateData.name.trim();
     if (updateData.email) updateData.email = updateData.email.trim().toLowerCase();
     if (updateData.phone) updateData.phone = updateData.phone.trim();
-    if (updateData.contactPerson) updateData.contactPerson = updateData.contactPerson.trim();
     if (updateData.address) updateData.address = updateData.address.trim();
 
     const updated = await Company.findByIdAndUpdate(req.params.id, updateData, {

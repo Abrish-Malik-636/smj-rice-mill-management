@@ -1,6 +1,6 @@
 // src/components/Sidebar.jsx
-import React from "react";
-import { Link, useLocation } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import {
   Home,
@@ -15,62 +15,102 @@ import {
   FactoryIcon,
   Menu,
   Lightbulb,
+  ChevronDown,
 } from "lucide-react";
 
-export default function Sidebar({ isOpen, toggleSidebar }) {
+const MENU = [
+  { name: "Dashboard", icon: <Home size={18} />, path: "/" },
+  {
+    name: "Gate Pass Management",
+    icon: <Truck size={18} />,
+    path: "/gatepass",
+    children: [
+      { name: "Gate Pass Inward", path: "/gatepass?tab=IN" },
+      { name: "Gate Pass Outward", path: "/gatepass?tab=OUT" },
+    ],
+  },
+  {
+    name: "Sales & Purchases",
+    icon: <Wallet size={18} />,
+    path: "/financial",
+    children: [
+      { name: "Sales", path: "/financial?tab=sale" },
+      { name: "Purchases", path: "/financial?tab=purchase" },
+    ],
+  },
+  {
+    name: "Production Management",
+    icon: <FactoryIcon size={18} />,
+    path: "/production",
+  },
+  {
+    name: "Stock Management",
+    icon: <Box size={18} />,
+    path: "/stock",
+    children: [
+      { name: "Production Stock", path: "/stock" },
+      { name: "Managerial Stock", path: "/stock-managerial" },
+    ],
+  },
+  {
+    name: "Accounting & Finance",
+    icon: <Wallet size={18} />,
+    path: "/accounting-finance",
+    children: [
+      { name: "Day Book", path: "/accounting-finance?tab=daybook" },
+      { name: "Ledger", path: "/accounting-finance?tab=ledger" },
+      { name: "Cash In Hand", path: "/accounting-finance?tab=cash" },
+      { name: "Expenses Report", path: "/accounting-finance?tab=expenses" },
+      { name: "Profit & Loss", path: "/accounting-finance?tab=pl" },
+      { name: "Balance Sheet", path: "/accounting-finance?tab=balance" },
+      { name: "Party Ledger", path: "/accounting-finance?tab=party-ledger" },
+    ],
+  },
+  {
+    name: "Reports & Analytics",
+    icon: <BarChart2 size={18} />,
+    path: "/reports",
+  },
+  {
+    name: "HR & Payroll",
+    icon: <User size={18} />,
+    path: "/hr-payroll",
+  },
+  {
+    name: "Notifications & Alerts",
+    icon: <Bell size={18} />,
+    path: "/notifications",
+  },
+  {
+    name: "AI Assistant",
+    icon: <Lightbulb className="w-5 h-5" />,
+    path: "/ai/suggestions",
+  },
+  {
+    name: "System Settings",
+    icon: <Settings size={18} />,
+    path: "/masterdata",
+    children: [
+      { name: "Customer Management", path: "/masterdata?tab=parties" },
+      { name: "Stock Management", path: "/masterdata?tab=stock" },
+      { name: "Expense Categories", path: "/masterdata?tab=expense" },
+      { name: "System Settings", path: "/masterdata?tab=system" },
+    ],
+  },
+];
+
+export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, onLogout }) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [openMenu, setOpenMenu] = useState(null);
 
-  const menu = [
-    { name: "Dashboard", icon: <Home size={18} />, path: "/" },
-
-    {
-      name: "Accounts & Finance",
-      icon: <Wallet size={18} />,
-      path: "/financial",
-    },
-
-    {
-      name: "Stock Management",
-      icon: <Box size={18} />,
-      path: "/stock",
-    },
-
-    {
-      name: "Gate Pass Management",
-      icon: <Truck size={18} />,
-      path: "/gatepass",
-    },
-
-    {
-      name: "Production Management",
-      icon: <FactoryIcon size={18} />,
-      path: "/production",
-    },
-
-    {
-      name: "Reports & Analytics",
-      icon: <BarChart2 size={18} />,
-      path: "/reports",
-    },
-
-    {
-      name: "Notifications & Alerts",
-      icon: <Bell size={18} />,
-      path: "/notifications",
-    },
-
-    {
-      name: "System Setup",
-      icon: <Settings size={18} />,
-      path: "/masterdata", // backend unchanged
-    },
-
-    {
-      name: "AI Assistant",
-      icon: <Lightbulb className="w-5 h-5" />,
-      path: "/ai/suggestions",
-    },
-  ];
+  useEffect(() => {
+    const current = location.pathname + location.search;
+    const parent = MENU.find(
+      (m) => m.children && m.children.some((c) => c.path === current),
+    );
+    if (parent) setOpenMenu(parent.name);
+  }, [location.pathname, location.search]);
 
   return (
     <>
@@ -86,7 +126,7 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
       <aside
         className={`
           fixed top-0 left-0 h-full z-50 
-          bg-gradient-to-b from-teal-700 to-emerald-900 text-white shadow-xl overflow-hidden
+          bg-gradient-to-b from-teal-700 to-emerald-900 text-white shadow-xl
           transition-transform duration-300 ease-in-out
           ${isOpen ? "md:w-64" : "md:w-16"}
           ${
@@ -96,9 +136,9 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
           }
         `}
       >
-        <div className="h-full flex flex-col justify-between">
+        <div className="h-full flex flex-col">
           {/* TOP */}
-          <div>
+          <div className="flex flex-col min-h-0">
             <div className="flex items-center gap-3 px-4 py-4 border-b border-emerald-700">
               <button
                 onClick={toggleSidebar}
@@ -118,35 +158,111 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
             </div>
 
             {/* MENU */}
-            <nav className="px-2 py-4 space-y-1">
-              {menu.map((m) => {
+            <nav className="px-2 py-4 space-y-1 overflow-y-auto no-scrollbar flex-1 min-h-0 scroll-smooth">
+              {MENU.map((m) => {
                 const active = location.pathname === m.path;
+                const isExpanded = openMenu === m.name;
+                const hasChildren =
+                  Array.isArray(m.children) && m.children.length > 0;
                 return (
-                  <Link
-                    key={m.name}
-                    to={m.path}
-                    onClick={() => {
-                      if (window.innerWidth < 768 && isOpen) toggleSidebar();
-                    }}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg transition
-                      ${
-                        active
-                          ? "bg-emerald-600 text-white"
-                          : "hover:bg-emerald-700 text-emerald-100"
-                      }
-                      ${isOpen ? "" : "justify-center"}
-                    `}
-                  >
-                    {m.icon}
-                    {isOpen && <span className="text-sm">{m.name}</span>}
-                  </Link>
+                  <div key={m.name} className="space-y-1">
+                    {hasChildren ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenu((prev) =>
+                            prev === m.name ? null : m.name,
+                          );
+                          if (m.children && m.children[0]) {
+                            navigate(m.children[0].path);
+                          }
+                        }}
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition
+                          ${
+                            active
+                              ? "bg-emerald-600 text-white"
+                              : "hover:bg-emerald-700 text-emerald-100"
+                          }
+                          ${isOpen ? "" : "justify-center"}
+                        `}
+                      >
+                        {m.icon}
+                        {isOpen && (
+                          <>
+                            <span className="text-sm flex-1 text-left">
+                              {m.name}
+                            </span>
+                            <ChevronDown
+                              size={16}
+                              className={`transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                            />
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <Link
+                        to={m.path}
+                        onClick={() => {
+                          if (window.innerWidth < 768 && isOpen)
+                            toggleSidebar();
+                        }}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg transition
+                          ${
+                            active
+                              ? "bg-emerald-600 text-white"
+                              : "hover:bg-emerald-700 text-emerald-100"
+                          }
+                          ${isOpen ? "" : "justify-center"}
+                        `}
+                      >
+                        {m.icon}
+                        {isOpen && <span className="text-sm">{m.name}</span>}
+                      </Link>
+                    )}
+
+                    {hasChildren && isOpen && (
+                      <div
+                        className={`ml-6 mt-1 overflow-hidden rounded-lg border border-emerald-700/40 bg-emerald-900/40 transition-all duration-300 ${
+                          isExpanded
+                            ? "max-h-96 opacity-100"
+                            : "max-h-0 opacity-0"
+                        }`}
+                      >
+                        <div className="space-y-1 p-2">
+                          {m.children.map((c) => {
+                            const childActive =
+                              location.pathname + location.search === c.path;
+                            return (
+                              <Link
+                                key={c.name}
+                                to={c.path}
+                                onClick={() => {
+                                  if (window.innerWidth < 768 && isOpen)
+                                    toggleSidebar();
+                                }}
+                                className={`block px-3 py-2 rounded text-xs transition
+                                ${
+                                  childActive
+                                    ? "bg-emerald-600 text-white"
+                                    : "hover:bg-emerald-700 text-emerald-100"
+                                }
+                              `}
+                              >
+                                <span className="block">{c.name}</span>
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </nav>
           </div>
 
           {/* PROFILE */}
-          <div className="px-3 py-4 border-t border-emerald-700">
+          <div className="px-3 py-4 border-t border-emerald-700 mt-auto">
             <div
               className={`flex items-center gap-3 ${isOpen ? "" : "flex-col"}`}
             >
@@ -156,14 +272,19 @@ export default function Sidebar({ isOpen, toggleSidebar }) {
 
               {isOpen && (
                 <div>
-                  <div className="text-sm font-semibold">Admin User</div>
+                  <div className="text-sm font-semibold">{userName || "Admin User"}</div>
                   <div className="text-xs text-emerald-200">
-                    admin@smjrice.pk
+                    {userEmail || "admin@smjrice.pk"}
                   </div>
                 </div>
               )}
 
-              <button className="text-emerald-200 hover:text-white p-2 rounded">
+              <button
+                className="text-emerald-200 hover:text-white p-2 rounded"
+                onClick={onLogout}
+                type="button"
+                title="Logout"
+              >
                 <LogOut size={16} />
               </button>
             </div>

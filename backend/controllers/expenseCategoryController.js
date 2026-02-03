@@ -5,20 +5,16 @@ const normalizeText = (text) => {
   return text ? text.toLowerCase().trim().replace(/\s+/g, " ") : "";
 };
 
-// Check for similar category names
+// Check for exact duplicate category names (case-insensitive)
 const checkSimilarCategory = async (name, excludeId = null) => {
   const normalized = normalizeText(name);
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const query = {
-    $or: [
-      { name: { $regex: new RegExp(`^${normalized}$`, "i") } },
-      { name: { $regex: new RegExp(normalized, "i") } },
-    ],
+    name: { $regex: new RegExp(`^${escaped}$`, "i") },
   };
-  
   if (excludeId) {
     query._id = { $ne: excludeId };
   }
-  
   return await ExpenseCategory.findOne(query);
 };
 
@@ -55,7 +51,6 @@ exports.createExpenseCategory = async (req, res) => {
     }
     const categoryData = {
       name: req.body.name.trim(),
-      code: req.body.code?.trim() || "",
       type: req.body.type.trim(),
       description: req.body.description?.trim() || "",
     };
@@ -91,7 +86,6 @@ exports.updateExpenseCategory = async (req, res) => {
 
     const updateData = {};
     if (req.body.name !== undefined) updateData.name = req.body.name.trim();
-    if (req.body.code !== undefined) updateData.code = req.body.code.trim() || "";
     if (req.body.type !== undefined) updateData.type = req.body.type.trim();
     if (req.body.description !== undefined) updateData.description = req.body.description.trim() || "";
 

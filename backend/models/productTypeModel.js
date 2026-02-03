@@ -14,11 +14,8 @@ const productTypeSchema = new mongoose.Schema(
     },
     productCategory: {
       type: String,
-      required: [true, "Product category is required"],
-      enum: {
-        values: ["Finished", "By-Product", "Waste"],
-        message: "Product category must be Finished, By-Product, or Waste",
-      },
+      default: "",
+      trim: true,
     },
     baseUnit: {
       type: String,
@@ -27,17 +24,49 @@ const productTypeSchema = new mongoose.Schema(
     },
     allowableSaleUnits: {
       type: [String],
-      default: ["KG"],
-      validate: {
-        validator: function (v) {
-          return Array.isArray(v) && v.length > 0 && v.every((u) => ["Bag", "Ton", "KG"].includes(u));
-        },
-        message: "Allowable sale units must be one or more of: Bag, Ton, KG",
-      },
+      default: ["Bag", "Ton", "KG"],
     },
     conversionFactors: {
       type: mongoose.Schema.Types.Mixed,
       default: { KG: 1, Bag: 65, Ton: 1000 },
+    },
+    brand: {
+      type: String,
+      trim: true,
+      maxlength: [80, "Brand must not exceed 80 characters"],
+      default: "",
+    },
+    defaultSaleRate: {
+      type: Number,
+      min: [0, "Default sale rate cannot be negative"],
+      default: 0,
+    },
+    pricePerBag: {
+      type: Number,
+      min: [0, "Price per bag cannot be negative"],
+      default: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: "Price per bag must be an integer",
+      },
+    },
+    pricePerTon: {
+      type: Number,
+      min: [0, "Price per ton cannot be negative"],
+      default: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: "Price per ton must be an integer",
+      },
+    },
+    pricePerKg: {
+      type: Number,
+      min: [0, "Price per kg cannot be negative"],
+      default: 0,
+      validate: {
+        validator: Number.isInteger,
+        message: "Price per kg must be an integer",
+      },
     },
     description: {
       type: String,
@@ -54,15 +83,14 @@ productTypeSchema.index({ name: 1 });
 productTypeSchema.pre("save", async function (next) {
   if (this.isModified("name")) {
     const normalizedName = this.name.toLowerCase().trim();
+    const brandNorm = (this.brand || "").toLowerCase().trim();
     const existing = await mongoose.model("ProductType").findOne({
       _id: { $ne: this._id },
-      $or: [
-        { name: { $regex: new RegExp(`^${normalizedName}$`, "i") } },
-        { name: { $regex: new RegExp(normalizedName, "i") } },
-      ],
+      name: { $regex: new RegExp(`^${normalizedName}$`, "i") },
+      brand: { $regex: new RegExp(`^${brandNorm}$`, "i") },
     });
     if (existing) {
-      const error = new Error(`Product type with similar name already exists: "${existing.name}"`);
+      const error = new Error(`Product already exists for this brand: "${existing.name}"`);
       error.name = "ValidationError";
       return next(error);
     }

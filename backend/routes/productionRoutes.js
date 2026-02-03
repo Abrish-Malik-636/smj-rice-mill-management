@@ -10,6 +10,7 @@ router.put("/batches/:id", productionController.updateBatch);
 router.delete("/batches/:id", productionController.deleteBatch);
 
 router.post("/batches/:id/outputs", productionController.addOutput);
+router.patch("/batches/:id/outputs/:outputId", productionController.updateOutput);
 
 router.post("/batches/:id/complete", productionController.completeBatch);
 

@@ -1,4 +1,5 @@
 const ManagerialStock = require("../models/managerialStockModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 
 const normalizeText = (text) => {
   return text ? text.toLowerCase().trim().replace(/\s+/g, " ") : "";
@@ -86,6 +87,51 @@ exports.delete = async (req, res) => {
     const deleted = await ManagerialStock.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ success: false, message: "Item not found" });
     res.json({ success: true, message: "Item deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getOverview = async (req, res) => {
+  try {
+    const map = new Map();
+    const rows = await ManagerialStockLedger.find().lean();
+    rows.forEach((r) => {
+      const key = r.itemName || "Unknown";
+      const qty = Number(r.quantity || 0);
+      if (!qty) return;
+      const delta = r.type === "OUT" ? -qty : qty;
+      const dateTime = r.updatedAt || r.createdAt;
+      const existing = map.get(key) || {
+        itemName: key,
+        balanceQty: 0,
+        lastUpdated: null,
+        sources: [],
+      };
+      existing.balanceQty += delta;
+      if (dateTime) {
+        const d = new Date(dateTime);
+        if (!existing.lastUpdated || d > existing.lastUpdated) {
+          existing.lastUpdated = d;
+        }
+      }
+      existing.sources.push({
+        sourceType: r.sourceType || "Gate Pass",
+        refNo: r.refNo || r.gatePassNo || "-",
+        date: r.date,
+        dateTime,
+        qty: delta,
+        direction: r.type,
+      });
+      map.set(key, existing);
+    });
+
+    const data = Array.from(map.values()).filter((r) => r.balanceQty > 0);
+    const summary = {
+      totalItems: data.length,
+      totalQty: data.reduce((sum, r) => sum + r.balanceQty, 0),
+    };
+    res.json({ success: true, data, summary });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

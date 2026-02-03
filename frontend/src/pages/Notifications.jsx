@@ -35,6 +35,24 @@ const isPendingInvoice = (t) =>
   (t.paymentStatus === "UNPAID" || t.paymentStatus === "PARTIAL") &&
   t.dueDate;
 
+const getPendingAmount = (t) => {
+  if (!t) return 0;
+  const total = Number(t.totalAmount || 0);
+  if (t.paymentStatus === "UNPAID") return total;
+  if (t.paymentStatus !== "PARTIAL") return 0;
+
+  const paid = Number(t.partialPaid || 0);
+  if (paid > 0) return Math.max(total - paid, 0);
+
+  const remarks = String(t.remarks || "");
+  const match = remarks.match(/Remaining:\s*Rs\s*(\d+(?:\.\d+)?)/i);
+  if (match) {
+    const remaining = Number(match[1] || 0);
+    return Number.isNaN(remaining) ? total : remaining;
+  }
+  return total;
+};
+
 // build message text based on language/template
 function buildMessage({
   transaction,
@@ -50,7 +68,7 @@ function buildMessage({
   const millEmail = settings.email || "";
 
   const companyName = company?.name || transaction.companyName || "";
-  const amount = Number(transaction.totalAmount || 0).toFixed(2);
+  const amount = getPendingAmount(transaction).toFixed(0);
   const invoiceNo = transaction.invoiceNo;
   const due = formatDate(transaction.dueDate);
   const date = formatDate(transaction.date);
@@ -165,7 +183,7 @@ export default function Notifications() {
         const [txRes, compRes, settingsRes] = await Promise.all([
           api.get("/transactions", { params: { limit: 500, skip: 0 } }),
           api.get("/companies"),
-          api.get("/system-settings"),
+          api.get("/settings"),
         ]);
 
         const txData = txRes.data?.data || txRes.data || [];
@@ -294,7 +312,7 @@ export default function Notifications() {
   return (
     <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-emerald-50">
             <Bell className="w-5 h-5 text-emerald-700" />
@@ -392,7 +410,8 @@ export default function Notifications() {
                         {formatDate(t.dueDate)}
                       </td>
                       <td className="px-4 py-2 whitespace-nowrap text-right text-gray-800">
-                        {Number(t.totalAmount || 0).toFixed(2)}
+                        {getPendingAmount(t).toFixed(0)}
+                        <div className="text-[11px] text-gray-400">Total: {Number(t.totalAmount || 0).toFixed(0)}</div>
                       </td>
                       <td className="px-4 py-2 text-center">
                         <input
@@ -445,8 +464,7 @@ export default function Notifications() {
                     <span className="font-mono">{selectedTx.invoiceNo}</span>
                   </div>
                   <div>
-                    Due: {formatDate(selectedTx.dueDate)} • Amount:{" "}
-                    {Number(selectedTx.totalAmount || 0).toFixed(2)}
+                    Due: {formatDate(selectedTx.dueDate)} | Pending: {getPendingAmount(selectedTx).toFixed(0)} (Total: {Number(selectedTx.totalAmount || 0).toFixed(0)})
                   </div>
                 </div>
               </>

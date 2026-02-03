@@ -1,5 +1,5 @@
 // src/pages/Production.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import api from "../services/api";
 import toast, { Toaster } from "react-hot-toast";
 import {
@@ -10,10 +10,13 @@ import {
   Trash2,
   Plus,
   CheckCircle2,
-  RefreshCcw,
   Printer,
   X,
+  Box,
+  Lock,
+  Edit2,
 } from "lucide-react";
+import Pin4Input from "../components/Pin4Input";
 
 function todayISODate() {
   const d = new Date();
@@ -27,7 +30,9 @@ export default function Production() {
     nightShiftOutputWeightKg: 0,
     totalOutputWeightKg: 0,
     batchCount: 0,
+    productWiseOutput: [],
   });
+  const [paddyStockKg, setPaddyStockKg] = useState(0);
 
   const [activeTab, setActiveTab] = useState("IN_PROCESS");
   const [inProcessBatches, setInProcessBatches] = useState([]);
@@ -35,7 +40,6 @@ export default function Production() {
   const [selectedBatchId, setSelectedBatchId] = useState(null);
   const [selectedBatch, setSelectedBatch] = useState(null);
 
-  const [companies, setCompanies] = useState([]);
   const [products, setProducts] = useState([]);
 
   const [creating, setCreating] = useState(false);
@@ -57,16 +61,43 @@ export default function Production() {
   });
 
   const [outputForm, setOutputForm] = useState({
+    brand: "",
     productTypeId: "",
-    companyId: "",
     numBags: "",
     perBagWeightKg: "",
     netWeightKg: "",
     shift: "DAY",
   });
 
-  // Slip preview
+  // Delete completed batch confirmation
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
+
+  // Error dialog (no toast/console)
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: "" });
+  // Admin PIN for editing completed batch
+  const [pinDialog, setPinDialog] = useState({ open: false, pin: "", purpose: "", onSuccess: null, pinError: "" });
+  const [completedBatchUnlocked, setCompletedBatchUnlocked] = useState(false);
+  const [lastEnteredPin, setLastEnteredPin] = useState("");
+  const [editingOutputId, setEditingOutputId] = useState(null);
+  const [editOutputForm, setEditOutputForm] = useState({ numBags: "", perBagWeightKg: "", shift: "DAY", brand: "", productTypeId: "" });
+  const [savingOutputId, setSavingOutputId] = useState(null);
+  const [settings, setSettings] = useState({
+    defaultBagWeightKg: 65,
+    adminPin: "0000",
+    additionalStockSettingsEnabled: false,
+  });
+  const [zeroPaddyConfirm, setZeroPaddyConfirm] = useState(false);
+  const [zeroPaddyPin, setZeroPaddyPin] = useState("");
+  const [zeroingPaddy, setZeroingPaddy] = useState(false);
+
+  // Slip preview (Print opens with this batch)
+  const [printBatch, setPrintBatch] = useState(null);
   const [showSlip, setShowSlip] = useState(false);
+  const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false);
+  const [deleteInProcessConfirmOpen, setDeleteInProcessConfirmOpen] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const detailSectionRef = useRef(null);
   const [millInfo, setMillInfo] = useState({
     name: "SMJ Rice Mill",
     address: "Mirza Virkan Road, Sheikhupura",
@@ -77,35 +108,119 @@ export default function Production() {
 
   useEffect(() => {
     loadSummary();
+    loadPaddyStock();
     loadMeta();
     loadBatches();
     loadMillInfo();
   }, []);
 
-  // Auto net weight = bags * perBagWeightKg
+  const brandOptions = Array.from(
+    new Set((products || []).map((p) => p.brand).filter(Boolean))
+  ).sort();
+
   useEffect(() => {
-    const bags = Number(outputForm.numBags) || 0;
-    const perBag = Number(outputForm.perBagWeightKg) || 0;
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        if (pinDialog.open) setPinDialog((p) => ({ ...p, open: false, pin: "", purpose: "", onSuccess: null, pinError: "" }));
+        else if (errorDialog.open) setErrorDialog({ open: false, message: "" });
+        else if (deleteConfirmOpen) { setDeleteConfirmOpen(false); setDeleteConfirmInput(""); }
+        else if (completeConfirmOpen) setCompleteConfirmOpen(false);
+        else if (showSlip) { setShowSlip(false); setPrintBatch(null); }
+        else if (zeroPaddyConfirm) { setZeroPaddyConfirm(false); setZeroPaddyPin(""); }
+      } else if (e.key === "Enter") {
+        if (completeConfirmOpen && selectedBatch) { e.preventDefault(); handleCompleteBatch(); }
+        else if (deleteInProcessConfirmOpen && selectedBatch) { e.preventDefault(); doDeleteBatch(true); setDeleteInProcessConfirmOpen(false); }
+        else if (errorDialog.open) { e.preventDefault(); setErrorDialog({ open: false, message: "" }); }
+        else if (deleteConfirmOpen && selectedBatch && deleteConfirmInput.trim() === (selectedBatch.batchNo || "")) { e.preventDefault(); doDeleteBatch(true); }
+        else if (pinDialog.open && pinDialog.pin.length === 4) {
+          e.preventDefault();
+          const entered = pinDialog.pin;
+          const expected = settings.adminPin || "0000";
+          if (entered === expected) {
+            if (pinDialog.onSuccess) pinDialog.onSuccess();
+            else setCompletedBatchUnlocked(true);
+            setPinDialog({ open: false, pin: "", purpose: "", onSuccess: null, pinError: "" });
+          } else {
+            setPinDialog((p) => ({ ...p, pinError: "Incorrect PIN." }));
+          }
+        } else if (zeroPaddyConfirm && zeroPaddyPin.length === 4) {
+          e.preventDefault();
+          handleZeroPaddyStock();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pinDialog.open, pinDialog.pin, pinDialog.onSuccess, errorDialog.open, deleteConfirmOpen, deleteConfirmInput, deleteInProcessConfirmOpen, completeConfirmOpen, showSlip, zeroPaddyConfirm, zeroPaddyPin.length, selectedBatch, settings.adminPin]);
+
+  async function loadPaddyStock() {
+    try {
+      const res = await api.get("/stock/current");
+      const rows = res.data?.data || [];
+      const paddyTotal = rows
+        .filter((r) => (r.productTypeName || "").toLowerCase() === "paddy")
+        .reduce((sum, r) => sum + (Number(r.balanceKg) || 0), 0);
+      setPaddyStockKg(paddyTotal);
+    } catch {
+      setPaddyStockKg(0);
+    }
+  }
+
+  // Default perBagWeightKg from settings when empty
+  useEffect(() => {
+    if (
+      (outputForm.perBagWeightKg === "" || outputForm.perBagWeightKg == null) &&
+      settings.defaultBagWeightKg
+    ) {
+      setOutputForm((f) => ({
+        ...f,
+        perBagWeightKg: String(settings.defaultBagWeightKg),
+      }));
+    }
+  }, [settings.defaultBagWeightKg]);
+
+  // Auto net weight = bags * perBagWeightKg (integer)
+  useEffect(() => {
+    const bags = Math.floor(Number(outputForm.numBags)) || 0;
+    const perBag = Math.floor(Number(outputForm.perBagWeightKg)) || 0;
     const net = bags * perBag;
     setOutputForm((f) => ({
       ...f,
-      netWeightKg: net ? net.toFixed(3) : "",
+      netWeightKg: net ? String(net) : "",
     }));
   }, [outputForm.numBags, outputForm.perBagWeightKg]);
+
+  useEffect(() => {
+    const product = products.find((p) => p._id === outputForm.productTypeId);
+    if (product?.conversionFactors?.Bag) {
+      setOutputForm((f) => ({
+        ...f,
+        perBagWeightKg: String(Math.floor(Number(product.conversionFactors.Bag)) || ""),
+      }));
+    } else if (!outputForm.productTypeId) {
+      setOutputForm((f) => ({ ...f, perBagWeightKg: "" }));
+    }
+  }, [outputForm.productTypeId, products]);
 
   async function loadMillInfo() {
     try {
       const res = await api.get("/settings");
       const data = res.data?.data || {};
-      const general = data.general || data.generalSettings || {};
+      const general = data.general || data.generalSettings || data;
       const printing = data.printing || data.printingSettings || {};
+      setSettings((prev) => ({
+        ...prev,
+        defaultBagWeightKg: data.defaultBagWeightKg ?? 65,
+        adminPin: data.adminPin ?? "0000",
+        additionalStockSettingsEnabled: !!data.additionalStockSettingsEnabled,
+      }));
       setMillInfo((prev) => ({
         ...prev,
-        name: general.millName || prev.name,
-        address: general.fullAddress || prev.address,
+        name: general.companyName || general.millName || prev.name,
+        address: general.address || general.fullAddress || prev.address,
         phone: general.phone || "",
         email: general.email || "",
-        logoUrl: printing.logoPath || "",
+        logoUrl: data.logoUrl || printing.logoPath || "",
       }));
     } catch {
       // silent if settings missing
@@ -120,21 +235,17 @@ export default function Production() {
         setSummary(res.data.data || summary);
       }
     } catch {
-      toast.error("Failed to load production summary");
+      setErrorDialog({ open: true, message: "Failed to load production summary." });
     }
     setLoadingSummary(false);
   }
 
   async function loadMeta() {
     try {
-      const [cRes, pRes] = await Promise.all([
-        api.get("/companies"),
-        api.get("/product-types"),
-      ]);
-      setCompanies(cRes.data.data || []);
+      const pRes = await api.get("/product-types");
       setProducts(pRes.data.data || []);
     } catch {
-      toast.error("Failed to load company/product master data");
+      setErrorDialog({ open: true, message: "Failed to load brand/product master data." });
     }
   }
 
@@ -163,16 +274,20 @@ export default function Production() {
         }
       }
     } catch {
-      toast.error("Failed to load batches");
+      setErrorDialog({ open: true, message: "Failed to load batches." });
     }
     setLoadingBatches(false);
   }
 
   async function selectBatch(id, tabOverride) {
+    setCompletedBatchUnlocked(false);
+    setLastEnteredPin("");
+    setEditingOutputId(null);
+    setFieldErrors({});
     try {
       const res = await api.get(`/production/batches/${id}`);
       if (!res.data?.success) {
-        toast.error("Failed to load batch details");
+        setErrorDialog({ open: true, message: "Failed to load batch details." });
         return;
       }
       const b = res.data.data;
@@ -184,35 +299,43 @@ export default function Production() {
         date: b.date
           ? new Date(b.date).toISOString().slice(0, 10)
           : todayISODate(),
-        paddyWeightKg: b.paddyWeightKg?.toString() || "",
+        paddyWeightKg: b.paddyWeightKg != null ? String(Math.floor(b.paddyWeightKg)) : "",
         remarks: b.remarks || "",
       });
+      setTimeout(() => detailSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 100);
     } catch {
-      toast.error("Failed to load batch details");
+      setErrorDialog({ open: true, message: "Failed to load batch details." });
     }
   }
 
   async function handleCreateBatch() {
-    if (!batchForm.date) {
-      toast.error("Please select a batch date");
+    const err = {};
+    if (paddyStockKg <= 0) {
+      err.paddyStock = "No paddy in stock. Add paddy via Gate Pass Inward first.";
+    }
+    if (!batchForm.date) err.date = "Select batch date.";
+    if (!batchForm.paddyWeightKg) err.paddyWeightKg = "Enter paddy weight (kg).";
+    else {
+      const reqKg = Math.floor(Number(batchForm.paddyWeightKg));
+      if (reqKg > paddyStockKg) err.paddyWeightKg = `Exceeds available stock (${Math.round(paddyStockKg)} kg).`;
+    }
+    if (Object.keys(err).length) {
+      setFieldErrors((e) => ({ ...e, ...err }));
       return;
     }
-    if (!batchForm.paddyWeightKg) {
-      toast.error("Enter paddy weight (kg)");
-      return;
-    }
+    setFieldErrors((e) => ({ ...e, date: "", paddyWeightKg: "", paddyStock: "" }));
 
     setCreating(true);
     try {
       const res = await api.post("/production/batches", {
         date: batchForm.date,
-        paddyWeightKg: Number(batchForm.paddyWeightKg),
+        paddyWeightKg: Math.floor(Number(batchForm.paddyWeightKg)),
         remarks: batchForm.remarks,
       });
       if (!res.data?.success) {
-        toast.error(res.data?.message || "Failed to create batch");
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to create batch." });
       } else {
-        toast.success("Production batch created");
+        toast.success("Production batch created", { position: "bottom-center", duration: 2500 });
         setBatchForm({
           date: todayISODate(),
           paddyWeightKg: "",
@@ -221,87 +344,75 @@ export default function Production() {
         await loadBatches();
         await selectBatch(res.data.data._id, "IN_PROCESS");
         await loadSummary();
+        await loadPaddyStock();
       }
-    } catch {
-      toast.error("Failed to create batch");
+    } catch (err) {
+      setErrorDialog({
+        open: true,
+        message: err.response?.data?.message || err.message || "Failed to create batch.",
+      });
     }
     setCreating(false);
   }
 
-  function numClean(v) {
-    return String(v).replace(/^0+(?=\d)/, "");
+  // Integer only (no decimals) for weight/bags
+  function intClean(v) {
+    const s = String(v).replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
+    return s;
   }
 
   async function handleSaveBatchInfo() {
-    if (!selectedBatchId || !selectedBatch) {
-      toast.error("Select a batch first");
+    if (!selectedBatchId || !selectedBatch) return;
+    const batchPaddy = Number(selectedBatch.paddyWeightKg ?? selectedBatch.totalRawWeightKg) || 0;
+    const maxEditablePaddyKg = paddyStockKg + batchPaddy;
+    const err = {};
+    if (!editBatchForm.paddyWeightKg) err.editPaddyWeightKg = "Enter paddy weight (kg).";
+    else {
+      const reqKg = Math.floor(Number(editBatchForm.paddyWeightKg));
+      if (reqKg > maxEditablePaddyKg) err.editPaddyWeightKg = `Exceeds available stock (${Math.round(maxEditablePaddyKg)} kg).`;
+    }
+    if (Object.keys(err).length) {
+      setFieldErrors((e) => ({ ...e, ...err }));
       return;
     }
-    if (!editBatchForm.paddyWeightKg) {
-      toast.error("Enter paddy weight (kg)");
-      return;
-    }
+    setFieldErrors((e) => ({ ...e, editPaddyWeightKg: "" }));
 
     setSavingBatchInfo(true);
     try {
       const payload = {
         date: editBatchForm.date,
-        paddyWeightKg: Number(editBatchForm.paddyWeightKg),
+        paddyWeightKg: Math.floor(Number(editBatchForm.paddyWeightKg)),
         remarks: editBatchForm.remarks,
       };
+      if (selectedBatch.status === "COMPLETED") {
+        payload.adminPin = settings.adminPin || "0000";
+      }
       const res = await api.put(
         `/production/batches/${selectedBatchId}`,
         payload
       );
       if (!res.data?.success) {
-        toast.error(res.data?.message || "Failed to update batch");
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to update batch." });
       } else {
-        toast.success("Batch updated");
         setSelectedBatch(res.data.data);
         await loadBatches();
         await loadSummary();
+        await loadPaddyStock();
+        toast.success("Batch updated", { position: "bottom-center", duration: 2500 });
       }
     } catch {
-      toast.error("Failed to update batch");
+      setErrorDialog({ open: true, message: "Failed to update batch." });
     }
     setSavingBatchInfo(false);
   }
 
   async function handleAddOutput() {
-    if (!selectedBatchId || !selectedBatch) {
-      toast.error("Select a batch first");
-      return;
-    }
-    if (selectedBatch.status !== "IN_PROCESS") {
-      toast.error("Cannot add output to completed batch");
-      return;
-    }
-
-    if (
-      !outputForm.productTypeId ||
-      !outputForm.numBags ||
-      !outputForm.perBagWeightKg
-    ) {
-      toast.error("Fill product, bags and weight per bag");
-      return;
-    }
-    if (!outputForm.companyId) {
-      toast.error("Please select a company for this output");
-      return;
-    }
-
-    const product = products.find((p) => p._id === outputForm.productTypeId);
-    const company = companies.find((c) => c._id === outputForm.companyId);
-
-    const payload = {
-      productTypeId: outputForm.productTypeId,
-      productTypeName: product?.name || "",
-      companyId: outputForm.companyId || null,
-      companyName: company?.name || "",
-      numBags: Number(outputForm.numBags),
-      perBagWeightKg: Number(outputForm.perBagWeightKg),
-      shift: outputForm.shift,
-    };
+    if (!selectedBatchId || !selectedBatch) return;
+    const err = {};
+    if (!outputForm.brand) err.outputBrand = "Select brand.";
+    if (!outputForm.productTypeId) err.outputProduct = "Select product.";
+    if (!outputForm.numBags) err.outputBags = "Enter bags.";
+    if (!outputForm.perBagWeightKg) err.outputPerBag = "Select product to fetch bag weight.";
     const currentOutputsTotal = (selectedBatch.outputs || []).reduce(
       (sum, o) => sum + (o.netWeightKg || 0),
       0
@@ -310,16 +421,40 @@ export default function Production() {
       (Number(outputForm.numBags) || 0) *
       (Number(outputForm.perBagWeightKg) || 0);
     const newTotal = currentOutputsTotal + newNet;
-
     if (newTotal > (selectedBatch.paddyWeightKg || 0)) {
-      toast.error(
-        `Total output (${newTotal.toFixed(
-          3
-        )} kg) cannot exceed paddy input (${selectedBatch.paddyWeightKg.toFixed(
-          3
-        )} kg).`
-      );
+      const excessKg = newTotal - (selectedBatch.paddyWeightKg || 0);
+      const perBag = Number(outputForm.perBagWeightKg) || 0;
+      const excessBags = perBag ? Math.ceil(excessKg / perBag) : 0;
+      err.outputTotal = perBag
+        ? `Exceeds by approx ${excessBags} bags (${Math.round(excessKg)} kg).`
+        : `Exceeds by ${Math.round(excessKg)} kg.`;
+    }
+    if (Object.keys(err).length) {
+      setFieldErrors((e) => ({ ...e, ...err }));
       return;
+    }
+    setFieldErrors((e) => ({
+      ...e,
+      outputBrand: "",
+      outputProduct: "",
+      outputBags: "",
+      outputPerBag: "",
+      outputTotal: "",
+    }));
+
+    const product = products.find((p) => p._id === outputForm.productTypeId);
+
+    const payload = {
+      productTypeId: outputForm.productTypeId,
+      productTypeName: product?.name || "",
+      companyId: null,
+      companyName: outputForm.brand || "",
+      numBags: Number(outputForm.numBags),
+      perBagWeightKg: Number(outputForm.perBagWeightKg),
+      shift: outputForm.shift,
+    };
+    if (selectedBatch.status === "COMPLETED" && completedBatchUnlocked) {
+      payload.adminPin = lastEnteredPin || settings.adminPin || "0000";
     }
 
     setWorking(true);
@@ -329,15 +464,15 @@ export default function Production() {
         payload
       );
       if (!res.data?.success) {
-        toast.error(res.data?.message || "Failed to add output");
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to add output." });
       } else {
-        toast.success("Output added");
+        toast.success("Output added", { position: "bottom-center", duration: 2500 });
         setSelectedBatch(res.data.data);
         setOutputForm({
+          brand: "",
           productTypeId: "",
-          companyId: "",
           numBags: "",
-          perBagWeightKg: "",
+          perBagWeightKg: settings.defaultBagWeightKg ? String(settings.defaultBagWeightKg) : "",
           netWeightKg: "",
           shift: "DAY",
         });
@@ -345,78 +480,166 @@ export default function Production() {
         await loadBatches();
       }
     } catch {
-      toast.error("Failed to add output");
+      setErrorDialog({ open: true, message: "Failed to add output." });
     }
     setWorking(false);
   }
 
-  async function handleCompleteBatch() {
-    if (!selectedBatchId || !selectedBatch) {
-      toast.error("Select a batch first");
+  async function handleSaveOutput(outputId) {
+    if (!selectedBatchId || !selectedBatch) return;
+    const o = (selectedBatch.outputs || []).find((out) => out._id === outputId);
+    if (!o) return;
+    const err = {};
+    const numBags = Math.floor(Number(editOutputForm.numBags)) || 0;
+    const perBag = Math.floor(Number(editOutputForm.perBagWeightKg)) || 0;
+    const newNet = numBags * perBag;
+    const otherTotal = (selectedBatch.outputs || [])
+      .filter((out) => out._id !== outputId)
+      .reduce((sum, out) => sum + (Number(out.netWeightKg) || 0), 0);
+    if (newNet + otherTotal > (selectedBatch.paddyWeightKg || 0)) {
+      const excessKg = newNet + otherTotal - (selectedBatch.paddyWeightKg || 0);
+      const excessBags = perBag ? Math.ceil(excessKg / perBag) : 0;
+      err.editOutputTotal = perBag
+        ? `Exceeds by approx ${excessBags} bags (${Math.round(excessKg)} kg).`
+        : `Exceeds by ${Math.round(excessKg)} kg.`;
+    }
+    if (Object.keys(err).length) {
+      setFieldErrors((e) => ({ ...e, ...err }));
       return;
     }
+    setSavingOutputId(outputId);
+    try {
+      const product = products.find((p) => p._id === editOutputForm.productTypeId);
+      const res = await api.patch(
+        `/production/batches/${selectedBatchId}/outputs/${outputId}`,
+        {
+          productTypeId: editOutputForm.productTypeId || o.productTypeId,
+          productTypeName: product?.name || o.productTypeName,
+          companyId: null,
+          companyName: editOutputForm.brand || o.companyName || "",
+          numBags,
+          perBagWeightKg: perBag,
+          shift: editOutputForm.shift || o.shift,
+        }
+      );
+      if (res.data?.success) {
+        setSelectedBatch(res.data.data);
+        setEditingOutputId(null);
+        toast.success("Output updated", { position: "bottom-center", duration: 2500 });
+      } else {
+        setFieldErrors((e) => ({ ...e, editOutputTotal: res.data?.message || "Failed to update output." }));
+      }
+    } catch (errRes) {
+      setFieldErrors((e) => ({ ...e, editOutputTotal: errRes.response?.data?.message || "Failed to update output." }));
+    }
+    setSavingOutputId(null);
+  }
+
+  function openCompleteConfirm() {
+    if (!selectedBatchId || !selectedBatch) return;
     if ((selectedBatch.outputs || []).length === 0) {
-      toast.error("Add at least one output before completing batch");
+      setFieldErrors((e) => ({ ...e, completeBatch: "Add at least one output before completing." }));
       return;
     }
+    setFieldErrors((e) => ({ ...e, completeBatch: "" }));
+    setCompleteConfirmOpen(true);
+  }
 
-    const msg =
-      "Are you sure you want to mark this batch as COMPLETED?\n\nAfter completion this batch cannot be edited and stock will be updated.";
-    if (!window.confirm(msg)) return;
-
+  async function handleCompleteBatch() {
+    setCompleteConfirmOpen(false);
+    if (!selectedBatchId || !selectedBatch) return;
     setWorking(true);
     try {
       const res = await api.post(
         `/production/batches/${selectedBatchId}/complete`
       );
       if (!res.data?.success) {
-        toast.error(res.data?.message || "Failed to complete batch");
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to complete batch." });
       } else {
-        toast.success("Batch completed; finished stock updated");
+        toast.success("Batch completed; finished stock updated", { position: "bottom-center", duration: 2500 });
         setSelectedBatch(res.data.data);
         await loadSummary();
         await loadBatches();
       }
     } catch {
-      toast.error("Failed to complete batch");
+      setErrorDialog({ open: true, message: "Failed to complete batch." });
     }
     setWorking(false);
   }
 
-  async function handleDeleteBatch() {
+  async function doDeleteBatch(skipConfirm = false) {
     if (!selectedBatchId || !selectedBatch) {
-      toast.error("Select a batch first");
+      setErrorDialog({ open: true, message: "Select a batch first." });
       return;
     }
 
     const isCompleted = selectedBatch.status === "COMPLETED";
-
-    const msg = isCompleted
-      ? "Are you sure you want to DELETE this completed batch?\n\nPaddy and finished stock for this batch will be reversed from stock as if the batch never existed."
-      : "Are you sure you want to DELETE this in-process batch?\n\nPaddy for this batch will be returned back to stock.";
-
-    if (!window.confirm(msg)) return;
+    if (!skipConfirm && !isCompleted) {
+      setDeleteInProcessConfirmOpen(true);
+      return;
+    }
 
     setWorking(true);
     try {
       const res = await api.delete(`/production/batches/${selectedBatchId}`);
       if (!res.data?.success) {
-        toast.error(res.data?.message || "Failed to delete batch");
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to delete batch." });
       } else {
-        toast.success(res.data.message || "Batch deleted");
+        toast.success(res.data.message || "Batch deleted", { position: "bottom-center", duration: 2500 });
         setSelectedBatchId(null);
         setSelectedBatch(null);
+        setDeleteConfirmOpen(false);
+        setDeleteConfirmInput("");
+        setDeleteInProcessConfirmOpen(false);
         await loadSummary();
+        await loadPaddyStock();
         await loadBatches();
       }
     } catch {
-      toast.error("Failed to delete batch");
+      setErrorDialog({ open: true, message: "Failed to delete batch." });
     }
     setWorking(false);
   }
 
+  function handleDeleteBatch() {
+    doDeleteBatch(false);
+  }
+
+  async function handleZeroPaddyStock() {
+    if (!zeroPaddyPin.trim()) {
+      setErrorDialog({ open: true, message: "Enter admin PIN." });
+      return;
+    }
+    setZeroingPaddy(true);
+    try {
+      const res = await api.post("/stock/zero-paddy", { adminPin: zeroPaddyPin.trim() });
+      if (res.data?.success) {
+        setZeroPaddyConfirm(false);
+        setZeroPaddyPin("");
+        await loadPaddyStock();
+        toast.success("Paddy stock set to zero.", { position: "bottom-center", duration: 2500 });
+      } else {
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to zero paddy stock." });
+      }
+    } catch (err) {
+      setErrorDialog({
+        open: true,
+        message: err.response?.data?.message || err.message || "Failed to zero paddy stock.",
+      });
+    } finally {
+      setZeroingPaddy(false);
+    }
+  }
+
   const currentBatchList =
     activeTab === "IN_PROCESS" ? inProcessBatches : completedBatches;
+
+  const paddyExceedNew =
+    Number(batchForm.paddyWeightKg) > paddyStockKg && batchForm.paddyWeightKg !== "";
+  const batchPaddyForEdit = selectedBatch ? (Number(selectedBatch.paddyWeightKg ?? selectedBatch.totalRawWeightKg) || 0) : 0;
+  const maxEditablePaddyKg = paddyStockKg + batchPaddyForEdit;
+  const paddyExceedEdit =
+    editBatchForm.paddyWeightKg !== "" && Number(editBatchForm.paddyWeightKg) > maxEditablePaddyKg;
 
   const remainingPaddy =
     selectedBatch && selectedBatch.paddyWeightKg != null
@@ -429,7 +652,7 @@ export default function Production() {
 
   return (
     <div className="space-y-6">
-      <Toaster />
+      <Toaster position="bottom-center" toastOptions={{ duration: 2500 }} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -443,73 +666,64 @@ export default function Production() {
             performance with live stock integration.
           </p>
         </div>
-        <button
-          onClick={() => {
-            loadSummary();
-            loadBatches();
-            toast.success("Production refreshed");
-          }}
-          className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm text-emerald-700 hover:bg-emerald-50"
-        >
-          <RefreshCcw size={16} />
-          Refresh
-        </button>
       </div>
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Day Shift */}
+        {/* 1. Paddy Stock */}
+        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-amber-400">
+          <div className="flex justify-between">
+            <div>
+              <div className="text-xs text-gray-500">Paddy Stock</div>
+              <div className="text-xl font-bold text-amber-800">
+                {typeof paddyStockKg === "number" ? Math.round(paddyStockKg) : "0"} kg
+              </div>
+              {settings.additionalStockSettingsEnabled && (
+                <button
+                  type="button"
+                  onClick={() => setZeroPaddyConfirm(true)}
+                  className="mt-2 text-xs text-amber-700 hover:text-amber-800 underline"
+                >
+                  Set paddy stock to zero
+                </button>
+              )}
+            </div>
+            <div className="bg-amber-100 p-2 rounded-full">
+              <Box className="text-amber-700" size={18} />
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Day / Night Shift Production */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-emerald-400">
           <div className="flex justify-between">
             <div>
-              <div className="text-xs text-gray-500">Day Shift Output</div>
-              <div className="text-xl font-bold text-emerald-800">
-                {summary.dayShiftOutputWeightKg} kg
+              <div className="text-xs text-gray-500">Day / Night Shift (Today)</div>
+              <div className="text-sm font-bold text-emerald-800">
+                Day {Math.round(Number(summary.dayShiftOutputWeightKg || 0))} kg
+              </div>
+              <div className="text-sm font-bold text-sky-700">
+                Night {Math.round(Number(summary.nightShiftOutputWeightKg || 0))} kg
               </div>
             </div>
-            <div className="bg-emerald-100 p-2 rounded-full">
-              <SunMedium className="text-emerald-700" size={18} />
+            <div className="flex gap-1">
+              <div className="bg-emerald-100 p-2 rounded-full">
+                <SunMedium className="text-emerald-700" size={16} />
+              </div>
+              <div className="bg-sky-100 p-2 rounded-full">
+                <Moon className="text-sky-700" size={16} />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Night Shift */}
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-sky-300">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Night Shift Output</div>
-              <div className="text-xl font-bold text-sky-800">
-                {summary.nightShiftOutputWeightKg} kg
-              </div>
-            </div>
-            <div className="bg-sky-100 p-2 rounded-full">
-              <Moon className="text-sky-700" size={18} />
-            </div>
-          </div>
-        </div>
-
-        {/* Total Output */}
-        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-amber-300">
-          <div className="flex justify-between">
-            <div>
-              <div className="text-xs text-gray-500">Total Output (Today)</div>
-              <div className="text-xl font-bold text-amber-700">
-                {summary.totalOutputWeightKg} kg
-              </div>
-            </div>
-            <div className="bg-amber-100 p-2 rounded-full">
-              <Activity className="text-amber-600" size={18} />
-            </div>
-          </div>
-        </div>
-
-        {/* Batch Count */}
+        {/* 3. Batches Today */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-violet-200">
           <div className="flex justify-between">
             <div>
               <div className="text-xs text-gray-500">Batches Today</div>
               <div className="text-xl font-bold text-violet-800">
-                {summary.batchCount}
+                {summary.batchCount ?? 0}
               </div>
             </div>
             <div className="bg-violet-100 p-2 rounded-full">
@@ -517,12 +731,35 @@ export default function Production() {
             </div>
           </div>
         </div>
+
+        {/* 4. Output Product-wise */}
+        <div className="bg-white p-4 rounded-xl shadow border-l-4 border-teal-300">
+          <div className="flex justify-between items-start">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-gray-500 mb-1">Output Today (Product-wise)</div>
+              <div className="text-xs font-medium text-teal-800 space-y-0.5 max-h-14 overflow-y-auto">
+                {(summary.productWiseOutput || []).length > 0 ? (
+                  (summary.productWiseOutput || []).map((p) => (
+                    <div key={p.productTypeName}>
+                      {p.productTypeName}: {Math.round(Number(p.totalKg || 0))} kg
+                    </div>
+                  ))
+                ) : (
+                  <span className="text-gray-400">No output yet</span>
+                )}
+              </div>
+            </div>
+            <div className="bg-teal-100 p-2 rounded-full shrink-0">
+              <Activity className="text-teal-700" size={18} />
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Batches + Detail */}
-      <div className="grid grid-cols-5 gap-4">
-        {/* Left: batch list + create */}
-        <div className="col-span-2 bg-white rounded-xl shadow border flex flex-col">
+      {/* Batch list (left) + Detail placeholder (right) 50-50 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
+        {/* Left: In-Process / Completed list */}
+        <div className="bg-white rounded-xl shadow border flex flex-col min-h-[400px] order-1 lg:order-1">
           <div className="p-4 border-b flex items-center justify-between">
             <div className="flex gap-4 text-sm">
               <button
@@ -546,53 +783,47 @@ export default function Production() {
                 Completed
               </button>
             </div>
-
-            <button
-              onClick={handleCreateBatch}
-              disabled={creating}
-              className="flex items-center gap-1 px-3 py-1 text-xs bg-emerald-700 text-white rounded hover:bg-emerald-800 disabled:opacity-60"
-            >
-              <Plus size={14} />
-              {creating ? "Creating..." : "New Batch"}
-            </button>
           </div>
 
-          {/* Quick create form */}
-          <div className="p-3 border-b bg-gray-50 grid grid-cols-3 gap-2 text-xs">
-            <div className="col-span-1">
+          {/* Quick create: Date, Paddy (kg), New Batch — Enter to create */}
+          <div className="p-3 border-b bg-gray-50 grid grid-cols-3 gap-2 text-xs items-center">
+            <div>
               <input
                 type="date"
                 value={batchForm.date}
                 onChange={(e) =>
                   setBatchForm((f) => ({ ...f, date: e.target.value }))
                 }
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleCreateBatch(); } }}
                 className="border rounded px-2 py-1 w-full"
               />
             </div>
-            <div className="col-span-1">
+            <div>
               <input
                 type="number"
                 value={batchForm.paddyWeightKg}
                 onChange={(e) =>
                   setBatchForm((f) => ({
                     ...f,
-                    paddyWeightKg: numClean(e.target.value),
+                    paddyWeightKg: intClean(e.target.value),
                   }))
                 }
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleCreateBatch(); } }}
                 placeholder="Paddy (kg)"
-                className="border rounded px-2 py-1 w-full"
+                className={`border rounded px-2 py-1 w-full ${paddyExceedNew ? "border-red-500 bg-red-50" : ""}`}
               />
             </div>
-            <div className="col-span-1">
-              <input
-                type="text"
-                value={batchForm.remarks}
-                onChange={(e) =>
-                  setBatchForm((f) => ({ ...f, remarks: e.target.value }))
-                }
-                placeholder="Remarks"
-                className="border rounded px-2 py-1 w-full"
-              />
+            <div>
+              <button
+                type="button"
+                onClick={handleCreateBatch}
+                disabled={creating || paddyStockKg <= 0}
+                title={paddyStockKg <= 0 ? "No paddy in stock. Add paddy via Gate Pass Inward." : "Create new batch"}
+                className="w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs bg-emerald-700 text-white rounded hover:bg-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Plus size={14} />
+                {creating ? "Creating..." : "New Batch"}
+              </button>
             </div>
           </div>
 
@@ -605,6 +836,7 @@ export default function Production() {
                   <th className="p-2 text-left">Date</th>
                   <th className="p-2 text-right">Paddy (kg)</th>
                   <th className="p-2 text-right">Output (kg)</th>
+                  <th className="p-2 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -625,17 +857,81 @@ export default function Production() {
                       {new Date(b.date).toLocaleDateString()}
                     </td>
                     <td className="p-2 text-right">
-                      {b.totalRawWeightKg?.toFixed(2)}
+                      {Math.round(Number(b.totalRawWeightKg) || 0)}
                     </td>
                     <td className="p-2 text-right">
-                      {b.totalOutputWeightKg?.toFixed(2)}
+                      {Math.round(Number(b.totalOutputWeightKg) || 0)}
+                    </td>
+                    <td className="p-2 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            selectBatch(b._id, b.status);
+                          }}
+                          className="p-1.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                          title="Edit"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedBatchId(b._id);
+                            setSelectedBatch(b);
+                            if (b.status === "COMPLETED") {
+                              setPinDialog({
+                                open: true,
+                                pin: "",
+                                purpose: "Delete completed batch (requires PIN)",
+                                pinError: "",
+                                onSuccess: () => {
+                                  setDeleteConfirmOpen(true);
+                                  setDeleteConfirmInput("");
+                                },
+                              });
+                            } else {
+                              setSelectedBatchId(b._id);
+                              setSelectedBatch(b);
+                              setDeleteInProcessConfirmOpen(true);
+                            }
+                          }}
+                          className="p-1.5 rounded border border-rose-200 text-rose-600 hover:bg-rose-50"
+                          title="Delete"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const res = await api.get(`/production/batches/${b._id}`);
+                              if (res.data?.success) {
+                                setPrintBatch(res.data.data);
+                                setShowSlip(true);
+                              } else {
+                                setErrorDialog({ open: true, message: "Failed to load batch for print." });
+                              }
+                            } catch {
+                              setErrorDialog({ open: true, message: "Failed to load batch for print." });
+                            }
+                          }}
+                          className="p-1.5 rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
+                          title="Print"
+                        >
+                          <Printer size={14} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
 
                 {currentBatchList.length === 0 && (
                   <tr>
-                    <td className="p-3 text-center text-gray-500" colSpan={4}>
+                    <td className="p-3 text-center text-gray-500" colSpan={5}>
                       {loadingBatches
                         ? "Loading batches..."
                         : "No batches found."}
@@ -647,315 +943,629 @@ export default function Production() {
           </div>
         </div>
 
-        {/* Right: batch detail */}
-        <div className="col-span-3 bg-white rounded-xl shadow border p-4 space-y-4">
+        {/* Right: Selected batch detail placeholder (completed batch + Add Output) */}
+        <div ref={detailSectionRef} className="min-h-[400px] flex flex-col order-2 lg:order-2">
           {selectedBatch ? (
-            <>
-              {/* Header row */}
-              <div className="flex justify-between items-start gap-4">
-                <div className="flex-1">
-                  <div className="text-sm text-gray-500">Selected Batch</div>
-                  <div className="text-lg font-semibold text-emerald-800">
-                    {selectedBatch.batchNo}
-                  </div>
-                  <div className="text-xs text-gray-500 flex items-center gap-2">
-                    Status:{" "}
-                    {selectedBatch.status === "IN_PROCESS" ? (
-                      <span className="text-yellow-600 font-semibold">
-                        In Process
-                      </span>
-                    ) : (
-                      <span className="text-emerald-700 font-semibold">
-                        Completed
-                      </span>
-                    )}
-                    <span className="text-gray-300">•</span>
-                    <button
-                      onClick={handleDeleteBatch}
-                      className="flex items-center gap-1 text-rose-600 hover:text-rose-700 text-xs"
-                    >
-                      <Trash2 size={12} />
-                      Delete
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-xs text-right text-gray-500">
-                  <div>
-                    Paddy:{" "}
-                    <span className="font-semibold text-gray-700">
-                      {selectedBatch.totalRawWeightKg?.toFixed(3)} kg
-                    </span>
-                  </div>
-                  <div>
-                    Output:{" "}
-                    <span className="font-semibold text-emerald-700">
-                      {selectedBatch.totalOutputWeightKg?.toFixed(3)} kg
-                    </span>
-                  </div>
-                  <div>
-                    Remaining Paddy:{" "}
-                    <span className="font-semibold text-sky-700">
-                      {remainingPaddy.toFixed(3)} kg
-                    </span>
-                  </div>
-                </div>
+        <div className="bg-white rounded-xl shadow border p-4 space-y-4 flex-1 overflow-y-auto">
+          <div className="flex justify-between items-start gap-4">
+            <div>
+              <div className="text-sm text-gray-500">Selected Batch</div>
+              <div className="text-lg font-semibold text-emerald-800">{selectedBatch.batchNo}</div>
+              <div className="text-xs text-gray-500 flex items-center gap-2 flex-wrap">
+                Status:{" "}
+                {selectedBatch.status === "IN_PROCESS" ? (
+                  <span className="text-yellow-600 font-semibold">In Process</span>
+                ) : (
+                  <span className="text-emerald-700 font-semibold">Completed</span>
+                )}
               </div>
+            </div>
+          </div>
 
-              {/* Batch editable info */}
-              <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-4 gap-3 text-xs items-end">
-                <div>
-                  <label className="block text-[11px] text-gray-500">
-                    Batch Date
-                  </label>
-                  <input
-                    type="date"
-                    value={editBatchForm.date}
-                    onChange={(e) =>
-                      setEditBatchForm((f) => ({
-                        ...f,
-                        date: e.target.value,
-                      }))
-                    }
-                    className="border rounded px-2 py-1 w-full"
-                  />
+          {/* Batch info */}
+          <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-4 gap-3 text-xs items-end">
+            <div>
+              <label className="block text-[11px] text-gray-500">Batch Date</label>
+              <input
+                type="date"
+                value={editBatchForm.date}
+                onChange={(e) =>
+                  setEditBatchForm((f) => ({ ...f, date: e.target.value }))
+                }
+                onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
+                readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
+                className={`border rounded px-2 py-1 w-full ${selectedBatch.status === "COMPLETED" && !completedBatchUnlocked ? "bg-gray-100 cursor-not-allowed" : ""}`}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500">Paddy Weight (kg)</label>
+              <input
+                type="number"
+                value={editBatchForm.paddyWeightKg}
+                onChange={(e) => {
+                  setEditBatchForm((f) => ({ ...f, paddyWeightKg: intClean(e.target.value) }));
+                  setFieldErrors((e) => ({ ...e, editPaddyWeightKg: "" }));
+                }}
+                onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
+                readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
+                className={`border rounded px-2 py-1 w-full ${
+                  selectedBatch.status === "COMPLETED" && !completedBatchUnlocked
+                    ? "bg-gray-100 cursor-not-allowed"
+                    : ""
+                } ${paddyExceedEdit || fieldErrors.editPaddyWeightKg ? "border-red-500 bg-red-50" : ""}`}
+              />
+              {fieldErrors.editPaddyWeightKg && (
+                <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.editPaddyWeightKg}</p>
+              )}
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[11px] text-gray-500">Remaining Paddy (kg)</label>
+              <div className="border rounded px-2 py-1 w-full bg-red-50 text-red-700 font-semibold">
+                {Math.round(remainingPaddy)} kg
+              </div>
+            </div>
+            <div className="col-span-4 flex flex-wrap gap-2 items-center">
+              {selectedBatch.status === "COMPLETED" && !completedBatchUnlocked && (
+                <button
+                  type="button"
+                  onClick={() => setPinDialog({ open: true, pin: "", purpose: "Edit completed batch", pinError: "" })}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-amber-500 text-amber-700 hover:bg-amber-50"
+                >
+                  <Lock size={14} />
+                  Unlock with PIN
+                </button>
+              )}
+              {selectedBatch.status === "COMPLETED" && completedBatchUnlocked && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompletedBatchUnlocked(false);
+                    setLastEnteredPin("");
+                    setEditingOutputId(null);
+                  }}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                >
+                  <Lock size={14} />
+                  Lock Again
+                </button>
+              )}
+              {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
+                <button
+                  onClick={handleSaveBatchInfo}
+                  disabled={savingBatchInfo}
+                  className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {savingBatchInfo ? "Saving..." : "Save Batch Info"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setPrintBatch(selectedBatch);
+                  setShowSlip(true);
+                }}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border text-emerald-700 hover:bg-emerald-50"
+              >
+                <Printer size={14} />
+                Preview Slip
+              </button>
+            </div>
+          </div>
+
+          {/* Outputs */}
+          <div>
+            <div className="text-sm font-semibold text-gray-700 mb-2">Outputs</div>
+            <div className="border rounded-lg overflow-hidden max-h-40">
+              <table className="w-full text-[11px]">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="p-2 text-left">Brand/Trademark</th>
+                    <th className="p-2 text-left">Product</th>
+                    <th className="p-2 text-right">Bags</th>
+                    <th className="p-2 text-right">Net Wt</th>
+                    <th className="p-2 text-left">Shift</th>
+                    {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
+                      <th className="p-2 w-16" />
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(selectedBatch.outputs || []).map((o, idx) => (
+                    <tr key={o._id || idx} className={idx % 2 ? "bg-white" : "bg-gray-50"}>
+                      {editingOutputId === o._id ? (
+                        <>
+                          <td className="p-2">
+                            <select
+                              value={editOutputForm.brand || ""}
+                              onChange={(e) =>
+                                setEditOutputForm((f) => ({
+                                  ...f,
+                                  brand: e.target.value,
+                                  productTypeId: "",
+                                  perBagWeightKg: "",
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleSaveOutput(o._id);
+                                }
+                                if (e.key === "Escape") {
+                                  setEditingOutputId(null);
+                                  setFieldErrors((f) => ({ ...f, editOutputTotal: "" }));
+                                }
+                              }}
+                              className="border rounded px-1 py-0.5 text-[11px] w-full"
+                            >
+                              <option value="">Select brand</option>
+                              {[...brandOptions, editOutputForm.brand]
+                                .filter((b, i, arr) => b && arr.indexOf(b) === i)
+                                .map((b, i) => (
+                                  <option key={`${b}-${i}`} value={b}>{b}</option>
+                                ))}
+                            </select>
+                          </td>
+                          <td className="p-2">
+                            <select
+                              value={editOutputForm.productTypeId || o.productTypeId}
+                              onChange={(e) => {
+                                const nextId = e.target.value;
+                                const product = products.find((p) => p._id === nextId);
+                                setEditOutputForm((f) => ({
+                                  ...f,
+                                  productTypeId: nextId,
+                                  perBagWeightKg: product?.conversionFactors?.Bag
+                                    ? String(Math.floor(Number(product.conversionFactors.Bag)) || "")
+                                    : f.perBagWeightKg,
+                                }));
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleSaveOutput(o._id);
+                                }
+                                if (e.key === "Escape") {
+                                  setEditingOutputId(null);
+                                  setFieldErrors((f) => ({ ...f, editOutputTotal: "" }));
+                                }
+                              }}
+                              className="border rounded px-1 py-0.5 text-[11px] w-full"
+                            >
+                              <option value="">Select product</option>
+                              {(editOutputForm.brand
+                                ? products.filter((p) => p.brand === editOutputForm.brand)
+                                : products
+                              ).map((p) => (
+                                <option key={p._id} value={p._id}>{p.name}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="number"
+                              value={editOutputForm.numBags}
+                              onChange={(e) => setEditOutputForm((f) => ({ ...f, numBags: intClean(e.target.value) }))}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSaveOutput(o._id); } if (e.key === "Escape") { setEditingOutputId(null); setFieldErrors((f) => ({ ...f, editOutputTotal: "" })); } }}
+                              className="border rounded px-1 py-0.5 text-[11px] w-14 text-right"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="number"
+                              value={editOutputForm.perBagWeightKg}
+                              readOnly
+                              className="border rounded px-1 py-0.5 text-[11px] w-14 text-right bg-gray-100 cursor-not-allowed"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <select
+                              value={editOutputForm.shift || o.shift}
+                              onChange={(e) => setEditOutputForm((f) => ({ ...f, shift: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSaveOutput(o._id); } if (e.key === "Escape") { setEditingOutputId(null); setFieldErrors((f) => ({ ...f, editOutputTotal: "" })); } }}
+                              className="border rounded px-1 py-0.5 text-[11px]"
+                            >
+                              <option value="DAY">Day</option>
+                              <option value="NIGHT">Night</option>
+                            </select>
+                          </td>
+                          <td className="p-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSaveOutput(o._id)}
+                              disabled={savingOutputId === o._id}
+                              className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50 mr-1"
+                            >
+                              {savingOutputId === o._id ? "..." : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setEditingOutputId(null); setFieldErrors((e) => ({ ...e, editOutputTotal: "" })); }}
+                              className="text-[10px] text-gray-500 hover:underline"
+                            >
+                              Cancel
+                            </button>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="p-2">{o.companyName || "-"}</td>
+                          <td className="p-2">{o.productTypeName}</td>
+                          <td className="p-2 text-right">{o.numBags}</td>
+                          <td className="p-2 text-right">{Math.round(Number(o.netWeightKg) || 0)}</td>
+                          <td className="p-2">{o.shift === "DAY" ? "Day" : "Night"}</td>
+                          {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
+                            <td className="p-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingOutputId(o._id);
+                                  const product = products.find((p) => p._id === o.productTypeId);
+                                  setEditOutputForm({
+                                    numBags: String(o.numBags || ""),
+                                    perBagWeightKg: product?.conversionFactors?.Bag
+                                      ? String(Math.floor(Number(product.conversionFactors.Bag)) || "")
+                                      : (o.numBags && o.netWeightKg
+                                        ? String(Math.floor(Number(o.netWeightKg) / o.numBags))
+                                        : ""),
+                                    shift: o.shift || "DAY",
+                                    brand: product?.brand || o.companyName || "",
+                                    productTypeId: o.productTypeId || "",
+                                  });
+                                  setFieldErrors((e) => ({ ...e, editOutputTotal: "" }));
+                                }}
+                                className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                disabled={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
+                              >
+                                Edit
+                              </button>
+                            </td>
+                          )}
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                      {(!selectedBatch.outputs || selectedBatch.outputs.length === 0) && (
+                        <tr>
+                          <td className="p-2 text-center text-gray-400" colSpan={6}>No outputs yet.</td>
+                        </tr>
+                      )}
+                </tbody>
+              </table>
                 </div>
-                <div>
-                  <label className="block text-[11px] text-gray-500">
-                    Paddy Weight (kg)
-                  </label>
+                {fieldErrors.editOutputTotal && (
+                  <p className="text-[10px] text-red-600 mt-1">{fieldErrors.editOutputTotal}</p>
+                )}
+
+                {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
+                  <div className="mt-3 space-y-2">
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                  <select
+                    value={outputForm.brand}
+                    onChange={(e) => {
+                      setOutputForm((f) => ({ ...f, brand: e.target.value, productTypeId: "" }));
+                      setFieldErrors((e) => ({ ...e, outputBrand: "" }));
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                    className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputBrand ? "border-red-500 bg-red-50" : ""}`}
+                  >
+                    <option value="">Brand / Trademark</option>
+                    {brandOptions.map((b, i) => (
+                      <option key={`${b}-${i}`} value={b}>{b}</option>
+                    ))}
+                  </select>
+                  {fieldErrors.outputBrand && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputBrand}</p>}
+                  <select
+                    value={outputForm.productTypeId}
+                    onChange={(e) => {
+                      setOutputForm((f) => ({ ...f, productTypeId: e.target.value }));
+                      setFieldErrors((e) => ({ ...e, outputProduct: "" }));
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                    className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputProduct ? "border-red-500 bg-red-50" : ""}`}
+                  >
+                    <option value="">Finished Product</option>
+                    {(outputForm.brand
+                      ? products.filter((p) => p.brand === outputForm.brand)
+                      : products
+                    ).map((p) => (
+                      <option key={p._id} value={p._id}>{p.name}</option>
+                    ))}
+                  </select>
+                  {fieldErrors.outputProduct && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputProduct}</p>}
                   <input
                     type="number"
-                    value={editBatchForm.paddyWeightKg}
-                    onChange={(e) =>
-                      setEditBatchForm((f) => ({
-                        ...f,
-                        paddyWeightKg: numClean(e.target.value),
-                      }))
-                    }
-                    className="border rounded px-2 py-1 w-full"
+                    value={outputForm.numBags}
+                    onChange={(e) => {
+                      setOutputForm((f) => ({ ...f, numBags: intClean(e.target.value) }));
+                      setFieldErrors((e) => ({ ...e, outputBags: "", outputTotal: "" }));
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                    placeholder="Bags"
+                    className={`border rounded px-2 py-1 ${fieldErrors.outputBags ? "border-red-500 bg-red-50" : ""}`}
                   />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-[11px] text-gray-500">
-                    Remarks
-                  </label>
                   <input
-                    type="text"
-                    value={editBatchForm.remarks}
-                    onChange={(e) =>
-                      setEditBatchForm((f) => ({
-                        ...f,
-                        remarks: e.target.value,
-                      }))
-                    }
-                    className="border rounded px-2 py-1 w-full"
+                    type="number"
+                    value={outputForm.perBagWeightKg}
+                    readOnly
+                    placeholder="Wt/bag (kg)"
+                    className="border rounded px-2 py-1 bg-gray-100 cursor-not-allowed"
                   />
-                </div>
-                <div className="col-span-4 flex justify-between items-center">
-                  <button
-                    onClick={() => setShowSlip(true)}
-                    className="flex items-center gap-1 text-xs px-3 py-1 rounded border text-emerald-700 hover:bg-emerald-50"
+                  <input
+                    type="number"
+                    value={outputForm.netWeightKg}
+                    readOnly
+                    placeholder="Net (kg)"
+                    className="border rounded px-2 py-1 bg-gray-50"
+                  />
+                  {fieldErrors.outputTotal && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputTotal}</p>}
+                  <select
+                    value={outputForm.shift}
+                    onChange={(e) =>
+                      setOutputForm((f) => ({ ...f, shift: e.target.value }))
+                    }
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                    className="border rounded px-2 py-1 col-span-3"
                   >
-                    <Printer size={14} />
-                    Preview Slip
-                  </button>
-                  <button
-                    onClick={handleSaveBatchInfo}
-                    disabled={savingBatchInfo}
-                    className="px-3 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                  >
-                    {savingBatchInfo ? "Saving..." : "Save Batch Info"}
-                  </button>
+                    <option value="DAY">Day Shift</option>
+                    <option value="NIGHT">Night Shift</option>
+                  </select>
                 </div>
-              </div>
-
-              {/* Outputs + list */}
-              <div className="grid grid-cols-2 gap-4">
-                {/* Outputs form */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-semibold text-gray-700">
-                      Finished Outputs
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 text-xs">
-                    <select
-                      value={outputForm.productTypeId}
-                      onChange={(e) =>
-                        setOutputForm((f) => ({
-                          ...f,
-                          productTypeId: e.target.value,
-                        }))
-                      }
-                      className="border rounded px-2 py-1 col-span-3"
-                    >
-                      <option value="">Finished Product</option>
-                      {products.map((p) => (
-                        <option key={p._id} value={p._id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-
-                    <select
-                      value={outputForm.companyId}
-                      onChange={(e) =>
-                        setOutputForm((f) => ({
-                          ...f,
-                          companyId: e.target.value,
-                        }))
-                      }
-                      className="border rounded px-2 py-1 col-span-3"
-                    >
-                      <option value="">Select company</option>
-                      {companies.map((c) => (
-                        <option key={c._id} value={c._id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-
-                    <input
-                      type="number"
-                      value={outputForm.numBags}
-                      onChange={(e) =>
-                        setOutputForm((f) => ({
-                          ...f,
-                          numBags: numClean(e.target.value),
-                        }))
-                      }
-                      placeholder="Bags"
-                      className="border rounded px-2 py-1"
-                    />
-
-                    <input
-                      type="number"
-                      value={outputForm.perBagWeightKg}
-                      onChange={(e) =>
-                        setOutputForm((f) => ({
-                          ...f,
-                          perBagWeightKg: numClean(e.target.value),
-                        }))
-                      }
-                      placeholder="Wt / bag (kg)"
-                      className="border rounded px-2 py-1"
-                    />
-
-                    <input
-                      type="number"
-                      value={outputForm.netWeightKg}
-                      readOnly
-                      placeholder="Net Wt (kg)"
-                      className="border rounded px-2 py-1 bg-gray-50"
-                    />
-
-                    <select
-                      value={outputForm.shift}
-                      onChange={(e) =>
-                        setOutputForm((f) => ({
-                          ...f,
-                          shift: e.target.value,
-                        }))
-                      }
-                      className="border rounded px-2 py-1 col-span-3"
-                    >
-                      <option value="DAY">Day Shift</option>
-                      <option value="NIGHT">Night Shift</option>
-                    </select>
-                  </div>
-
+                {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
                   <button
                     onClick={handleAddOutput}
                     disabled={working}
-                    className="flex items-center gap-1 text-xs px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
                   >
                     <Plus size={14} />
                     Add Output
                   </button>
-                </div>
-
-                {/* Outputs list */}
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold text-gray-700">
-                    Outputs List
-                  </div>
-
-                  <div className="border rounded-lg overflow-hidden max-h-48">
-                    <table className="w-full text-[11px]">
-                      <thead className="bg-gray-100">
-                        <tr>
-                          <th className="p-2 text-left">Product</th>
-                          <th className="p-2 text-left">Company</th>
-                          <th className="p-2 text-right">Bags</th>
-                          <th className="p-2 text-right">Net Wt</th>
-                          <th className="p-2 text-left">Shift</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(selectedBatch.outputs || []).map((o, idx) => (
-                          <tr
-                            key={o._id || idx}
-                            className={idx % 2 ? "bg-white" : "bg-gray-50"}
-                          >
-                            <td className="p-2">{o.productTypeName}</td>
-                            <td className="p-2">{o.companyName || "-"}</td>
-                            <td className="p-2 text-right">{o.numBags}</td>
-                            <td className="p-2 text-right">
-                              {o.netWeightKg?.toFixed(3)}
-                            </td>
-                            <td className="p-2">
-                              {o.shift === "DAY" ? "Day" : "Night"}
-                            </td>
-                          </tr>
-                        ))}
-                        {(!selectedBatch.outputs ||
-                          selectedBatch.outputs.length === 0) && (
-                          <tr>
-                            <td
-                              className="p-2 text-center text-gray-400"
-                              colSpan={5}
-                            >
-                              No outputs yet.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-
-              {/* Complete batch button */}
-              <div className="flex justify-end pt-2 border-t mt-2 gap-2">
-                {selectedBatch.status === "IN_PROCESS" && (
-                  <button
-                    onClick={handleCompleteBatch}
-                    disabled={working}
-                    className="flex items-center gap-2 px-4 py-2 rounded bg-emerald-700 text-white text-sm hover:bg-emerald-800 disabled:opacity-60"
-                  >
-                    <CheckCircle2 size={16} />
-                    Mark Batch Completed
-                  </button>
                 )}
               </div>
-            </>
+            )}
+          </div>
+
+          {selectedBatch.status === "IN_PROCESS" && (
+            <div className="flex justify-end pt-2 border-t">
+              {fieldErrors.completeBatch && (
+                <p className="text-xs text-red-600 mr-2 self-center">{fieldErrors.completeBatch}</p>
+              )}
+              <button
+                onClick={openCompleteConfirm}
+                disabled={working}
+                className="flex items-center gap-2 px-4 py-2 rounded bg-emerald-700 text-white text-sm hover:bg-emerald-800 disabled:opacity-60"
+              >
+                <CheckCircle2 size={16} />
+                Mark Batch Completed
+              </button>
+            </div>
+          )}
+        </div>
           ) : (
-            <div className="h-full flex items-center justify-center text-gray-500 text-sm">
-              Select a batch from the left or create a new one.
+            <div className="bg-white rounded-xl shadow border p-8 flex items-center justify-center text-gray-500 text-sm">
+              Select a batch from the list (click a row).
             </div>
           )}
         </div>
       </div>
 
-      {/* Slip modal */}
-      {showSlip && selectedBatch && (
+      {/* Mark batch complete confirmation (popup instead of window.confirm) */}
+      {completeConfirmOpen && selectedBatch && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Mark Batch Completed</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              After completion this batch cannot be edited without PIN and stock will be updated. Are you sure?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setCompleteConfirmOpen(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCompleteBatch}
+                disabled={working}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 text-sm"
+              >
+                {working ? "Completing..." : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete in-process batch confirmation */}
+      {deleteInProcessConfirmOpen && selectedBatch && selectedBatch.status === "IN_PROCESS" && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete In-Process Batch</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Paddy for this batch will be returned back to stock. Are you sure you want to delete this batch?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setDeleteInProcessConfirmOpen(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { doDeleteBatch(true); setDeleteInProcessConfirmOpen(false); }}
+                disabled={working}
+                className="px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-60 text-sm"
+              >
+                {working ? "Deleting..." : "Delete Batch"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete completed batch confirmation */}
+      {deleteConfirmOpen && selectedBatch && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Delete Completed Batch
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              This will reverse paddy and finished stock for this batch. Type the batch number to confirm.
+            </p>
+            <p className="text-xs text-gray-500 mb-1">
+              Batch number: <strong>{selectedBatch.batchNo}</strong>
+            </p>
+            <input
+              type="text"
+              value={deleteConfirmInput}
+              onChange={(e) => setDeleteConfirmInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && deleteConfirmInput.trim() === (selectedBatch?.batchNo || "") && !working) {
+                  e.preventDefault();
+                  doDeleteBatch(true);
+                }
+              }}
+              placeholder="Type batch number"
+              className="w-full border rounded-lg px-3 py-2 text-sm mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => {
+                  setDeleteConfirmOpen(false);
+                  setDeleteConfirmInput("");
+                }}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => doDeleteBatch(true)}
+                disabled={deleteConfirmInput.trim() !== (selectedBatch.batchNo || "") || working}
+                className="px-4 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              >
+                {working ? "Deleting..." : "Delete Batch"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slip modal (Print uses printBatch; Edit modal uses selectedBatch) */}
+      {showSlip && (printBatch || selectedBatch) && (
         <BatchSlipModal
-          onClose={() => setShowSlip(false)}
-          batch={selectedBatch}
+          onClose={() => {
+            setShowSlip(false);
+            setPrintBatch(null);
+          }}
+          batch={printBatch || selectedBatch}
           millInfo={millInfo}
         />
+      )}
+
+      {/* Zero paddy confirmation - 4 digit PIN */}
+      {zeroPaddyConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Set paddy stock to zero</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              This will remove all paddy ledger entries (from Gate Pass In). Paddy stock will show 0. Batches and other stock are not affected.
+            </p>
+            <p className="text-xs text-gray-600 mb-2">Admin PIN:</p>
+            <Pin4Input
+              value={zeroPaddyPin}
+              onChange={(v) => setZeroPaddyPin(v.slice(0, 4))}
+              className="mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setZeroPaddyConfirm(false); setZeroPaddyPin(""); }}
+                disabled={zeroingPaddy}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleZeroPaddyStock}
+                disabled={zeroingPaddy || zeroPaddyPin.length !== 4}
+                className="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm"
+              >
+                {zeroingPaddy ? "Setting..." : "Zero paddy stock"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error dialog */}
+      {errorDialog.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Error</h3>
+            <p className="text-sm text-gray-600 mb-4">{errorDialog.message}</p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setErrorDialog({ open: false, message: "" })}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin PIN dialog (edit completed batch) - 4 digit boxes */}
+      {pinDialog.open && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Admin PIN</h3>
+            <p className="text-sm text-gray-600 mb-3">{pinDialog.purpose}</p>
+            <Pin4Input
+              value={pinDialog.pin}
+              onChange={(v) => setPinDialog((p) => ({ ...p, pin: v.slice(0, 4), pinError: "" }))}
+              onComplete={(entered) => {
+                const expected = settings.adminPin || "0000";
+                if (entered === expected) {
+                  if (pinDialog.onSuccess) pinDialog.onSuccess();
+                  else setCompletedBatchUnlocked(true);
+                  setPinDialog({ open: false, pin: "", purpose: "", onSuccess: null, pinError: "" });
+                } else {
+                  setPinDialog((p) => ({ ...p, pinError: "Incorrect PIN." }));
+                }
+              }}
+              error={!!pinDialog.pinError}
+              className="mb-3"
+            />
+            {pinDialog.pinError && (
+              <p className="text-xs text-red-600 mb-3">{pinDialog.pinError}</p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPinDialog({ open: false, pin: "", purpose: "", onSuccess: null, pinError: "" })}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const entered = pinDialog.pin;
+                  const expected = settings.adminPin || "0000";
+                  if (entered === expected) {
+                    if (pinDialog.onSuccess) pinDialog.onSuccess();
+                    else setCompletedBatchUnlocked(true);
+                    setPinDialog({ open: false, pin: "", purpose: "", onSuccess: null, pinError: "" });
+                  } else {
+                    setPinDialog((p) => ({ ...p, pinError: "Incorrect PIN." }));
+                  }
+                }}
+                disabled={pinDialog.pin.length !== 4}
+                className="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm"
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1072,18 +1682,18 @@ function BatchSlipModal({ onClose, batch, millInfo }) {
               <div>
                 <div className="text-gray-500">Paddy Weight</div>
                 <div className="font-semibold">
-                  {batch.paddyWeightKg?.toFixed(3)} kg
+                  {Math.round(Number(batch.paddyWeightKg) || 0)} kg
                 </div>
               </div>
               <div>
                 <div className="text-gray-500">Total Output</div>
                 <div className="font-semibold">
-                  {batch.totalOutputWeightKg?.toFixed(3)} kg
+                  {Math.round(Number(batch.totalOutputWeightKg) || 0)} kg
                 </div>
               </div>
               <div>
                 <div className="text-gray-500">Remaining Paddy</div>
-                <div className="font-semibold">{remaining.toFixed(3)} kg</div>
+                <div className="font-semibold">{Math.round(remaining)} kg</div>
               </div>
             </div>
 
@@ -1093,8 +1703,8 @@ function BatchSlipModal({ onClose, batch, millInfo }) {
             <table className="w-full text-[10px] mt-1">
               <thead>
                 <tr>
+                  <th className="text-left">Brand/Trademark</th>
                   <th className="text-left">Product</th>
-                  <th className="text-left">Company</th>
                   <th className="text-right">Bags</th>
                   <th className="text-right">Net (kg)</th>
                   <th className="text-left">Shift</th>
@@ -1103,10 +1713,10 @@ function BatchSlipModal({ onClose, batch, millInfo }) {
               <tbody>
                 {(batch.outputs || []).map((o, idx) => (
                   <tr key={o._id || idx}>
-                    <td>{o.productTypeName}</td>
                     <td>{o.companyName || "-"}</td>
+                    <td>{o.productTypeName}</td>
                     <td className="text-right">{o.numBags}</td>
-                    <td className="text-right">{o.netWeightKg?.toFixed(3)}</td>
+                    <td className="text-right">{Math.round(Number(o.netWeightKg) || 0)}</td>
                     <td>{o.shift === "DAY" ? "Day" : "Night"}</td>
                   </tr>
                 ))}

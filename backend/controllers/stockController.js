@@ -2,9 +2,14 @@
 const ProductionBatch = require("../models/productionBatchModel");
 const Transaction = require("../models/transactionModel");
 const Company = require("../models/companyModel");
+const StockLedger = require("../models/stockLedgerModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
+const SystemSettings = require("../models/systemSettingsModel");
 
-function makeKey(companyId, productTypeId) {
-  return `${companyId || "NONE"}::${productTypeId}`;
+function makeKey(companyId, productTypeId, productTypeName) {
+  const c = companyId != null ? String(companyId) : "NONE";
+  const p = (productTypeId != null ? String(productTypeId) : null) || productTypeName || "UNKNOWN";
+  return `${c}::${p}`;
 }
 
 exports.getCurrentStock = async (req, res) => {
@@ -29,20 +34,22 @@ exports.getCurrentStock = async (req, res) => {
       productTypeId,
       productTypeName,
       deltaKg,
-      updatedAt
+      updatedAt,
+      sourceInfo = null
     ) => {
-      if (!productTypeId) return;
+      if (!productTypeId && !productTypeName) return;
       const qty = Number(deltaKg || 0);
       if (!qty) return;
 
-      const key = makeKey(companyId, productTypeId);
+      const key = makeKey(companyId, productTypeId, productTypeName);
       const existing = map.get(key) || {
         companyId: companyId || null,
         companyName: companyName || "",
-        productTypeId,
+        productTypeId: productTypeId || null,
         productTypeName: productTypeName || "",
         balanceKg: 0,
         lastUpdated: null,
+        sources: [],
       };
 
       existing.balanceKg += qty;
@@ -54,8 +61,35 @@ exports.getCurrentStock = async (req, res) => {
         }
       }
 
+      if (sourceInfo) existing.sources.push(sourceInfo);
       map.set(key, existing);
     };
+
+    // 0️⃣ Gate pass / production ledger (Paddy only)
+    const ledgerRows = await StockLedger.find({ productTypeId: null }).lean();
+    for (const l of ledgerRows) {
+      if (!l.productTypeName) continue;
+      const net = Number(l.netWeightKg || 0);
+      if (!net) continue;
+      const delta = l.type === "OUT" ? -net : net;
+      const dateTime = l.updatedAt || l.createdAt;
+      addToMap(
+        l.companyId || null,
+        l.companyName || "",
+        null,
+        l.productTypeName,
+        delta,
+        dateTime,
+        {
+          sourceType: "Gate Pass",
+          refNo: l.gatePassNo || "-",
+          date: l.date,
+          dateTime,
+          qtyKg: delta,
+          direction: l.type,
+        }
+      );
+    }
 
     // 1️⃣ COMPLETED production batches → add outputs
     const batches = await ProductionBatch.find({
@@ -64,11 +98,13 @@ exports.getCurrentStock = async (req, res) => {
 
     for (const b of batches) {
       const outputs = b.outputs || [];
+      const batchDate = b.date || b.createdAt;
+      const batchDateTime = b.updatedAt || b.createdAt;
 
       for (const o of outputs) {
-        const companyId = o.companyId || null; // ✅ company per-output se
-        const rawCompanyName = o.companyName || ""; // ✅ name per-output se
-        const productTypeId = o.productTypeId?.toString();
+        const companyId = o.companyId != null ? o.companyId : null;
+        const rawCompanyName = o.companyName || "";
+        const productTypeId = o.productTypeId != null ? String(o.productTypeId) : null;
         const productTypeName = o.productTypeName || "";
         const net = Number(o.netWeightKg || 0);
 
@@ -79,7 +115,15 @@ exports.getCurrentStock = async (req, res) => {
             productTypeId,
             productTypeName,
             net,
-            b.updatedAt || b.createdAt
+            batchDateTime,
+            {
+              sourceType: "Batch",
+              refNo: b.batchNo || "-",
+              date: batchDate,
+              dateTime: batchDateTime,
+              qtyKg: net,
+              direction: "IN",
+            }
           );
         }
       }
@@ -91,8 +135,11 @@ exports.getCurrentStock = async (req, res) => {
       const companyId = t.companyId || null;
       const companyName = t.companyName || "";
       const items = t.items || [];
+      const tDate = t.date || t.createdAt;
+      const tDateTime = t.updatedAt || t.createdAt;
 
       for (const it of items) {
+        if (it.isManagerial || !it.productTypeId) continue;
         const productTypeId = it.productTypeId?.toString();
         const productTypeName = it.productTypeName || "";
         const net = Number(it.netWeightKg || 0);
@@ -104,7 +151,15 @@ exports.getCurrentStock = async (req, res) => {
             productTypeId,
             productTypeName,
             net,
-            t.updatedAt || t.createdAt
+            tDateTime,
+            {
+              sourceType: "Purchase",
+              refNo: t.invoiceNo || "-",
+              date: tDate,
+              dateTime: tDateTime,
+              qtyKg: net,
+              direction: "IN",
+            }
           );
         }
       }
@@ -116,6 +171,8 @@ exports.getCurrentStock = async (req, res) => {
       const companyId = t.companyId || null;
       const companyName = t.companyName || "";
       const items = t.items || [];
+      const tDate = t.date || t.createdAt;
+      const tDateTime = t.updatedAt || t.createdAt;
 
       for (const it of items) {
         const productTypeId = it.productTypeId?.toString();
@@ -129,7 +186,15 @@ exports.getCurrentStock = async (req, res) => {
             productTypeId,
             productTypeName,
             -net,
-            t.updatedAt || t.createdAt
+            tDateTime,
+            {
+              sourceType: "Sale",
+              refNo: t.invoiceNo || "-",
+              date: tDate,
+              dateTime: tDateTime,
+              qtyKg: -net,
+              direction: "OUT",
+            }
           );
         }
       }
@@ -171,6 +236,68 @@ exports.getCurrentStock = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Server error while computing current stock.",
+    });
+  }
+};
+
+async function verifyAdminPinAndAdditionalSetting(req, res) {
+  const pin = req.body && req.body.adminPin != null ? String(req.body.adminPin).trim() : null;
+  const settings = await SystemSettings.findOne({}).select("adminPin additionalStockSettingsEnabled").lean();
+  const expectedPin = (settings && settings.adminPin) || "0000";
+  if (!pin || pin !== String(expectedPin).trim()) {
+    res.status(403).json({ success: false, message: "Invalid or missing admin PIN." });
+    return false;
+  }
+  if (!(settings && settings.additionalStockSettingsEnabled)) {
+    res.status(403).json({
+      success: false,
+      message: "Additional stock settings are disabled. Enable in System Settings (Stock & Admin) with admin PIN.",
+    });
+    return false;
+  }
+  return true;
+}
+
+exports.clearLedgers = async (req, res) => {
+  try {
+    const ok = await verifyAdminPinAndAdditionalSetting(req, res);
+    if (!ok) return;
+
+    await StockLedger.deleteMany({});
+    await ManagerialStockLedger.deleteMany({});
+    await ProductionBatch.deleteMany({});
+    await Transaction.deleteMany({});
+    return res.json({
+      success: true,
+      message:
+        "All stock ledgers, production batches, and transactions have been removed.",
+    });
+  } catch (err) {
+    console.error("clearLedgers error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to clear stock ledgers.",
+    });
+  }
+};
+
+/** Zero paddy stock: remove all paddy ledger entries (productTypeId null). Requires admin PIN and additional setting enabled. */
+exports.zeroPaddyStock = async (req, res) => {
+  try {
+    const ok = await verifyAdminPinAndAdditionalSetting(req, res);
+    if (!ok) return;
+
+    const result = await StockLedger.deleteMany({ productTypeId: null });
+    return res.json({
+      success: true,
+      message: "Paddy stock has been set to zero.",
+      deletedCount: result.deletedCount,
+    });
+  } catch (err) {
+    console.error("zeroPaddyStock error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to zero paddy stock.",
     });
   }
 };

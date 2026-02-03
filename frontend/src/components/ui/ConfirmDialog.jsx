@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { AlertTriangle, X } from "lucide-react";
 
 /**
@@ -37,6 +37,21 @@ export default function ConfirmDialog({
   const handleBackdropClick = (e) => {
     if (e.target === e.currentTarget && !loading) onClose?.();
   };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !loading) {
+        e.preventDefault();
+        onClose?.();
+      } else if (e.key === "Enter" && !loading) {
+        e.preventDefault();
+        onConfirm?.();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, loading, onClose, onConfirm]);
 
   return (
     <div

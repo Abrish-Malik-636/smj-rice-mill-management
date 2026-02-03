@@ -6,27 +6,52 @@ const TransactionItemSchema = new mongoose.Schema(
     productTypeId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProductType",
-      required: true,
     },
     productTypeName: {
       type: String,
-      required: true,
       trim: true,
     },
     numBags: {
       type: Number,
-      required: true,
       min: 0,
     },
     perBagWeightKg: {
       type: Number,
-      required: true,
       min: 0,
     },
     netWeightKg: {
       type: Number,
-      required: true,
       min: 0,
+    },
+    managerialItemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ManagerialStock",
+      default: null,
+    },
+    itemName: {
+      type: String,
+      trim: true,
+    },
+    category: {
+      type: String,
+      trim: true,
+    },
+    condition: {
+      type: String,
+      trim: true,
+    },
+    unit: {
+      type: String,
+      trim: true,
+      default: "Nos",
+    },
+    quantity: {
+      type: Number,
+      min: 0,
+    },
+    isManagerial: {
+      type: Boolean,
+      default: false,
     },
     rate: {
       type: Number,
@@ -35,12 +60,11 @@ const TransactionItemSchema = new mongoose.Schema(
     },
     rateType: {
       type: String,
-      enum: ["per_kg", "per_bag"],
+      enum: ["per_kg", "per_bag", "per_ton", "per_unit"],
       default: "per_kg",
     },
     amount: {
       type: Number,
-      required: true,
       min: 0,
     },
   },
@@ -87,7 +111,7 @@ const TransactionSchema = new mongoose.Schema(
     // 🔹 NEW: payment method for future gateway integration
     paymentMethod: {
       type: String,
-      enum: ["CASH", "CARD", "BANK_TRANSFER", "CREDIT"],
+      enum: ["CASH", "CARD", "ONLINE_TRANSFER", "BANK_TRANSFER", "CREDIT"],
       default: "CASH",
     },
 
@@ -113,6 +137,11 @@ const TransactionSchema = new mongoose.Schema(
     totalAmount: {
       type: Number,
       required: true,
+      min: 0,
+    },
+    partialPaid: {
+      type: Number,
+      default: 0,
       min: 0,
     },
   },

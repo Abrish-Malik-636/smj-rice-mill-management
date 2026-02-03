@@ -45,10 +45,7 @@ export default function ManagerialStockManager() {
     try {
       const normalized = normalizeText(name);
       const existing = items.find(
-        (i) =>
-          (excludeId && i._id === excludeId) ||
-          normalizeText(i.name) === normalized ||
-          normalizeText(i.name).includes(normalized)
+        (i) => (excludeId && i._id === excludeId) ? false : normalizeText(i.name) === normalized
       );
       return existing ? existing.name : null;
     } finally {
@@ -60,20 +57,20 @@ export default function ManagerialStockManager() {
     switch (name) {
       case "name":
         if (!value.trim()) return "Item name is required";
+        if (/\d/.test(value.trim())) return "Item name cannot contain numbers";
+        if (/[^a-zA-Z\s]/.test(value.trim())) return "Item name cannot contain special characters";
         if (value.trim().length < 2) return "Item name must be at least 2 characters";
         if (value.trim().length > 80) return "Item name must not exceed 80 characters";
         return null;
       case "category":
         if (!value.trim()) return "Category is required";
         return null;
-      case "unit":
-        if (!value.trim()) return "Unit is required";
-        if (value.trim().length > 20) return "Unit must not exceed 20 characters";
-        return null;
       case "condition":
-        if (value.trim() && !CONDITION_OPTIONS.includes(value.trim())) return "Select a valid condition";
+        if (!value.trim()) return "Condition is required";
+        if (!CONDITION_OPTIONS.includes(value.trim())) return "Select a valid condition";
         return null;
       case "description":
+        if (/[^a-zA-Z0-9\s.,\-]/.test(value.trim())) return "Description cannot contain special characters";
         if (value.trim().length > 200) return "Description must not exceed 200 characters";
         return null;
       default:
@@ -92,9 +89,9 @@ export default function ManagerialStockManager() {
   };
 
   const validateAll = async () => {
-    setTouched({ name: true, category: true, unit: true, condition: true, description: true });
+    setTouched({ name: true, category: true, condition: true, description: true });
     const newErrors = {};
-    ["name", "category", "unit", "condition", "description"].forEach((name) => {
+    ["name", "category", "condition", "description"].forEach((name) => {
       const msg = getFieldError(name, formData[name]);
       if (msg) newErrors[name] = msg;
     });
@@ -114,7 +111,12 @@ export default function ManagerialStockManager() {
 
   const handleBlur = (e) => {
     const { name, value } = e.target;
-    validateField(name, value);
+    let val = value;
+    if (name === "name" && val && val.trim()) {
+      val = toTitleCase(val);
+      setFormData((prev) => ({ ...prev, [name]: val }));
+    }
+    validateField(name, val);
   };
 
   const handleSubmit = async (e) => {
@@ -130,7 +132,7 @@ export default function ManagerialStockManager() {
         name: formData.name.trim(),
         category: formData.category.trim(),
         unit: formData.unit.trim() || "Nos",
-        condition: formData.condition.trim() || "",
+        condition: formData.condition.trim(),
         description: formData.description.trim() || "",
       };
       if (editingId) {
@@ -189,7 +191,7 @@ export default function ManagerialStockManager() {
   const tableColumns = [
     { key: "name", label: "Name", filterOptions: items.length ? [...new Set(items.map((i) => i.name))] : [] },
     { key: "category", label: "Category", filterOptions: CATEGORY_OPTIONS },
-    { key: "unit", label: "Unit", filterOptions: items.length ? [...new Set(items.map((i) => i.unit))] : [] },
+    { key: "unit", label: "Unit", render: () => "Nos" },
     { key: "condition", label: "Condition", filterOptions: CONDITION_OPTIONS },
     { key: "description", label: "Description" },
     {
@@ -250,35 +252,26 @@ export default function ManagerialStockManager() {
           )}
         </div>
         <div>
-          <label className="block text-xs text-gray-600 mb-1">Unit *</label>
-          <input
-            type="text"
-            name="unit"
-            value={formData.unit}
-            onChange={handleChange}
-            onBlur={handleBlur}
-            maxLength={20}
-            placeholder="Nos, etc."
-            className={`border p-2 rounded text-sm w-full ${errors.unit && touched.unit ? "border-red-500 bg-red-50" : "border-gray-300"}`}
-          />
-          {errors.unit && touched.unit && (
-            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.unit}</p>
-          )}
+          <label className="block text-xs text-gray-600 mb-1">Unit</label>
+          <input type="text" value="Nos" readOnly className="border p-2 rounded text-sm w-full bg-gray-100 text-gray-600" />
         </div>
         <div>
-          <label className="block text-xs text-gray-600 mb-1">Condition</label>
+          <label className="block text-xs text-gray-600 mb-1">Condition *</label>
           <select
             name="condition"
             value={formData.condition}
             onChange={handleChange}
             onBlur={handleBlur}
-            className="border p-2 rounded text-sm w-full border-gray-300"
+            className={`border p-2 rounded text-sm w-full ${errors.condition && touched.condition ? "border-red-500 bg-red-50" : "border-gray-300"}`}
           >
             <option value="">—</option>
             {CONDITION_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
+          {errors.condition && touched.condition && (
+            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.condition}</p>
+          )}
         </div>
         <div className="col-span-4">
           <label className="block text-xs text-gray-600 mb-1">Description</label>

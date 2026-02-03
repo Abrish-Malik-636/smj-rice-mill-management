@@ -38,6 +38,8 @@ const gatePassesRoutes = require("./routes/gatePassesRoutes");
 app.use("/api/gatepasses", gatePassesRoutes);
 const managerialStockRoutes = require("./routes/managerialStockRoutes");
 app.use("/api/managerial-stock", managerialStockRoutes);
+const aiRoutes = require("./routes/aiRoutes");
+app.use("/api/ai", aiRoutes);
 
 // Connect MongoDB
 mongoose

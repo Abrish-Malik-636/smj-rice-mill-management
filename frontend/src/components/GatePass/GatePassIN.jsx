@@ -1,87 +1,34 @@
 import React, { useEffect, useState } from "react";
-import {
-  Edit2,
-  Trash2,
-  Printer,
-  Download,
-  X,
-  Plus,
-  Minus,
-  Filter,
-} from "lucide-react";
+import { Edit2, Trash2, Printer, X } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../../services/api";
-
-const PAGE_SIZE = 10;
-
-// Predefined item types for IN
-const ITEM_TYPES = [
-  "Paddy",
-  "Machinery",
-  "Raw Material",
-  "Packaging Material",
-  "Fertilizer",
-  "Seeds",
-  "Other",
-];
+import DataTable from "../ui/DataTable";
 
 const UNITS = ["kg", "ton", "bags", "pcs", "mounds"];
 
-function rowsToCsv(rows) {
-  const cols = [
-    "createdAt",
-    "gatePassNo",
-    "truckNo",
-    "supplier",
-    "driverName",
-    "driverContact",
-    "transporter",
-    "biltyNumber",
-    "totalQuantity",
-    "remarks",
-  ];
-  const header = cols.join(",");
-  const lines = rows.map((r) =>
-    cols
-      .map((c) => {
-        const v = r[c] == null ? "" : String(r[c]).replace(/"/g, '""');
-        return `"${v}"`;
-      })
-      .join(",")
-  );
-  return [header, ...lines].join("\n");
-}
-
 export default function GatePassIN() {
+  const [companies, setCompanies] = useState([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState([]);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
+  const [otherSource, setOtherSource] = useState("");
   const [form, setForm] = useState({
     truckNo: "",
     supplier: "",
     transporter: "",
     driverName: "",
     driverContact: "",
-    biltyNumber: "",
-    vehicleWeight: "",
     freightCharges: "",
     remarks: "",
   });
-
-  // Items array
   const [items, setItems] = useState([
-    { itemType: "", customItemName: "", quantity: "", unit: "kg" },
+    { itemType: "Paddy", quantity: "", unit: "kg" },
   ]);
 
   const [errors, setErrors] = useState({});
   const [rows, setRows] = useState([]);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [settings, setSettings] = useState(null);
-
-  // Filter states
-  const [showFilter, setShowFilter] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
 
   // Confirmation dialog
   const [confirmDialog, setConfirmDialog] = useState({
@@ -89,12 +36,9 @@ export default function GatePassIN() {
     title: "",
     message: "",
     onConfirm: null,
+    expectedText: "",
   });
-
-  // Custom items from database
-  const [customItemsList, setCustomItemsList] = useState([]);
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const [confirmInput, setConfirmInput] = useState("");
 
   // Validation regex
   const nameRegex = /^[A-Za-z\s]+$/;
@@ -120,8 +64,9 @@ export default function GatePassIN() {
   };
 
   const validateSupplier = (v) => {
-    if (!v || v.trim() === "") return "Supplier is required.";
-    if (!nameRegex.test(v)) return "Supplier: letters and spaces only.";
+    if (!v) return "";
+    if (v === "Other") return "";
+    if (!nameRegex.test(v)) return "Source: letters and spaces only.";
     return "";
   };
 
@@ -156,26 +101,29 @@ export default function GatePassIN() {
     if (e3) newErr.driverName = e3;
     if (e4) newErr.driverContact = e4;
 
-    // Validate items
-    let hasItemError = false;
-    items.forEach((item, idx) => {
-      if (!item.itemType) {
-        newErr[`item_${idx}_type`] = "Select item type";
-        hasItemError = true;
+    if (selectedInvoiceId && !purchaseInvoices.find((t) => t._id === selectedInvoiceId)) {
+      newErr.invoiceId = "Select a valid invoice.";
+    }
+    if (form.supplier === "Other") {
+      if (!otherSource.trim()) {
+        newErr.otherSource = "Please specify source.";
+      } else if (!nameRegex.test(otherSource.trim())) {
+        newErr.otherSource = "Source: letters and spaces only.";
       }
-      if (item.itemType === "Other" && !item.customItemName) {
-        newErr[`item_${idx}_custom`] = "Specify item name";
-        hasItemError = true;
-      }
-    });
-
-    if (items.length === 0) {
-      toast.error("Add at least one item.");
-      hasItemError = true;
     }
 
     setErrors(newErr);
-    return Object.keys(newErr).length === 0 && !hasItemError;
+    if (Object.keys(newErr).length > 0) {
+      const firstKey = Object.keys(newErr)[0];
+      setTimeout(() => {
+        document.getElementById(`field-${firstKey}`)?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 100);
+      return false;
+    }
+    return true;
   };
 
   // Format truck input
@@ -199,7 +147,7 @@ export default function GatePassIN() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const res = await api.get("/settings/general");
+        const res = await api.get("/settings");
         if (res.data && res.data.success !== false) {
           setSettings(res.data.data || res.data);
         }
@@ -208,35 +156,44 @@ export default function GatePassIN() {
     loadSettings();
   }, []);
 
-  // Load custom items list
+  // Load companies for supplier dropdown
   useEffect(() => {
-    const loadCustomItems = async () => {
+    const loadCompanies = async () => {
       try {
-        const res = await api.get("/gatepasses/custom-items");
-        if (res.data && res.data.success) {
-          setCustomItemsList(res.data.data || []);
-        }
+        const res = await api.get("/companies");
+        setCompanies(res.data.data || []);
       } catch {}
     };
-    loadCustomItems();
+    loadCompanies();
   }, []);
+
+  // Load purchase invoices
+  useEffect(() => {
+    const loadInvoices = async () => {
+      try {
+        const res = await api.get("/transactions", {
+          params: { type: "PURCHASE", limit: 500, skip: 0 },
+        });
+        setPurchaseInvoices(res.data?.data || []);
+      } catch {}
+    };
+    loadInvoices();
+  }, []);
+
 
   // Fetch rows
   const fetchRows = async () => {
     try {
       setLoading(true);
       const params = {
-        page,
-        limit: PAGE_SIZE,
+        page: 1,
+        limit: 1000,
         type: "IN",
-        search: searchQuery || "",
-        status: statusFilter || "",
       };
       const res = await api.get("/gatepasses", { params });
       if (res.data && res.data.success === false)
         throw new Error(res.data.message || "Failed");
       setRows(res.data.data || []);
-      setTotal(res.data.total || 0);
     } catch (err) {
       toast.error(err.message || "Unable to fetch gate passes.");
     } finally {
@@ -247,15 +204,27 @@ export default function GatePassIN() {
   useEffect(() => {
     fetchRows();
     // eslint-disable-next-line
-  }, [page, statusFilter]);
+  }, []);
 
-  // Supplier suggestions
-  const supplierSuggestions = errors.supplier
-    ? Array.from(new Set(rows.map((r) => r.supplier).filter(Boolean))).slice(
-        0,
-        6
-      )
-    : [];
+  const normalizeType = (value) => {
+    if (!value) return "";
+    const trimmed = String(value).trim();
+    if (/^both/i.test(trimmed)) return "Both";
+    if (/^all/i.test(trimmed)) return "All";
+    return trimmed;
+  };
+
+  const supplierOptions = companies.filter((c) => {
+    const t = normalizeType(c.type);
+    return t === "Supplier" || t === "Both" || t === "All";
+  });
+  const transporterOptions = companies.filter((c) => {
+    const t = normalizeType(c.type);
+    return t === "Transporter" || t === "Both" || t === "All";
+  });
+  const filteredSupplierOptions = supplierOptions;
+  const filteredTransporterOptions = transporterOptions;
+  const filteredInvoices = purchaseInvoices;
 
   // Handlers
   const handleChange = (e) => {
@@ -265,82 +234,41 @@ export default function GatePassIN() {
       v = formatTruckInput(value);
     }
     if (name === "supplier" || name === "driverName") {
-      v = value.replace(/[^A-Za-z\s]/g, "");
+      if (value !== "Other") {
+        v = value.replace(/[^A-Za-z\s]/g, "");
+      }
       v = v.replace(/\s+/g, " ");
     }
     if (name === "driverContact") {
       v = formatContactInput(value);
     }
-    if (name === "vehicleWeight" || name === "freightCharges") {
+    if (name === "freightCharges") {
       v = value.replace(/[^\d.]/g, "");
     }
     setForm((prev) => ({ ...prev, [name]: v }));
     validateField(name, v);
   };
 
-  // Item handlers
+  const handleInvoiceChange = (id) => {
+    setSelectedInvoiceId(id);
+    clearFieldError("invoiceId");
+    const invoice = purchaseInvoices.find((t) => t._id === id);
+    if (!invoice) return;
+    setForm((prev) => ({
+      ...prev,
+      supplier: invoice.companyName || "",
+    }));
+    setOtherSource("");
+  };
+
   const handleItemChange = (idx, field, value) => {
     const updated = [...items];
-
-    if (field === "itemType") {
-      updated[idx][field] = value;
-      // Clear custom name if not "Other"
-      if (value !== "Other") {
-        updated[idx].customItemName = "";
-      }
-      clearFieldError(`item_${idx}_type`);
-    } else if (field === "customItemName") {
-      let v = value.replace(/[^A-Za-z\s]/g, "");
-      v = v.replace(/\s+/g, " ");
-      updated[idx][field] = v;
-      clearFieldError(`item_${idx}_custom`);
-    } else if (field === "quantity") {
+    if (field === "quantity") {
       updated[idx][field] = value.replace(/[^\d.]/g, "");
     } else {
       updated[idx][field] = value;
     }
-
     setItems(updated);
-  };
-
-  const addItem = () => {
-    setItems([
-      ...items,
-      { itemType: "", customItemName: "", quantity: "", unit: "kg" },
-    ]);
-  };
-
-  const removeItem = (idx) => {
-    if (items.length === 1) {
-      toast.error("At least one item is required.");
-      return;
-    }
-    setItems(items.filter((_, i) => i !== idx));
-  };
-
-  // Check if custom item should be added to dropdown
-  const checkAndAddCustomItem = (customName) => {
-    if (!customName || customName.trim() === "") return;
-
-    const trimmed = customName.trim();
-    if (customItemsList.includes(trimmed)) return; // Already exists
-
-    setConfirmDialog({
-      open: true,
-      title: "Add New Item",
-      message: `Do you want to add "${trimmed}" to the items dropdown for future use?`,
-      onConfirm: async () => {
-        // Just add to local list, it will be saved when gate pass is created
-        setCustomItemsList([...customItemsList, trimmed]);
-        toast.success(`"${trimmed}" added to items list.`);
-        setConfirmDialog({
-          open: false,
-          title: "",
-          message: "",
-          onConfirm: null,
-        });
-      },
-    });
   };
 
   const handleSubmit = async (e) => {
@@ -350,29 +278,43 @@ export default function GatePassIN() {
       return;
     }
 
-    // Check for new custom items
-    const newCustomItems = items
-      .filter((item) => item.itemType === "Other" && item.customItemName)
-      .map((item) => item.customItemName.trim())
-      .filter((name) => !customItemsList.includes(name));
-
-    if (newCustomItems.length > 0) {
-      checkAndAddCustomItem(newCustomItems[0]);
-      return; // Wait for user confirmation
+    const invoice = selectedInvoiceId
+      ? purchaseInvoices.find((t) => t._id === selectedInvoiceId)
+      : null;
+    if (selectedInvoiceId && !invoice) {
+      toast.error("Select a valid purchase invoice.");
+      return;
     }
+
+    const itemsFromInvoice = invoice
+      ? (invoice.items || []).map((it) => ({
+          itemType: it.productTypeName,
+          stockType: "Production",
+          customItemName: "",
+          quantity: it.netWeightKg || 0,
+          unit: "kg",
+        }))
+      : [];
+    const manualItems = items
+      .filter((it) => it.itemType && Number(it.quantity) > 0)
+      .map((it) => ({
+        itemType: it.itemType,
+        stockType: "Production",
+        customItemName: "",
+        quantity: Number(it.quantity),
+        unit: it.unit,
+      }));
+
+    const supplierName =
+      form.supplier === "Other" ? otherSource.trim() : form.supplier;
 
     const payload = {
       ...form,
       type: "IN",
-      items: items.map((item) => ({
-        itemType: item.itemType,
-        customItemName: item.itemType === "Other" ? item.customItemName : "",
-        quantity: item.quantity ? Number(item.quantity) : 0,
-        unit: item.unit,
-      })),
-      vehicleWeight: form.vehicleWeight
-        ? Number(form.vehicleWeight)
-        : undefined,
+      supplier: supplierName || "",
+      invoiceId: invoice ? invoice._id : undefined,
+      invoiceNo: invoice ? invoice.invoiceNo : undefined,
+      items: [...itemsFromInvoice, ...manualItems],
       freightCharges: form.freightCharges
         ? Number(form.freightCharges)
         : undefined,
@@ -393,19 +335,21 @@ export default function GatePassIN() {
         transporter: "",
         driverName: "",
         driverContact: "",
-        biltyNumber: "",
-        vehicleWeight: "",
         freightCharges: "",
         remarks: "",
       });
-      setItems([
-        { itemType: "", customItemName: "", quantity: "", unit: "kg" },
-      ]);
+      setSelectedInvoiceId("");
+      setOtherSource("");
+      setItems([{ itemType: "Paddy", quantity: "", unit: "kg" }]);
       setEditingId(null);
       setErrors({});
       fetchRows();
     } catch (err) {
       toast.error(err.message || "Unable to save.");
+      document.getElementById("gatepass-in-form")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
     }
   };
 
@@ -416,26 +360,29 @@ export default function GatePassIN() {
       transporter: row.transporter || "",
       driverName: row.driverName || "",
       driverContact: row.driverContact || "",
-      biltyNumber: row.biltyNumber || "",
-      vehicleWeight: row.vehicleWeight ? String(row.vehicleWeight) : "",
       freightCharges: row.freightCharges ? String(row.freightCharges) : "",
       remarks: row.remarks || "",
     });
-
-    if (row.items && row.items.length > 0) {
-      setItems(
-        row.items.map((item) => ({
-          itemType: item.itemType || "",
-          customItemName: item.customItemName || "",
-          quantity: item.quantity ? String(item.quantity) : "",
-          unit: item.unit || "kg",
-        }))
+    setSelectedInvoiceId(row.invoiceId || "");
+    const knownSupplier =
+      row.supplier &&
+      supplierOptions.some(
+        (s) => s.name.toLowerCase() === String(row.supplier).toLowerCase()
       );
+    if (row.supplier && !knownSupplier) {
+      setForm((prev) => ({ ...prev, supplier: "Other" }));
+      setOtherSource(row.supplier);
     } else {
-      setItems([
-        { itemType: "", customItemName: "", quantity: "", unit: "kg" },
-      ]);
+      setOtherSource("");
     }
+    const rowItems = (row.items || []).map((it) => ({
+      itemType: it.itemType || "Paddy",
+      quantity: it.quantity ? String(it.quantity) : "",
+      unit: it.unit || "kg",
+    }));
+    setItems(
+      rowItems.length > 0 ? rowItems : [{ itemType: "Paddy", quantity: "", unit: "kg" }]
+    );
 
     setEditingId(row._id);
     setErrors({});
@@ -448,8 +395,12 @@ export default function GatePassIN() {
       title: "Delete Gate Pass",
       message: `Are you sure you want to delete Gate Pass ${
         row.gatePassNo || ""
-      }? This action cannot be undone.`,
+      }? This will also remove related stock entries. This action cannot be undone.`,
       onConfirm: async () => {
+        if (confirmDialog.expectedText && confirmInput !== confirmDialog.expectedText) {
+          toast.error("Please type the gate pass number to confirm.");
+          return;
+        }
         try {
           const res = await api.delete(`/gatepasses/${row._id}`);
           if (res.data && res.data.success === false)
@@ -464,10 +415,14 @@ export default function GatePassIN() {
             title: "",
             message: "",
             onConfirm: null,
+            expectedText: "",
           });
+          setConfirmInput("");
         }
       },
+      expectedText: row.gatePassNo || "DELETE",
     });
+    setConfirmInput("");
   };
 
   // Print window - A5 size (148mm x 210mm)
@@ -477,7 +432,12 @@ export default function GatePassIN() {
 
     const millName = settings?.companyName || settings?.name || "Rice Mill";
     const millAddress = settings?.companyAddress || settings?.address || "";
-    const logo = settings?.logo || settings?.logoUrl || "";
+    const apiHost = api.defaults.baseURL.replace(/\/api\/?$/, "");
+    const logo =
+      settings?.logoUrl ||
+      settings?.logo ||
+      settings?.logoPath ||
+      `${apiHost}/uploads/logo.png`;
 
     const logoHtml = logo
       ? `<img src="${logo}" style="height:50px;margin-right:12px;" alt="logo" />`
@@ -535,10 +495,13 @@ export default function GatePassIN() {
         <div><span class="label">Date:</span><span class="value">${
           row.createdAt ? new Date(row.createdAt).toLocaleDateString() : "-"
         }</span></div>
+        <div><span class="label">Invoice No:</span><span class="value">${
+          row.invoiceNo || "-"
+        }</span></div>
         <div><span class="label">Truck No:</span><span class="value">${
           row.truckNo || "-"
         }</span></div>
-        <div><span class="label">Supplier:</span><span class="value">${
+        <div><span class="label">Source:</span><span class="value">${
           row.supplier || "-"
         }</span></div>
         <div><span class="label">Driver:</span><span class="value">${
@@ -550,9 +513,6 @@ export default function GatePassIN() {
         <div><span class="label">Transporter:</span><span class="value">${
           row.transporter || "-"
         }</span></div>
-        <div><span class="label">Bilty No:</span><span class="value">${
-          row.biltyNumber || "-"
-        }</span></div>
       </div>
 
       <table>
@@ -562,7 +522,7 @@ export default function GatePassIN() {
           <tr style="background:#f0fdf4;font-weight:700;">
             <td style="border:1px solid #ddd;padding:6px;">Total</td>
             <td style="border:1px solid #ddd;padding:6px;text-align:right;">${
-              row.totalQuantity || 0
+              (row.items || []).reduce((sum, it) => sum + Number(it.quantity || 0), 0)
             }</td>
           </tr>
         </tfoot>
@@ -579,34 +539,69 @@ export default function GatePassIN() {
         <div style="margin-top:4px;">Printed on ${new Date().toLocaleString()}</div>
       </div>
       
-      <script>window.print();</script>
+      <button onclick="window.print()" style="margin-top:12px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;background:#047857;color:#fff;font-size:12px;">Print</button>
       </body></html>
     `;
     win.document.write(html);
     win.document.close();
   };
 
-  // CSV export
-  const exportCsv = () => {
-    if (!rows || rows.length === 0) {
-      toast.error("No data to export.");
-      return;
-    }
-    const csv = rowsToCsv(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `GatePass_IN_${new Date().toISOString().split("T")[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Apply filter
-  const applyFilter = () => {
-    setPage(1);
-    fetchRows();
-  };
+  const tableColumns = [
+    {
+      key: "createdAt",
+      label: "Date",
+      render: (val) => (val ? new Date(val).toLocaleDateString() : "-"),
+    },
+    { key: "gatePassNo", label: "GP No" },
+    { key: "truckNo", label: "Truck" },
+    {
+      key: "items",
+      label: "Items",
+      render: (val, row) => {
+        const list = (row.items || [])
+          .map((it) => it.itemType)
+          .filter(Boolean);
+        return list.length ? Array.from(new Set(list)).join(", ") : "-";
+      },
+    },
+    { key: "invoiceNo", label: "Invoice No" },
+    {
+      key: "supplier",
+      label: "Source",
+      filterOptions: Array.from(new Set(rows.map((r) => r.supplier).filter(Boolean))),
+    },
+    { key: "driverName", label: "Driver" },
+    {
+      key: "actions",
+      label: "Actions",
+      skipExport: true,
+      render: (_, row) => (
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => handleEdit(row)}
+            className="p-1 rounded hover:bg-emerald-50"
+            title="Edit"
+          >
+            <Edit2 className="w-4 h-4 text-emerald-600" />
+          </button>
+          <button
+            onClick={() => handleDelete(row)}
+            className="p-1 rounded hover:bg-red-50"
+            title="Delete"
+          >
+            <Trash2 className="w-4 h-4 text-red-500" />
+          </button>
+          <button
+            onClick={() => openPrintWindow(row)}
+            className="p-1 rounded hover:bg-gray-100"
+            title="Print"
+          >
+            <Printer className="w-4 h-4 text-gray-700" />
+          </button>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -635,6 +630,19 @@ export default function GatePassIN() {
             <p className="text-sm text-gray-600 mb-6">
               {confirmDialog.message}
             </p>
+            {confirmDialog.expectedText && (
+              <div className="mb-4">
+                <label className="block text-xs text-gray-500 mb-1">
+                  Type {confirmDialog.expectedText} to confirm
+                </label>
+                <input
+                  value={confirmInput}
+                  onChange={(e) => setConfirmInput(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+                  placeholder={confirmDialog.expectedText}
+                />
+              </div>
+            )}
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() =>
@@ -643,6 +651,7 @@ export default function GatePassIN() {
                     title: "",
                     message: "",
                     onConfirm: null,
+                    expectedText: "",
                   })
                 }
                 className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
@@ -651,7 +660,16 @@ export default function GatePassIN() {
               </button>
               <button
                 onClick={confirmDialog.onConfirm}
-                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm"
+                disabled={
+                  confirmDialog.expectedText &&
+                  confirmInput !== confirmDialog.expectedText
+                }
+                className={`px-4 py-2 rounded-lg text-sm ${
+                  confirmDialog.expectedText &&
+                  confirmInput !== confirmDialog.expectedText
+                    ? "bg-gray-300 text-gray-600 cursor-not-allowed"
+                    : "bg-emerald-600 text-white hover:bg-emerald-700"
+                }`}
               >
                 Confirm
               </button>
@@ -662,6 +680,7 @@ export default function GatePassIN() {
 
       {/* Form */}
       <form
+        id="gatepass-in-form"
         onSubmit={handleSubmit}
         className="bg-white rounded-xl shadow p-4 space-y-4"
       >
@@ -671,7 +690,7 @@ export default function GatePassIN() {
 
         <div className="grid md:grid-cols-3 gap-4">
           {/* Truck No */}
-          <div>
+          <div id="field-truckNo">
             <label className="block text-sm font-medium mb-1">
               Truck No <span className="text-red-500">*</span>
             </label>
@@ -689,44 +708,76 @@ export default function GatePassIN() {
             )}
           </div>
 
-          {/* Supplier */}
-          <div>
+          {/* Purchase Invoice */}
+          <div id="field-invoiceId">
             <label className="block text-sm font-medium mb-1">
-              Supplier <span className="text-red-500">*</span>
+              Purchase Invoice (optional)
             </label>
-            <input
-              name="supplier"
-              value={form.supplier}
-              onChange={handleChange}
-              placeholder="Supplier name"
+            <select
+              value={selectedInvoiceId}
+              onChange={(e) => handleInvoiceChange(e.target.value)}
               className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.supplier ? "border-red-500" : "border-gray-300"
+                errors.invoiceId ? "border-red-500" : "border-gray-300"
               }`}
-            />
-            {errors.supplier && (
-              <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
-            )}
-            {supplierSuggestions.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {supplierSuggestions.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => {
-                      setForm((f) => ({ ...f, supplier: s }));
-                      clearFieldError("supplier");
-                    }}
-                    className="text-xs px-2 py-1 rounded-full bg-emerald-50 text-emerald-700"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
+            >
+              <option value="">Select invoice</option>
+              {filteredInvoices.map((inv) => (
+                <option key={inv._id} value={inv._id}>
+                  {inv.invoiceNo}
+                </option>
+              ))}
+            </select>
+            {errors.invoiceId && (
+              <p className="text-xs text-red-500 mt-1">{errors.invoiceId}</p>
             )}
           </div>
 
+          {/* Source (optional) */}
+          <div id="field-supplier">
+            <label className="block text-sm font-medium mb-1">
+              Source (optional)
+            </label>
+            <select
+              name="supplier"
+              value={form.supplier}
+              onChange={handleChange}
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.supplier ? "border-red-500" : "border-gray-300"
+              }`}
+            >
+              <option value="">Select source</option>
+              {filteredSupplierOptions.map((s) => (
+                <option key={s._id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+              <option value="Other">Other</option>
+            </select>
+            {errors.supplier && (
+              <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
+            )}
+          </div>
+          {form.supplier === "Other" && (
+            <div id="field-otherSource">
+              <label className="block text-sm font-medium mb-1">
+                Specify Source
+              </label>
+              <input
+                value={otherSource}
+                onChange={(e) => setOtherSource(e.target.value.replace(/\s+/g, " "))}
+                placeholder="Enter source name"
+                className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                  errors.otherSource ? "border-red-500" : "border-gray-300"
+                }`}
+              />
+              {errors.otherSource && (
+                <p className="text-xs text-red-500 mt-1">{errors.otherSource}</p>
+              )}
+            </div>
+          )}
+
           {/* Driver Name */}
-          <div>
+          <div id="field-driverName">
             <label className="block text-sm font-medium mb-1">
               Driver Name
             </label>
@@ -745,7 +796,7 @@ export default function GatePassIN() {
           </div>
 
           {/* Driver Contact */}
-          <div>
+          <div id="field-driverContact">
             <label className="block text-sm font-medium mb-1">
               Driver Contact
             </label>
@@ -767,45 +818,28 @@ export default function GatePassIN() {
           </div>
 
           {/* Transporter */}
-          <div>
+          <div id="field-transporter">
             <label className="block text-sm font-medium mb-1">
               Transporter
             </label>
-            <input
+            <select
               name="transporter"
               value={form.transporter}
               onChange={handleChange}
-              placeholder="Optional"
-              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-            />
-          </div>
-
-          {/* Bilty Number */}
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Bilty/LR Number
-            </label>
-            <input
-              name="biltyNumber"
-              value={form.biltyNumber}
-              onChange={handleChange}
-              placeholder="Optional"
-              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-            />
-          </div>
-
-          {/* Vehicle Weight */}
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Vehicle Weight (kg)
-            </label>
-            <input
-              name="vehicleWeight"
-              value={form.vehicleWeight}
-              onChange={handleChange}
-              placeholder="0"
-              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-            />
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.transporter ? "border-red-500" : "border-gray-300"
+              }`}
+            >
+              <option value="">Select transporter</option>
+              {filteredTransporterOptions.map((t) => (
+                <option key={t._id} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            {errors.transporter && (
+              <p className="text-xs text-red-500 mt-1">{errors.transporter}</p>
+            )}
           </div>
 
           {/* Freight Charges */}
@@ -823,124 +857,75 @@ export default function GatePassIN() {
           </div>
         </div>
 
-        {/* Items Section */}
-        <div className="border-t pt-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-gray-700">Items</h3>
-            <button
-              type="button"
-              onClick={addItem}
-              className="flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-sm"
-            >
-              <Plus className="w-4 h-4" /> Add Item
-            </button>
-          </div>
-
-          <div className="space-y-3">
-            {items.map((item, idx) => (
-              <div
-                key={idx}
-                className="grid md:grid-cols-5 gap-3 items-start p-3 bg-gray-50 rounded-lg"
+        {/* Items (optional) - Paddy only */}
+        <div className="border-t pt-4" id="field-paddy">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">
+            Paddy (optional)
+          </h3>
+          <div className="grid md:grid-cols-3 gap-3 items-start p-3 bg-gray-50 rounded-lg max-w-2xl">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Item</label>
+              <select
+                value={items[0]?.itemType ?? "Paddy"}
+                onChange={(e) => handleItemChange(0, "itemType", e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
               >
-                {/* Item Type */}
-                <div>
-                  <select
-                    value={item.itemType}
-                    onChange={(e) =>
-                      handleItemChange(idx, "itemType", e.target.value)
-                    }
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                      errors[`item_${idx}_type`]
-                        ? "border-red-500"
-                        : "border-gray-300"
-                    }`}
-                  >
-                    <option value="">Select item</option>
-                    {ITEM_TYPES.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
-                      </option>
-                    ))}
-                    {customItemsList.map((custom) => (
-                      <option key={custom} value="Other">
-                        {custom}
-                      </option>
-                    ))}
-                  </select>
-                  {errors[`item_${idx}_type`] && (
-                    <p className="text-xs text-red-500 mt-1">
-                      {errors[`item_${idx}_type`]}
-                    </p>
-                  )}
-                </div>
+                <option value="Paddy">Paddy</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Quantity (no decimals)</label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={items[0]?.quantity ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value.replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
+                  handleItemChange(0, "quantity", v);
+                }}
+                placeholder="0"
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Unit</label>
+              <select
+                value={items[0]?.unit ?? "kg"}
+                onChange={(e) =>
+                  handleItemChange(0, "unit", e.target.value)
+                }
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+              >
+                {UNITS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
 
-                {/* Custom Item Name (if Other) */}
-                {item.itemType === "Other" && (
-                  <div>
-                    <input
-                      value={item.customItemName}
-                      onChange={(e) =>
-                        handleItemChange(idx, "customItemName", e.target.value)
-                      }
-                      placeholder="Specify item"
-                      className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                        errors[`item_${idx}_custom`]
-                          ? "border-red-500"
-                          : "border-gray-300"
-                      }`}
-                    />
-                    {errors[`item_${idx}_custom`] && (
-                      <p className="text-xs text-red-500 mt-1">
-                        {errors[`item_${idx}_custom`]}
-                      </p>
-                    )}
-                  </div>
+        {/* Invoice Items Preview */}
+        <div className="border-t pt-4">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+            Invoice Items (read only)
+          </h3>
+          <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
+            {selectedInvoiceId ? (
+              <ul className="list-disc pl-5 space-y-1">
+                {(purchaseInvoices.find((t) => t._id === selectedInvoiceId)?.items || []).map(
+                  (it, i) => (
+                    <li key={`inv-${i}`}>
+                      {it.productTypeName} — {Number(it.netWeightKg || 0).toFixed(2)} kg
+                    </li>
+                  )
                 )}
-
-                {/* Quantity */}
-                <div
-                  className={item.itemType === "Other" ? "" : "md:col-span-2"}
-                >
-                  <input
-                    value={item.quantity}
-                    onChange={(e) =>
-                      handleItemChange(idx, "quantity", e.target.value)
-                    }
-                    placeholder="Quantity"
-                    className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-                  />
-                </div>
-
-                {/* Unit */}
-                <div>
-                  <select
-                    value={item.unit}
-                    onChange={(e) =>
-                      handleItemChange(idx, "unit", e.target.value)
-                    }
-                    className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-                  >
-                    {UNITS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Remove Button */}
-                <div className="flex items-center">
-                  <button
-                    type="button"
-                    onClick={() => removeItem(idx)}
-                    className="p-2 rounded-lg hover:bg-red-50 text-red-500"
-                    title="Remove item"
-                  >
-                    <Minus className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
+              </ul>
+            ) : (
+              <span>Select an invoice to see items.</span>
+            )}
           </div>
         </div>
 
@@ -957,12 +942,12 @@ export default function GatePassIN() {
         </div>
 
         {/* Submit Buttons */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center justify-end gap-3">
           <button
             type="submit"
             className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm shadow hover:bg-emerald-700"
           >
-            {editingId ? "Update Gate Pass" : "Save Gate Pass"}
+            {editingId ? "Update Gate Pass" : "Generate Gate Pass"}
           </button>
 
           {editingId && (
@@ -976,18 +961,13 @@ export default function GatePassIN() {
                   transporter: "",
                   driverName: "",
                   driverContact: "",
-                  biltyNumber: "",
-                  vehicleWeight: "",
                   freightCharges: "",
                   remarks: "",
                 });
+                setSelectedInvoiceId("");
+                setOtherSource("");
                 setItems([
-                  {
-                    itemType: "",
-                    customItemName: "",
-                    quantity: "",
-                    unit: "kg",
-                  },
+                  { itemType: "Paddy", quantity: "", unit: "kg" },
                 ]);
                 setErrors({});
               }}
@@ -999,188 +979,14 @@ export default function GatePassIN() {
         </div>
       </form>
 
-      {/* Filter & Actions Bar */}
-      <div className="flex items-center justify-between gap-3">
-        {/* Filter Button & Inline Filter */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowFilter(!showFilter)}
-            className="p-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700"
-          >
-            <Filter className="w-4 h-4" />
-          </button>
-
-          {showFilter && (
-            <div className="flex items-center gap-2 animate-fadeIn">
-              <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search..."
-                className="rounded-lg border px-3 py-2 text-sm outline-none border-gray-300 w-48"
-              />
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-              >
-                <option value="">All Status</option>
-                <option value="Pending">Pending</option>
-                <option value="Completed">Completed</option>
-                <option value="Cancelled">Cancelled</option>
-              </select>
-              <button
-                onClick={applyFilter}
-                className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
-              >
-                Apply
-              </button>
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setStatusFilter("");
-                  setShowFilter(false);
-                }}
-                className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm hover:bg-gray-200"
-              >
-                Clear
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Export Button */}
-        <button
-          onClick={exportCsv}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-sm"
-        >
-          <Download className="w-4 h-4" /> Export CSV
-        </button>
-      </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-xl shadow overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="bg-emerald-50 text-emerald-900">
-              <th className="px-3 py-2 text-left">Date</th>
-              <th className="px-3 py-2 text-left">GP No</th>
-              <th className="px-3 py-2 text-left">Truck</th>
-              <th className="px-3 py-2 text-left">Supplier</th>
-              <th className="px-3 py-2 text-left">Driver</th>
-              <th className="px-3 py-2 text-right">Total Qty</th>
-              <th className="px-3 py-2 text-center">Status</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={8} className="px-3 py-4 text-center text-gray-400">
-                  Loading...
-                </td>
-              </tr>
-            )}
-            {!loading && rows.length === 0 && (
-              <tr>
-                <td colSpan={8} className="px-3 py-4 text-center text-gray-400">
-                  No gate passes found.
-                </td>
-              </tr>
-            )}
-            {!loading &&
-              rows.map((row) => (
-                <tr
-                  key={row._id}
-                  className="border-t border-gray-100 hover:bg-gray-50"
-                >
-                  <td className="px-3 py-2">
-                    {row.createdAt
-                      ? new Date(row.createdAt).toLocaleDateString()
-                      : "-"}
-                  </td>
-                  <td className="px-3 py-2 font-medium">
-                    {row.gatePassNo || "-"}
-                  </td>
-                  <td className="px-3 py-2">{row.truckNo || "-"}</td>
-                  <td className="px-3 py-2">{row.supplier || "-"}</td>
-                  <td className="px-3 py-2">{row.driverName || "-"}</td>
-                  <td className="px-3 py-2 text-right font-medium">
-                    {row.totalQuantity || 0}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span
-                      className={`inline-block px-2 py-1 rounded-full text-xs font-medium ${
-                        row.status === "Completed"
-                          ? "bg-green-100 text-green-700"
-                          : row.status === "Cancelled"
-                          ? "bg-red-100 text-red-700"
-                          : "bg-yellow-100 text-yellow-700"
-                      }`}
-                    >
-                      {row.status || "Pending"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => handleEdit(row)}
-                        className="p-1 rounded hover:bg-emerald-50"
-                        title="Edit"
-                      >
-                        <Edit2 className="w-4 h-4 text-emerald-600" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(row)}
-                        className="p-1 rounded hover:bg-red-50"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4 text-red-500" />
-                      </button>
-                      <button
-                        onClick={() => openPrintWindow(row)}
-                        className="p-1 rounded hover:bg-gray-100"
-                        title="Print"
-                      >
-                        <Printer className="w-4 h-4 text-gray-700" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between px-3 py-2 border-t border-gray-100 text-xs">
-          <span className="text-gray-500">
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex gap-2">
-            <button
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className={`px-3 py-1 rounded border ${
-                page <= 1
-                  ? "border-gray-200 text-gray-300"
-                  : "border-gray-300 text-gray-700"
-              }`}
-            >
-              Previous
-            </button>
-            <button
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className={`px-3 py-1 rounded border ${
-                page >= totalPages
-                  ? "border-gray-200 text-gray-300"
-                  : "border-gray-300 text-gray-700"
-              }`}
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      </div>
+      <DataTable
+        title="Gate Pass IN"
+        columns={tableColumns}
+        data={rows}
+        idKey="_id"
+        searchPlaceholder="Search gate passes..."
+        emptyMessage={loading ? "Loading..." : "No gate passes found."}
+      />
     </div>
   );
 }

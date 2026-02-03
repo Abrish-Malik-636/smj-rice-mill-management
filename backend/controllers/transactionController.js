@@ -4,6 +4,24 @@ const Transaction = require("../models/transactionModel");
 const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
 const SystemSettings = require("../models/systemSettingsModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
+const ManagerialStock = require("../models/managerialStockModel");
+
+async function ensureManagerialItem(item) {
+  const name = item.itemName ? String(item.itemName).trim() : "";
+  if (!name) return null;
+  const existing = await ManagerialStock.findOne({
+    name: { $regex: new RegExp(`^${name}$`, "i") },
+  });
+  if (existing) return existing;
+  return await ManagerialStock.create({
+    name,
+    category: item.category || "Other",
+    unit: item.unit || "Nos",
+    condition: item.condition || "Good",
+    description: "",
+  });
+}
 
 /**
  * Generate a UNIQUE invoice number.
@@ -75,6 +93,31 @@ function computeItemAmounts(itemsRaw) {
   let totalAmount = 0;
 
   for (const raw of itemsRaw) {
+    const isManagerial =
+      raw.isManagerial === true || (!!raw.itemName && !raw.productTypeId);
+
+    if (isManagerial) {
+      const quantity = Number(raw.quantity || raw.numBags || 0);
+      const rate = Number(raw.rate) || 0;
+      let amount = quantity * rate;
+      amount = +amount.toFixed(2);
+      totalAmount += amount;
+
+      items.push({
+        managerialItemId: raw.managerialItemId || null,
+        itemName: raw.itemName ? String(raw.itemName).trim() : "",
+        category: raw.category ? String(raw.category).trim() : "",
+        condition: raw.condition ? String(raw.condition).trim() : "",
+        unit: raw.unit ? String(raw.unit).trim() : "Nos",
+        quantity,
+        isManagerial: true,
+        rate,
+        rateType: "per_unit",
+        amount,
+      });
+      continue;
+    }
+
     const numBags = Number(raw.numBags) || 0;
     const perBagWeightKg = Number(raw.perBagWeightKg) || 0;
 
@@ -86,10 +129,13 @@ function computeItemAmounts(itemsRaw) {
     const netWeightKg = +netWeightKgRaw.toFixed(3);
 
     const rate = Number(raw.rate) || 0;
-    const rateType = raw.rateType === "per_bag" ? "per_bag" : "per_kg";
+    const rateType =
+      raw.rateType === "per_bag" || raw.rateType === "per_ton"
+        ? raw.rateType
+        : "per_kg";
 
     let amount = 0;
-    if (rateType === "per_bag") {
+    if (rateType === "per_bag" || rateType === "per_ton") {
       amount = numBags * rate;
     } else {
       amount = netWeightKg * rate;
@@ -143,18 +189,31 @@ function validatePayload(body) {
 
   // Payment method
   const payMethod = body.paymentMethod || "CASH";
-  if (!["CASH", "CARD", "BANK_TRANSFER", "CREDIT"].includes(payMethod)) {
-    return 'Field "paymentMethod" must be one of CASH, CARD, BANK_TRANSFER, CREDIT.';
+  if (!["CASH", "CARD", "ONLINE_TRANSFER", "BANK_TRANSFER", "CREDIT"].includes(payMethod)) {
+    return 'Field "paymentMethod" must be one of CASH, CARD, ONLINE_TRANSFER, BANK_TRANSFER, CREDIT.';
   }
 
   // Items-level checks
   for (let i = 0; i < body.items.length; i++) {
     const it = body.items[i];
-    if (!it.productTypeId) {
-      return `Item ${i + 1}: "productTypeId" is required.`;
-    }
-    if (it.rate === undefined || it.rate === null || it.rate === "") {
-      return `Item ${i + 1}: "rate" is required.`;
+    const isManagerial = it.isManagerial === true || (!!it.itemName && !it.productTypeId);
+    if (isManagerial) {
+      if (!it.itemName) return `Item ${i + 1}: "itemName" is required.`;
+      if (!it.category) return `Item ${i + 1}: "category" is required.`;
+      if (!it.condition) return `Item ${i + 1}: "condition" is required.`;
+      if (it.quantity === undefined || it.quantity === null || it.quantity === "") {
+        return `Item ${i + 1}: "quantity" is required.`;
+      }
+      if (it.rate === undefined || it.rate === null || it.rate === "") {
+        return `Item ${i + 1}: "rate" is required.`;
+      }
+    } else {
+      if (!it.productTypeId) {
+        return `Item ${i + 1}: "productTypeId" is required.`;
+      }
+      if (it.rate === undefined || it.rate === null || it.rate === "") {
+        return `Item ${i + 1}: "rate" is required.`;
+      }
     }
   }
 
@@ -184,21 +243,54 @@ exports.createTransaction = async (req, res) => {
     // Compute item amounts
     const { items, totalAmount } = computeItemAmounts(payload.items);
 
-    // Resolve product names
-    const productIds = items.map((i) => i.productTypeId);
-    const productDocs = await ProductType.find({
-      _id: { $in: productIds },
-    })
-      .lean()
-      .select("name");
+    // Resolve product names (production items only)
+    const productIds = items
+      .filter((i) => i.productTypeId)
+      .map((i) => i.productTypeId);
+    const productDocs = productIds.length
+      ? await ProductType.find({ _id: { $in: productIds } })
+          .lean()
+          .select("name")
+      : [];
 
     const productMap = {};
     for (const p of productDocs) {
       productMap[p._id.toString()] = p.name;
     }
     for (const item of items) {
-      item.productTypeName =
-        productMap[item.productTypeId.toString()] || "Unknown";
+      if (item.productTypeId) {
+        item.productTypeName =
+          productMap[item.productTypeId.toString()] || "Unknown";
+      }
+    }
+
+    if (existing.type === "PURCHASE") {
+      for (const item of items) {
+        if (!item.isManagerial || item.managerialItemId) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const created = await ensureManagerialItem(item);
+        if (created) {
+          item.managerialItemId = created._id;
+          item.category = created.category;
+          item.condition = created.condition;
+          item.unit = created.unit;
+        }
+      }
+    }
+
+    // Ensure managerial master items exist for purchase entries
+    if (payload.type === "PURCHASE") {
+      for (const item of items) {
+        if (!item.isManagerial || item.managerialItemId) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const created = await ensureManagerialItem(item);
+        if (created) {
+          item.managerialItemId = created._id;
+          item.category = created.category;
+          item.condition = created.condition;
+          item.unit = created.unit;
+        }
+      }
     }
 
     // Generate unique invoice number
@@ -209,6 +301,21 @@ exports.createTransaction = async (req, res) => {
       payStatus === "PAID" || !payload.dueDate
         ? null
         : new Date(payload.dueDate);
+    const partialPaid = Number(payload.partialPaid || 0);
+    if (payStatus === "PARTIAL") {
+      if (!partialPaid || partialPaid <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Partial payment requires a paid amount greater than 0.",
+        });
+      }
+      if (partialPaid > totalAmount) {
+        return res.status(400).json({
+          success: false,
+          message: "Amount paid cannot exceed total amount.",
+        });
+      }
+    }
 
     const doc = new Transaction({
       type: payload.type, // PURCHASE or SALE
@@ -222,9 +329,31 @@ exports.createTransaction = async (req, res) => {
       remarks: payload.remarks || "",
       items,
       totalAmount,
+      partialPaid: payStatus === "PARTIAL" ? partialPaid : 0,
     });
 
     const saved = await doc.save();
+
+    if (payload.type === "PURCHASE") {
+      const managerialOps = items
+        .filter((i) => i.isManagerial && i.itemName)
+        .map((i) => ({
+          date: new Date(payload.date),
+          type: "IN",
+          itemName: i.itemName,
+          quantity: Number(i.quantity || 0),
+          unit: i.unit || "Nos",
+          sourceType: "Purchase",
+          refNo: saved.invoiceNo || "-",
+          transactionId: saved._id,
+          remarks: payload.remarks || "",
+        }))
+        .filter((i) => i.quantity > 0);
+      if (managerialOps.length) {
+        await ManagerialStockLedger.insertMany(managerialOps);
+      }
+    }
+
     return res.status(201).json({ success: true, data: saved });
   } catch (err) {
     console.error("createTransaction error:", err);
@@ -380,20 +509,24 @@ exports.updateTransaction = async (req, res) => {
     // Items & totals
     const { items, totalAmount } = computeItemAmounts(payload.items);
 
-    const productIds = items.map((i) => i.productTypeId);
-    const productDocs = await ProductType.find({
-      _id: { $in: productIds },
-    })
-      .lean()
-      .select("name");
+    const productIds = items
+      .filter((i) => i.productTypeId)
+      .map((i) => i.productTypeId);
+    const productDocs = productIds.length
+      ? await ProductType.find({ _id: { $in: productIds } })
+          .lean()
+          .select("name")
+      : [];
 
     const productMap = {};
     for (const p of productDocs) {
       productMap[p._id.toString()] = p.name;
     }
     for (const item of items) {
-      item.productTypeName =
-        productMap[item.productTypeId.toString()] || "Unknown";
+      if (item.productTypeId) {
+        item.productTypeName =
+          productMap[item.productTypeId.toString()] || "Unknown";
+      }
     }
 
     const payStatus = payload.paymentStatus || "PAID";
@@ -401,6 +534,21 @@ exports.updateTransaction = async (req, res) => {
       payStatus === "PAID" || !payload.dueDate
         ? null
         : new Date(payload.dueDate);
+    const partialPaid = Number(payload.partialPaid || 0);
+    if (payStatus === "PARTIAL") {
+      if (!partialPaid || partialPaid <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Partial payment requires a paid amount greater than 0.",
+        });
+      }
+      if (partialPaid > totalAmount) {
+        return res.status(400).json({
+          success: false,
+          message: "Amount paid cannot exceed total amount.",
+        });
+      }
+    }
 
     existing.date = new Date(payload.date);
     existing.companyId = companyId;
@@ -412,8 +560,31 @@ exports.updateTransaction = async (req, res) => {
     existing.remarks = payload.remarks || "";
     existing.items = items;
     existing.totalAmount = totalAmount;
+    existing.partialPaid = payStatus === "PARTIAL" ? partialPaid : 0;
 
     const saved = await existing.save();
+
+    if (existing.type === "PURCHASE") {
+      await ManagerialStockLedger.deleteMany({ transactionId: existing._id });
+      const managerialOps = items
+        .filter((i) => i.isManagerial && i.itemName)
+        .map((i) => ({
+          date: new Date(payload.date),
+          type: "IN",
+          itemName: i.itemName,
+          quantity: Number(i.quantity || 0),
+          unit: i.unit || "Nos",
+          sourceType: "Purchase",
+          refNo: existing.invoiceNo || "-",
+          transactionId: existing._id,
+          remarks: payload.remarks || "",
+        }))
+        .filter((i) => i.quantity > 0);
+      if (managerialOps.length) {
+        await ManagerialStockLedger.insertMany(managerialOps);
+      }
+    }
+
     return res.json({ success: true, data: saved });
   } catch (err) {
     console.error("updateTransaction error:", err);
@@ -441,6 +612,8 @@ exports.deleteTransaction = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Transaction not found" });
     }
+
+    await ManagerialStockLedger.deleteMany({ transactionId: deleted._id });
 
     return res.json({ success: true, message: "Transaction deleted." });
   } catch (err) {

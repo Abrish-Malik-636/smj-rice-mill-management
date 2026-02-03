@@ -4,6 +4,7 @@ import { Plus, Trash2, Edit2, Save, X, AlertCircle } from "lucide-react";
 import { toast } from "react-hot-toast";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
+import { toTitleCase } from "../../utils/inputUtils";
 
 const TYPE_OPTIONS = ["Operational", "Administrative", "Capital", "Payroll", "Utilities", "Maintenance", "Other"];
 
@@ -11,7 +12,6 @@ export default function ExpenseCategoryManager() {
   const [categories, setCategories] = useState([]);
   const [formData, setFormData] = useState({
     name: "",
-    code: "",
     type: "",
     description: "",
   });
@@ -43,10 +43,7 @@ export default function ExpenseCategoryManager() {
     try {
       const normalized = normalizeText(name);
       const existing = categories.find(
-        (c) =>
-          (excludeId && c._id === excludeId) ||
-          normalizeText(c.name) === normalized ||
-          normalizeText(c.name).includes(normalized)
+        (c) => (excludeId && c._id === excludeId) ? false : normalizeText(c.name) === normalized
       );
       return existing ? existing.name : null;
     } finally {
@@ -58,11 +55,10 @@ export default function ExpenseCategoryManager() {
     switch (name) {
       case "name":
         if (!value || !String(value).trim()) return "Category name is required";
+        if (/\d/.test(String(value).trim())) return "Category name cannot contain numbers";
+        if (/[^a-zA-Z\s]/.test(String(value).trim())) return "Category name cannot contain special characters";
         if (String(value).trim().length < 2) return "Category name must be at least 2 characters";
         if (String(value).trim().length > 50) return "Category name must not exceed 50 characters";
-        return null;
-      case "code":
-        if (String(value).trim().length > 20) return "Code must not exceed 20 characters";
         return null;
       case "type":
         if (!value || !String(value).trim()) return "Category type is required for financial reporting";
@@ -87,9 +83,9 @@ export default function ExpenseCategoryManager() {
   };
 
   const validateAll = async () => {
-    setTouched({ name: true, code: true, type: true, description: true });
+    setTouched({ name: true, type: true, description: true });
     const newErrors = {};
-    ["name", "code", "type", "description"].forEach((name) => {
+    ["name", "type", "description"].forEach((name) => {
       const msg = getFieldError(name, formData[name]);
       if (msg) newErrors[name] = msg;
     });
@@ -103,13 +99,21 @@ export default function ExpenseCategoryManager() {
 
   const handleChange = async (e) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-    if (touched[name] || value.length > 0) await validateField(name, value);
+    let processed = value;
+    if (name === "name") processed = value.replace(/[0-9]/g, "").replace(/[^a-zA-Z\s]/g, "");
+    if (name === "description") processed = value.replace(/[^a-zA-Z0-9\s.,\-]/g, "");
+    setFormData((prev) => ({ ...prev, [name]: processed }));
+    if (touched[name] || processed.length > 0) await validateField(name, processed);
   };
 
   const handleBlur = async (e) => {
     const { name, value } = e.target;
-    await validateField(name, value);
+    let val = value;
+    if (name === "name" && val && val.trim()) {
+      val = toTitleCase(val);
+      setFormData((prev) => ({ ...prev, [name]: val }));
+    }
+    await validateField(name, val);
   };
 
   const handleSubmit = async (e) => {
@@ -123,7 +127,6 @@ export default function ExpenseCategoryManager() {
     try {
       const payload = {
         name: formData.name.trim(),
-        code: formData.code.trim() || "",
         type: formData.type.trim(),
         description: formData.description.trim() || "",
       };
@@ -134,7 +137,7 @@ export default function ExpenseCategoryManager() {
         await api.post("/expense-categories", payload);
         toast.success("Expense category added successfully");
       }
-      setFormData({ name: "", code: "", type: "", description: "" });
+      setFormData({ name: "", type: "", description: "" });
       setEditingId(null);
       setErrors({});
       setTouched({});
@@ -164,7 +167,6 @@ export default function ExpenseCategoryManager() {
     setEditingId(row._id);
     setFormData({
       name: row.name || "",
-      code: row.code || "",
       type: row.type || "",
       description: row.description || "",
     });
@@ -174,7 +176,7 @@ export default function ExpenseCategoryManager() {
 
   const cancelEdit = () => {
     setEditingId(null);
-    setFormData({ name: "", code: "", type: "", description: "" });
+    setFormData({ name: "", type: "", description: "" });
     setErrors({});
     setTouched({});
   };
@@ -182,7 +184,6 @@ export default function ExpenseCategoryManager() {
   const typesFromData = categories.length ? [...new Set(categories.map((c) => c.type).filter(Boolean))].sort() : [];
   const tableColumns = [
     { key: "name", label: "Name", filterOptions: categories.map((c) => c.name) },
-    { key: "code", label: "Code" },
     { key: "type", label: "Type", filterOptions: typesFromData.length ? typesFromData : TYPE_OPTIONS },
     { key: "description", label: "Description" },
     {
@@ -222,22 +223,6 @@ export default function ExpenseCategoryManager() {
               <AlertCircle size={12} /> {errors.name}
               {formData.name && formData.name.length > 45 && <span className="text-red-400">({formData.name.length}/50)</span>}
             </p>
-          )}
-        </div>
-        <div>
-          <label className="block text-xs text-gray-600 mb-1">Code (for reports)</label>
-          <input
-            type="text"
-            name="code"
-            value={formData.code}
-            onChange={handleChange}
-            onBlur={handleBlur}
-            maxLength={20}
-            placeholder="e.g. OP-01"
-            className={`border p-2 rounded text-sm w-full ${errors.code && touched.code ? "border-red-500 bg-red-50" : "border-gray-300"}`}
-          />
-          {errors.code && touched.code && (
-            <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><AlertCircle size={12} /> {errors.code}</p>
           )}
         </div>
         <div>

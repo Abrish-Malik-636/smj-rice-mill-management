@@ -90,7 +90,7 @@ export default function AISuggestions() {
     <div className="space-y-4">
       {/* Header - Emerald Theme */}
       <div className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-6 rounded-xl shadow-lg">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-2">
           <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
             <Lightbulb className="w-7 h-7" />
           </div>
@@ -147,7 +147,7 @@ export default function AISuggestions() {
               key={suggestion._id}
               className="bg-white rounded-xl shadow hover:shadow-lg transition-all duration-200 p-5 border border-gray-100 hover:border-emerald-200"
             >
-              <div className="flex items-start justify-between">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div className="flex gap-4 flex-1">
                   {/* Icon */}
                   <div className="w-12 h-12 bg-emerald-50 rounded-lg flex items-center justify-center text-2xl flex-shrink-0">
@@ -189,7 +189,7 @@ export default function AISuggestions() {
                 </div>
 
                 {/* Actions */}
-                <div className="flex gap-2 ml-4 flex-shrink-0">
+                <div className="flex flex-wrap gap-2 md:ml-4 flex-shrink-0">
                   {suggestion.status === "pending" && (
                     <>
                       <button
@@ -235,7 +235,7 @@ export default function AISuggestions() {
       {/* Stats Footer (Optional) */}
       {suggestions.length > 0 && (
         <div className="bg-white rounded-xl shadow p-4">
-          <div className="grid grid-cols-4 gap-4 text-center">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
             <div>
               <p className="text-2xl font-bold text-emerald-600">
                 {suggestions.length}

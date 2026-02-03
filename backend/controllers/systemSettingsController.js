@@ -1,6 +1,8 @@
 // backend/controllers/systemSettingsController.js
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 const SystemSettings = require("../models/systemSettingsModel");
 const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
@@ -24,10 +26,41 @@ exports.getSettings = async (req, res) => {
 
 /**
  * Update or create the single settings document.
+ * Changing additionalStockSettingsEnabled requires adminPin in body and valid PIN.
  */
 exports.saveSettings = async (req, res) => {
   try {
-    const payload = req.body || {};
+    const payload = { ...req.body };
+    const adminPin = payload.adminPin != null ? String(payload.adminPin).trim() : null;
+    const newAdminPin =
+      payload.newAdminPin != null ? String(payload.newAdminPin).trim() : null;
+    delete payload.adminPin;
+    delete payload.newAdminPin;
+
+    const needsPin =
+      payload.additionalStockSettingsEnabled !== undefined ||
+      payload.stockStatusExtremeLowKg !== undefined ||
+      payload.stockStatusLowKg !== undefined ||
+      payload.managerialStockStatusExtremeLowQty !== undefined ||
+      payload.managerialStockStatusLowQty !== undefined ||
+      newAdminPin !== null;
+    if (needsPin) {
+      const settings = await SystemSettings.findOne({}).select("adminPin").lean();
+      const expectedPin = (settings && settings.adminPin) || "0000";
+      if (!adminPin || adminPin !== String(expectedPin).trim()) {
+        return res.status(403).json({
+          success: false,
+          message: "Invalid or missing admin PIN. Required to change these settings.",
+        });
+      }
+    }
+
+    if (newAdminPin) {
+      payload.adminPin = newAdminPin;
+      payload.loginPassword = newAdminPin;
+    } else if (payload.loginPassword && !payload.adminPin) {
+      payload.adminPin = payload.loginPassword;
+    }
 
     const updated = await SystemSettings.findOneAndUpdate(
       {},
@@ -190,6 +223,84 @@ exports.restoreBackup = async (req, res) => {
     fs.unlinkSync(filePath);
 
     res.json({ success: true, message: "Backup restored successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+const getMailer = () => {
+  const host = process.env.SMJ_SMTP_HOST;
+  const port = Number(process.env.SMJ_SMTP_PORT || 587);
+  const user = process.env.SMJ_SMTP_USER;
+  const pass = process.env.SMJ_SMTP_PASS;
+  const secure = String(process.env.SMJ_SMTP_SECURE || "false") === "true";
+  if (!host || !user || !pass) return null;
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+};
+
+const hashOtp = (otp) =>
+  crypto.createHash("sha256").update(String(otp)).digest("hex");
+
+exports.sendEmailOtp = async (req, res) => {
+  try {
+    const settings = await SystemSettings.findOne({});
+    if (!settings || !settings.email) {
+      return res.status(400).json({ success: false, message: "Email not set in General Settings." });
+    }
+    const transport = getMailer();
+    if (!transport) {
+      return res.status(400).json({
+        success: false,
+        message: "Email provider not configured. Set SMTP env vars.",
+      });
+    }
+
+    const otp = String(Math.floor(1000 + Math.random() * 9000));
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    settings.otpCodeHash = hashOtp(otp);
+    settings.otpExpiresAt = expiresAt;
+    await settings.save();
+
+    const from = process.env.SMJ_MAIL_FROM || "no-reply@smj.local";
+    await transport.sendMail({
+      from,
+      to: settings.email,
+      subject: "SMJ OTP Verification",
+      text: `Your OTP is ${otp}. It expires in 5 minutes.`,
+    });
+
+    res.json({ success: true, message: "OTP sent" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.verifyEmailOtp = async (req, res) => {
+  try {
+    const { otp } = req.body || {};
+    if (!otp || String(otp).length !== 4) {
+      return res.status(400).json({ success: false, message: "Invalid OTP." });
+    }
+    const settings = await SystemSettings.findOne({});
+    if (!settings || !settings.otpCodeHash || !settings.otpExpiresAt) {
+      return res.status(400).json({ success: false, message: "OTP not requested." });
+    }
+    if (new Date(settings.otpExpiresAt).getTime() < Date.now()) {
+      return res.status(400).json({ success: false, message: "OTP expired." });
+    }
+    const isValid = hashOtp(otp) === settings.otpCodeHash;
+    if (!isValid) {
+      return res.status(400).json({ success: false, message: "OTP is incorrect." });
+    }
+    settings.otpCodeHash = "";
+    settings.otpExpiresAt = null;
+    await settings.save();
+    res.json({ success: true, message: "OTP verified" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
