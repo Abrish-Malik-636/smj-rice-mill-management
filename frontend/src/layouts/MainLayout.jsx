@@ -16,6 +16,115 @@ export default function MainLayout({ children }) {
   const [authLocked, setAuthLocked] = useState(false);
   const [loginPin, setLoginPin] = useState("");
   const [loginError, setLoginError] = useState("");
+  const lastAlertSnapshotRef = useRef(null);
+  const [draftPrompt, setDraftPrompt] = useState({
+    open: false,
+    storageKey: "",
+    routeLabel: "",
+    payload: null,
+  });
+  const routeNameMap = {
+    "/gatepass": "Gate Pass Management",
+    "/gatepasses": "Gate Pass Management",
+    "/financial": "Sales & Purchases",
+    "/production": "Production Management",
+    "/stock": "Stock Management",
+    "/stock-managerial": "Stock Management",
+    "/accounting-finance": "Accounting & Finance",
+    "/reports": "Reports",
+    "/hr-payroll": "HR & Payroll",
+    "/notifications": "Notifications & Alerts",
+    "/masterdata": "System Settings",
+  };
+  const isDashboard = location.pathname === "/";
+  const moduleTitle = routeNameMap[location.pathname] || "Module";
+
+  const getDraftStorageKey = (pathname, search) =>
+    `smj_draft_${pathname}${search || ""}`;
+
+  const isDraftEnabledRoute = (pathname) =>
+    ["/financial", "/gatepass", "/production", "/masterdata"].includes(pathname);
+
+  const getControlKey = (el, idx) =>
+    el.getAttribute("data-draft-key") ||
+    el.getAttribute("name") ||
+    el.getAttribute("id") ||
+    `${el.tagName}:${el.type || "text"}:${el.placeholder || ""}:${idx}`;
+
+  const snapshotSignature = (snapshot) => {
+    if (!snapshot?.fields?.length) return "";
+    return JSON.stringify(
+      [...snapshot.fields]
+        .map((f) => ({
+          key: f.key,
+          value: f.value ?? "",
+          checked: !!f.checked,
+          type: f.type || "",
+        }))
+        .sort((a, b) => a.key.localeCompare(b.key))
+    );
+  };
+
+  const collectDraftSnapshot = () => {
+    const container = mainRef.current;
+    if (!container) return null;
+    const controls = Array.from(
+      container.querySelectorAll("input, textarea, select")
+    ).filter((el) => {
+      const type = String(el.type || "").toLowerCase();
+      return !["submit", "button", "reset", "file"].includes(type);
+    });
+    const fields = [];
+    controls.forEach((el, idx) => {
+      const key = getControlKey(el, idx);
+      const type = String(el.type || "").toLowerCase();
+      if (type === "checkbox" || type === "radio") {
+        if (el.checked) fields.push({ key, checked: true, type });
+        return;
+      }
+      const value = String(el.value ?? "");
+      if (value.trim() !== "") {
+        fields.push({ key, value, type });
+      }
+    });
+    if (!fields.length) return null;
+    return {
+      fields,
+      savedAt: new Date().toISOString(),
+      route: `${location.pathname}${location.search || ""}`,
+    };
+  };
+
+  const saveCurrentRouteDraft = () => {
+    if (!isDraftEnabledRoute(location.pathname)) return;
+    const snapshot = collectDraftSnapshot();
+    const storageKey = getDraftStorageKey(location.pathname, location.search);
+    if (!snapshot) {
+      sessionStorage.removeItem(storageKey);
+      return;
+    }
+    sessionStorage.setItem(storageKey, JSON.stringify(snapshot));
+  };
+
+  const restoreDraft = (payload) => {
+    const container = mainRef.current;
+    if (!container || !payload?.fields?.length) return;
+    const controls = Array.from(container.querySelectorAll("input, textarea, select"));
+    const keyToElement = new Map();
+    controls.forEach((el, idx) => keyToElement.set(getControlKey(el, idx), el));
+    payload.fields.forEach((entry) => {
+      const el = keyToElement.get(entry.key);
+      if (!el) return;
+      const type = String(el.type || "").toLowerCase();
+      if (type === "checkbox" || type === "radio") {
+        el.checked = !!entry.checked;
+      } else {
+        el.value = String(entry.value ?? "");
+      }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
 
   const loadSettings = async () => {
     try {
@@ -33,6 +142,128 @@ export default function MainLayout({ children }) {
     setAuthLocked(!loggedIn);
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    const alertsEnabled = settings?.alertsEnabled !== false;
+    if (!alertsEnabled) return;
+
+    const showPopup = (title, body) => {
+      if (
+        typeof window !== "undefined" &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          new Notification(title, { body, tag: "smj-alerts" });
+          return;
+        } catch (_) {}
+      }
+      toast(body, { icon: "🔔" });
+    };
+
+    const fetchAndNotify = async () => {
+      try {
+        const res = await api.get("/notifications/alerts");
+        const data = res.data?.data || {};
+        const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+        const recentActivities = Array.isArray(data.recentActivities)
+          ? data.recentActivities
+          : [];
+        const schedule = data.alertSchedule || {};
+
+        const nextSnapshot = {
+          overdue: Number(alerts.find((a) => a.id === "overdue")?.count || 0),
+          dueToday: Number(alerts.find((a) => a.id === "due_today")?.count || 0),
+          inProcess: Number(
+            alerts.find((a) => a.id === "in_process_batches")?.count || 0
+          ),
+          latestActivityAt: recentActivities[0]?.at
+            ? new Date(recentActivities[0].at).getTime()
+            : 0,
+          inWorkingHours: !!schedule.inWorkingHours,
+        };
+
+        const prev = lastAlertSnapshotRef.current;
+        lastAlertSnapshotRef.current = nextSnapshot;
+        const cooldownMs = 10 * 60 * 1000;
+        const lastPopupAt = Number(localStorage.getItem("smj_alert_last_popup_at") || 0);
+        const nowMs = Date.now();
+
+        if (!prev) {
+          if (
+            nextSnapshot.inWorkingHours &&
+            (nextSnapshot.overdue > 0 ||
+              nextSnapshot.dueToday > 0 ||
+              nextSnapshot.inProcess > 0)
+          ) {
+            if (nowMs - lastPopupAt >= cooldownMs) {
+              showPopup(
+                "SMJ Alerts",
+                `Overdue: ${nextSnapshot.overdue}, Due today: ${nextSnapshot.dueToday}, In process: ${nextSnapshot.inProcess}`
+              );
+              localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
+            }
+          }
+          return;
+        }
+        if (!nextSnapshot.inWorkingHours) return;
+
+        const messages = [];
+        if (nextSnapshot.overdue > prev.overdue) {
+          messages.push(
+            `${nextSnapshot.overdue - prev.overdue} new overdue invoice alert(s)`
+          );
+        }
+        if (nextSnapshot.dueToday > prev.dueToday) {
+          messages.push(
+            `${nextSnapshot.dueToday - prev.dueToday} invoice(s) now due today`
+          );
+        }
+        if (nextSnapshot.inProcess > prev.inProcess) {
+          messages.push(
+            `${nextSnapshot.inProcess - prev.inProcess} production batch(es) started`
+          );
+        }
+        if (
+          nextSnapshot.latestActivityAt &&
+          nextSnapshot.latestActivityAt > (prev.latestActivityAt || 0)
+        ) {
+          messages.push("New system activity detected");
+        }
+
+        if (messages.length > 0) {
+          showPopup("SMJ Alerts", messages.join(" | "));
+          localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
+        } else if (
+          nowMs - lastPopupAt >= cooldownMs &&
+          (nextSnapshot.overdue > 0 ||
+            nextSnapshot.dueToday > 0 ||
+            nextSnapshot.inProcess > 0)
+        ) {
+          showPopup(
+            "SMJ Alerts",
+            `Pending alerts: Overdue ${nextSnapshot.overdue}, Due today ${nextSnapshot.dueToday}, In process ${nextSnapshot.inProcess}`
+          );
+          localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
+        }
+      } catch (_) {}
+    };
+
+    fetchAndNotify();
+    const intervalMinutes = Math.max(
+      1,
+      Number(settings?.alertsIntervalMinutes || 60)
+    );
+    const timer = setInterval(fetchAndNotify, intervalMinutes * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [settings?.alertsEnabled, settings?.alertsIntervalMinutes]);
 
   useEffect(() => {
     const onLogout = () => {
@@ -82,7 +313,6 @@ export default function MainLayout({ children }) {
           "6": "/reports",
           "7": "/hr-payroll",
           "8": "/notifications",
-          "9": "/ai/suggestions",
           "0": "/masterdata",
         };
         if (map[key]) {
@@ -178,6 +408,59 @@ export default function MainLayout({ children }) {
     return () => cancelAnimationFrame(raf);
   }, [location.pathname, location.search]);
 
+  useEffect(() => {
+    if (!isDraftEnabledRoute(location.pathname)) {
+      setDraftPrompt((p) => ({ ...p, open: false }));
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      const storageKey = getDraftStorageKey(location.pathname, location.search);
+      const raw = sessionStorage.getItem(storageKey);
+      if (!raw) {
+        setDraftPrompt((p) => ({ ...p, open: false }));
+        return;
+      }
+      try {
+        const payload = JSON.parse(raw);
+        if (!payload?.fields?.length) return;
+        const current = collectDraftSnapshot();
+        const savedSig = snapshotSignature(payload);
+        const currentSig = snapshotSignature(current);
+        if (savedSig && savedSig === currentSig) {
+          setDraftPrompt((p) => ({ ...p, open: false }));
+          return;
+        }
+        setDraftPrompt({
+          open: true,
+          storageKey,
+          routeLabel: `${location.pathname}${location.search || ""}`,
+          payload,
+        });
+      } catch {
+        sessionStorage.removeItem(storageKey);
+      }
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!isDraftEnabledRoute(location.pathname)) return undefined;
+    let saveTimer = null;
+    const onInput = () => {
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveCurrentRouteDraft, 180);
+    };
+    const container = mainRef.current;
+    if (!container) return undefined;
+    container.addEventListener("input", onInput, true);
+    container.addEventListener("change", onInput, true);
+    return () => {
+      if (saveTimer) clearTimeout(saveTimer);
+      container.removeEventListener("input", onInput, true);
+      container.removeEventListener("change", onInput, true);
+    };
+  }, [location.pathname, location.search]);
+
   return (
     <div className="flex min-h-screen bg-gray-50 overflow-hidden">
       {/* Sidebar */}
@@ -209,7 +492,42 @@ export default function MainLayout({ children }) {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
-          {children}
+          {draftPrompt.open && (
+            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+              <span className="text-amber-900">
+                Unsaved form data found for this page. Continue previous draft?
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  restoreDraft(draftPrompt.payload);
+                  setDraftPrompt((p) => ({ ...p, open: false }));
+                  toast.success("Draft restored");
+                }}
+                className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white text-xs"
+              >
+                Continue
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  sessionStorage.removeItem(draftPrompt.storageKey);
+                  setDraftPrompt((p) => ({ ...p, open: false }));
+                }}
+                className="px-2.5 py-1 rounded border border-gray-300 text-gray-700 text-xs"
+              >
+                Remove
+              </button>
+            </div>
+          )}
+          {!isDashboard && (
+            <div className="mb-3">
+              <h1 className="text-xl md:text-2xl font-semibold text-emerald-900">
+                {moduleTitle}
+              </h1>
+            </div>
+          )}
+          <div>{children}</div>
         </main>
       </div>
 

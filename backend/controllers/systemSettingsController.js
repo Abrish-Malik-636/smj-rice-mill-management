@@ -8,15 +8,64 @@ const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
 const ExpenseCategory = require("../models/expenseCategoryModel");
 const ProductionBatch = require("../models/productionBatchModel");
+const GatePass = require("../models/gatePassModel");
+const StockLedger = require("../models/stockLedgerModel");
+const Transaction = require("../models/transactionModel");
+const ManagerialStock = require("../models/managerialStockModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
+const ExpenseEntry = require("../models/expenseEntryModel");
+const HRJob = require("../models/hrJobModel");
+const HREmployee = require("../models/hrEmployeeModel");
+const HRApplicant = require("../models/hrApplicantModel");
+const HRLeave = require("../models/hrLeaveModel");
+const HRAdvance = require("../models/hrAdvanceModel");
+const HRPayroll = require("../models/hrPayrollModel");
+const NotificationReminder = require("../models/notificationReminderModel");
+const AIChat = require("../models/AIChat");
+const Account = require("../models/accountModel");
+const JournalEntry = require("../models/journalEntryModel");
+const JournalLine = require("../models/journalLineModel");
+
+const COLLECTIONS = [
+  { key: "companies", model: Company },
+  { key: "productTypes", model: ProductType },
+  { key: "expenseCategories", model: ExpenseCategory },
+  { key: "managerialStocks", model: ManagerialStock },
+  // Accounting
+  { key: "accounts", model: Account },
+  { key: "journalEntries", model: JournalEntry },
+  { key: "journalLines", model: JournalLine },
+  { key: "transactions", model: Transaction },
+  { key: "gatePasses", model: GatePass },
+  { key: "productionBatches", model: ProductionBatch },
+  { key: "stockLedgers", model: StockLedger },
+  { key: "managerialStockLedgers", model: ManagerialStockLedger },
+  { key: "expenseEntries", model: ExpenseEntry },
+  { key: "hrJobs", model: HRJob },
+  { key: "hrEmployees", model: HREmployee },
+  { key: "hrApplicants", model: HRApplicant },
+  { key: "hrLeaves", model: HRLeave },
+  { key: "hrAdvances", model: HRAdvance },
+  { key: "hrPayrolls", model: HRPayroll },
+  { key: "notificationReminders", model: NotificationReminder },
+  { key: "aiChats", model: AIChat },
+];
 
 /**
  * Get settings (single document). If none exists, return defaults via an upsert fallback.
  */
 exports.getSettings = async (req, res) => {
   try {
-    let settings = await SystemSettings.findOne({});
-    if (!settings) {
-      settings = await SystemSettings.create({});
+    // Ensure we effectively behave like a singleton settings document.
+    // Some deployments ended up creating multiple settings docs; that makes
+    // updates appear to "not save" because reads may return a different doc.
+    const all = await SystemSettings.find({}).sort({ createdAt: 1 });
+    let settings = all[0] || null;
+    if (!settings) settings = await SystemSettings.create({});
+    // Keep the oldest and remove any duplicates.
+    if (all.length > 1) {
+      const duplicateIds = all.slice(1).map((d) => d._id);
+      await SystemSettings.deleteMany({ _id: { $in: duplicateIds } });
     }
     res.json({ success: true, data: settings });
   } catch (err) {
@@ -43,6 +92,12 @@ exports.saveSettings = async (req, res) => {
       payload.stockStatusLowKg !== undefined ||
       payload.managerialStockStatusExtremeLowQty !== undefined ||
       payload.managerialStockStatusLowQty !== undefined ||
+      payload.hrMonthlyWorkingDays !== undefined ||
+      payload.hrWorkingHoursPerDay !== undefined ||
+      payload.hrOvertimeRate !== undefined ||
+      payload.hrAllowPaidLeave !== undefined ||
+      payload.hrAllowUnpaidLeave !== undefined ||
+      payload.hrAdvanceDeductionMode !== undefined ||
       newAdminPin !== null;
     if (needsPin) {
       const settings = await SystemSettings.findOne({}).select("adminPin").lean();
@@ -65,7 +120,8 @@ exports.saveSettings = async (req, res) => {
     const updated = await SystemSettings.findOneAndUpdate(
       {},
       { $set: payload },
-      { new: true, upsert: true, runValidators: true }
+      // Always update the oldest settings document to keep singleton behavior.
+      { new: true, upsert: true, runValidators: true, sort: { createdAt: 1 } }
     );
 
     res.json({ success: true, data: updated });
@@ -109,37 +165,25 @@ exports.uploadLogo = async (req, res) => {
  */
 exports.exportBackup = async (req, res) => {
   try {
-    const settings = (await SystemSettings.findOne({})) || {};
-    const companies = await Company.find({});
-    const productTypes = await ProductType.find({});
-    const expenseCategories = await ExpenseCategory.find({});
-
-    let productionBatches = [];
-    let gatePasses = [];
-    let stockLedgers = [];
-
-    try {
-      productionBatches = await ProductionBatch.find({});
-    } catch (_) {}
-
-    try {
-      gatePasses = await GatePass.find({});
-    } catch (_) {}
-
-    try {
-      stockLedgers = await StockLedger.find({});
-    } catch (_) {}
-
     const payload = {
-      settings,
-      companies,
-      productTypes,
-      expenseCategories,
-      productionBatches,
-      gatePasses,
-      stockLedgers,
+      backupVersion: 2,
       exportedAt: new Date(),
+      // Keep singleton behavior (oldest settings doc) if duplicates exist.
+      settings:
+        (await SystemSettings.find({})
+          .sort({ createdAt: 1 })
+          .limit(1)
+          .lean()
+          .then((rows) => rows[0] || null)) || null,
     };
+
+    for (const c of COLLECTIONS) {
+      try {
+        payload[c.key] = await c.model.find({}).lean();
+      } catch (_) {
+        payload[c.key] = [];
+      }
+    }
 
     res.setHeader(
       "Content-Disposition",
@@ -166,57 +210,29 @@ exports.restoreBackup = async (req, res) => {
     const raw = fs.readFileSync(filePath, "utf8");
     const data = JSON.parse(raw);
 
-    // SETTINGS
+    // 1) Settings
     if (data.settings) {
       await SystemSettings.deleteMany({});
       await SystemSettings.create(data.settings);
     }
 
-    // MASTER DATA
-    if (Array.isArray(data.companies)) {
-      await Company.deleteMany({});
-      if (data.companies.length) await Company.insertMany(data.companies);
-    }
-
-    if (Array.isArray(data.productTypes)) {
-      await ProductType.deleteMany({});
-      if (data.productTypes.length)
-        await ProductType.insertMany(data.productTypes);
-    }
-
-    if (Array.isArray(data.expenseCategories)) {
-      await ExpenseCategory.deleteMany({});
-      if (data.expenseCategories.length)
-        await ExpenseCategory.insertMany(data.expenseCategories);
-    }
-
-    // OPERATIONAL DATA
-    if (Array.isArray(data.productionBatches)) {
+    // 2) Clear data in reverse dependency order
+    for (const c of [...COLLECTIONS].reverse()) {
       try {
-        await ProductionBatch.deleteMany({});
-        if (data.productionBatches.length)
-          await ProductionBatch.insertMany(data.productionBatches);
+        await c.model.deleteMany({});
       } catch (e) {
-        console.error("restore productionBatches error:", e);
+        console.error(`restore clear ${c.key} error:`, e);
       }
     }
 
-    if (Array.isArray(data.gatePasses)) {
+    // 3) Restore data in dependency-safe order
+    for (const c of COLLECTIONS) {
+      const rows = Array.isArray(data[c.key]) ? data[c.key] : [];
+      if (!rows.length) continue;
       try {
-        await GatePass.deleteMany({});
-        if (data.gatePasses.length) await GatePass.insertMany(data.gatePasses);
+        await c.model.insertMany(rows, { ordered: false });
       } catch (e) {
-        console.error("restore gatePasses error:", e);
-      }
-    }
-
-    if (Array.isArray(data.stockLedgers)) {
-      try {
-        await StockLedger.deleteMany({});
-        if (data.stockLedgers.length)
-          await StockLedger.insertMany(data.stockLedgers);
-      } catch (e) {
-        console.error("restore stockLedgers error:", e);
+        console.error(`restore insert ${c.key} error:`, e);
       }
     }
 
@@ -303,5 +319,102 @@ exports.verifyEmailOtp = async (req, res) => {
     res.json({ success: true, message: "OTP verified" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.renameBrandEverywhere = async (req, res) => {
+  try {
+    const oldName = String(req.body?.oldName || "").trim();
+    const newName = String(req.body?.newName || "").trim();
+    const adminPin = String(req.body?.adminPin || "").trim();
+    if (!oldName || !newName) {
+      return res.status(400).json({
+        success: false,
+        message: "oldName and newName are required.",
+      });
+    }
+    if (oldName.toLowerCase() === newName.toLowerCase()) {
+      return res.status(400).json({
+        success: false,
+        message: "Old and new brand names are same.",
+      });
+    }
+
+    const settings = await SystemSettings.findOne({});
+    const expectedPin = String(settings?.adminPin || "0000").trim();
+    if (!adminPin || adminPin !== expectedPin) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid admin PIN.",
+      });
+    }
+
+    // Update brand options list
+    const currentOptions = Array.isArray(settings?.brandOptions)
+      ? settings.brandOptions
+      : [];
+    const duplicate = currentOptions.some(
+      (b) => String(b || "").trim().toLowerCase() === newName.toLowerCase()
+    );
+    if (duplicate) {
+      return res.status(400).json({
+        success: false,
+        message: "New brand name already exists in dropdown list.",
+      });
+    }
+    if (settings) {
+      settings.brandOptions = Array.from(
+        new Set(
+          currentOptions.map((b) =>
+            String(b || "").trim().toLowerCase() === oldName.toLowerCase()
+              ? newName
+              : b
+          )
+        )
+      ).filter(Boolean);
+      await settings.save();
+    }
+
+    // Core references
+    await ProductType.updateMany(
+      { brand: new RegExp(`^${oldName}$`, "i") },
+      { $set: { brand: newName } }
+    );
+    await GatePass.updateMany(
+      { supplier: new RegExp(`^${oldName}$`, "i") },
+      { $set: { supplier: newName } }
+    );
+    await StockLedger.updateMany(
+      { companyName: new RegExp(`^${oldName}$`, "i") },
+      { $set: { companyName: newName } }
+    );
+    await ProductionBatch.updateMany(
+      { sourceCompanyName: new RegExp(`^${oldName}$`, "i") },
+      { $set: { sourceCompanyName: newName } }
+    );
+    await ProductionBatch.updateMany(
+      { "outputs.companyName": new RegExp(`^${oldName}$`, "i") },
+      { $set: { "outputs.$[elem].companyName": newName } },
+      { arrayFilters: [{ "elem.companyName": new RegExp(`^${oldName}$`, "i") }] }
+    );
+    await Transaction.updateMany(
+      { companyName: new RegExp(`^${oldName}$`, "i") },
+      { $set: { companyName: newName } }
+    );
+    await NotificationReminder.updateMany(
+      { companyName: new RegExp(`^${oldName}$`, "i") },
+      { $set: { companyName: newName } }
+    );
+    await JournalLine.updateMany(
+      { partyName: new RegExp(`^${oldName}$`, "i") },
+      { $set: { partyName: newName } }
+    );
+
+    return res.json({
+      success: true,
+      message: "Brand renamed across system.",
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 };

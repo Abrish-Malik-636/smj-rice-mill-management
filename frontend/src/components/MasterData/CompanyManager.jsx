@@ -4,8 +4,9 @@ import { Plus, Trash2, Edit2, Save, X, AlertCircle, CheckCircle2 } from "lucide-
 import { toast } from "react-hot-toast";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
+import AddOptionModal from "../ui/AddOptionModal";
 
-export default function CompanyManager() {
+export default function CompanyManager({ tableOnly = false, editInModal = false }) {
   const [companies, setCompanies] = useState([]);
   const [formData, setFormData] = useState({
     name: "",
@@ -19,6 +20,7 @@ export default function CompanyManager() {
   const [loading, setLoading] = useState(false);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState({ open: false, id: null, name: "" });
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   const fetchCompanies = async () => {
     try {
@@ -142,8 +144,7 @@ export default function CompanyManager() {
     await validateField(name, val);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const submitForm = async () => {
     const isValid = await validateAll();
     if (!isValid) {
       toast.error("Please fill all required fields correctly.");
@@ -176,6 +177,11 @@ export default function CompanyManager() {
     }
   };
 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    await submitForm();
+  };
+
   const handleDeleteClick = (id, name) => setConfirmDelete({ open: true, id, name });
 
   const handleDeleteConfirm = async () => {
@@ -200,6 +206,7 @@ export default function CompanyManager() {
     });
     setErrors({});
     setTouched({});
+    if (tableOnly && editInModal) setEditModalOpen(true);
   };
 
   const cancelEdit = () => {
@@ -207,6 +214,7 @@ export default function CompanyManager() {
     setFormData({ name: "", phone: "", email: "", address: "" });
     setErrors({});
     setTouched({});
+    setEditModalOpen(false);
   };
 
   const tableColumns = [
@@ -240,56 +248,58 @@ export default function CompanyManager() {
 
   return (
     <div className="space-y-4">
-      <form onSubmit={handleSubmit} className="grid grid-cols-6 gap-4 bg-emerald-50 p-4 rounded-lg">
-        {formFields.map((field) => (
-          <div key={field.name} className={field.span === 2 ? "col-span-2" : field.span === 4 ? "col-span-4" : "col-span-1"}>
-            <label className="block text-xs text-gray-600 mb-1">{field.label}</label>
-            <div className="relative">
-              <input
-                type={field.type}
-                name={field.name}
-                placeholder={field.label}
-                value={formData[field.name]}
-                onChange={handleChange}
-                onBlur={handleBlur}
-                maxLength={field.maxLength}
-                className={`border p-2 rounded text-sm w-full pr-8 ${
-                  errors[field.name] && touched[field.name] ? "border-red-500 bg-red-50" : touched[field.name] && formData[field.name] ? "border-green-500 bg-green-50" : "border-gray-300"
-                }`}
-              />
-              {touched[field.name] && !errors[field.name] && formData[field.name] && (
-                <CheckCircle2 className="absolute right-2 top-3 text-green-500" size={16} />
+      {!tableOnly && (
+        <form onSubmit={handleSubmit} className="grid grid-cols-6 gap-4 bg-emerald-50 p-4 rounded-lg">
+          {formFields.map((field) => (
+            <div key={field.name} className={field.span === 2 ? "col-span-2" : field.span === 4 ? "col-span-4" : "col-span-1"}>
+              <label className="block text-xs text-gray-600 mb-1">{field.label}</label>
+              <div className="relative">
+                <input
+                  type={field.type}
+                  name={field.name}
+                  placeholder={field.label}
+                  value={formData[field.name]}
+                  onChange={handleChange}
+                  onBlur={handleBlur}
+                  maxLength={field.maxLength}
+                  className={`border p-2 rounded text-sm w-full pr-8 ${
+                    errors[field.name] && touched[field.name] ? "border-red-500 bg-red-50" : touched[field.name] && formData[field.name] ? "border-green-500 bg-green-50" : "border-gray-300"
+                  }`}
+                />
+                {touched[field.name] && !errors[field.name] && formData[field.name] && (
+                  <CheckCircle2 className="absolute right-2 top-3 text-green-500" size={16} />
+                )}
+              </div>
+              {errors[field.name] && touched[field.name] && (
+                <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                  <AlertCircle size={12} /> {errors[field.name]}
+                  {field.maxLength && (
+                    <span className="text-red-400 ml-1">
+                      ({formData[field.name]?.length || 0}/{field.maxLength})
+                    </span>
+                  )}
+                </p>
               )}
             </div>
-            {errors[field.name] && touched[field.name] && (
-              <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                <AlertCircle size={12} /> {errors[field.name]}
-                {field.maxLength && (
-                  <span className="text-red-400 ml-1">
-                    ({formData[field.name]?.length || 0}/{field.maxLength})
-                  </span>
-                )}
-              </p>
+          ))}
+          <div className="col-span-6 flex justify-end gap-2 mt-2">
+            {editingId ? (
+              <>
+                <button type="button" onClick={cancelEdit} className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-3 py-2 rounded flex items-center gap-1 text-sm">
+                  <X size={16} /> Cancel
+                </button>
+                <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
+                  <Save size={16} /> {loading ? "Saving..." : "Save Changes"}
+                </button>
+              </>
+            ) : (
+              <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
+                <Plus size={16} /> {loading ? "Adding..." : "Add Customer"}
+              </button>
             )}
           </div>
-        ))}
-        <div className="col-span-6 flex justify-end gap-2 mt-2">
-          {editingId ? (
-            <>
-              <button type="button" onClick={cancelEdit} className="bg-gray-300 hover:bg-gray-400 text-gray-700 px-3 py-2 rounded flex items-center gap-1 text-sm">
-                <X size={16} /> Cancel
-              </button>
-              <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
-                <Save size={16} /> {loading ? "Saving..." : "Save Changes"}
-              </button>
-            </>
-          ) : (
-            <button type="submit" disabled={loading || checkingDuplicate} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded flex items-center gap-1 text-sm disabled:opacity-50">
-              <Plus size={16} /> {loading ? "Adding..." : "Add Customer"}
-            </button>
-          )}
-        </div>
-      </form>
+        </form>
+      )}
 
       <DataTable
         title="Customers"
@@ -298,7 +308,53 @@ export default function CompanyManager() {
         idKey="_id"
         searchPlaceholder="Search customers..."
         emptyMessage="No customers found"
+        deleteAll={{
+          description: "This will permanently delete ALL customers from the database.",
+          onConfirm: async (adminPin) => {
+            const res = await api.post("/admin/purge", { adminPin, key: "companies" });
+            const deleted = res?.data?.data?.deletedCount ?? 0;
+            toast.success(`Deleted ${deleted} customers`);
+            fetchCompanies();
+          },
+        }}
       />
+
+      {tableOnly && editInModal && (
+        <AddOptionModal
+          open={editModalOpen}
+          title="Edit Customer"
+          subtitle="Update customer details and save changes."
+          onClose={cancelEdit}
+          onSubmit={submitForm}
+          submitLabel="Save Changes"
+          loading={loading}
+          maxWidthClass="max-w-2xl"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {formFields.map((field) => (
+              <div key={`modal-${field.name}`} className={field.span === 4 ? "sm:col-span-2" : ""}>
+                <label className="block text-xs text-gray-600 mb-1">{field.label}</label>
+                <input
+                  type={field.type}
+                  name={field.name}
+                  value={formData[field.name]}
+                  onChange={handleChange}
+                  onBlur={handleBlur}
+                  maxLength={field.maxLength}
+                  className={`border p-2 rounded text-sm w-full ${
+                    errors[field.name] && touched[field.name]
+                      ? "border-red-500 bg-red-50"
+                      : "border-gray-300"
+                  }`}
+                />
+                {errors[field.name] && touched[field.name] && (
+                  <p className="text-xs text-red-500 mt-1">{errors[field.name]}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </AddOptionModal>
+      )}
 
       <ConfirmDialog
         open={confirmDelete.open}

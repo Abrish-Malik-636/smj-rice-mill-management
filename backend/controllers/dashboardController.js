@@ -1,7 +1,12 @@
-// backend/controllers/dashboardController.js
+﻿// backend/controllers/dashboardController.js
 const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
 const ProductionBatch = require("../models/productionBatchModel");
+const Transaction = require("../models/transactionModel");
+const GatePass = require("../models/gatePassModel");
+const SystemSettings = require("../models/systemSettingsModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
+const StockLedger = require("../models/stockLedgerModel");
 
 const getDashboardStats = async (req, res) => {
   try {
@@ -26,23 +31,294 @@ const getDashboardStats = async (req, res) => {
       999
     );
 
-    const [totalCompanies, totalProducts, todayBatches] = await Promise.all([
-      Company.countDocuments(),
-      ProductType.countDocuments(),
-      ProductionBatch.find({
-        date: { $gte: startOfDay, $lte: endOfDay },
-      })
-        .select("paddyWeightKg totalOutputWeightKg")
-        .lean(),
-    ]);
+    const [settings, totalCompanies, totalProducts, gatePasses] =
+      await Promise.all([
+        SystemSettings.findOne({}).lean(),
+        Company.countDocuments(),
+        ProductType.countDocuments(),
+        GatePass.find({
+          createdAt: { $gte: startOfDay, $lte: endOfDay },
+        })
+          .select("type items totalAmount supplier customer gatePassNo createdAt")
+          .lean(),
+      ]);
+
+    const bagKg = Number(settings?.defaultBagWeightKg || 65) || 65;
+    const moundKg = 40;
+
+    const toKg = (qty, unit) => {
+      if (!qty) return 0;
+      const u = String(unit || "").toLowerCase();
+      if (u === "kg") return qty;
+      if (u === "ton") return qty * 1000;
+      if (u === "bags") return qty * bagKg;
+      if (u === "mounds") return qty * moundKg;
+      return qty;
+    };
+
+    const toBags = (qty, unit) => {
+      if (!qty) return 0;
+      const u = String(unit || "").toLowerCase();
+      if (u === "bags") return qty;
+      const kg = toKg(qty, unit);
+      return kg ? kg / bagKg : 0;
+    };
 
     let todayTotalPaddyKg = 0;
     let todayTotalOutputKg = 0;
+    let bagsInward = 0;
+    let bagsOutward = 0;
+    let inwardEntries = 0;
+    let outwardEntries = 0;
 
-    todayBatches.forEach((b) => {
-      todayTotalPaddyKg += Number(b.paddyWeightKg || 0);
-      todayTotalOutputKg += Number(b.totalOutputWeightKg || 0);
+    gatePasses.forEach((gp) => {
+      const items = Array.isArray(gp.items) ? gp.items : [];
+      const sumKg = items.reduce(
+        (sum, it) => sum + toKg(Number(it.quantity || 0), it.unit),
+        0
+      );
+      const sumBags = items.reduce(
+        (sum, it) => sum + toBags(Number(it.quantity || 0), it.unit),
+        0
+      );
+      if (gp.type === "IN") {
+        todayTotalPaddyKg += sumKg;
+        bagsInward += sumBags;
+        inwardEntries += 1;
+      }
+      if (gp.type === "OUT") {
+        todayTotalOutputKg += sumKg;
+        bagsOutward += sumBags;
+        outwardEntries += 1;
+      }
     });
+
+    const transactionsToday = await Transaction.find({
+      type: "SALE",
+      date: { $gte: startOfDay, $lte: endOfDay },
+    })
+      .select("paymentStatus totalAmount partialPaid")
+      .lean();
+    const transactionsAll = await Transaction.find({
+      type: "SALE",
+    })
+      .select("paymentStatus totalAmount partialPaid")
+      .lean();
+
+    const paidAmount = (t) => {
+      const total = Number(t.totalAmount || 0);
+      if (t.paymentStatus === "PAID") return total;
+      if (t.paymentStatus === "PARTIAL")
+        return Number(t.partialPaid || 0);
+      return 0;
+    };
+
+    const remainingAmount = (t) => {
+      const total = Number(t.totalAmount || 0);
+      if (t.paymentStatus === "UNPAID") return total;
+      if (t.paymentStatus === "PARTIAL")
+        return Math.max(total - Number(t.partialPaid || 0), 0);
+      return 0;
+    };
+
+    let cashInHand = 0;
+    let pendingPayments = 0;
+    transactionsToday.forEach((t) => {
+      cashInHand += paidAmount(t);
+    });
+    transactionsAll.forEach((t) => {
+      pendingPayments += remainingAmount(t);
+    });
+
+    const RECENT_LIMIT = 8;
+    const [recentGatePasses, recentSales, recentBatches, recentProdOutputs] = await Promise.all([
+      GatePass.find({})
+        .sort({ createdAt: -1 })
+        .limit(RECENT_LIMIT)
+        .select("type items totalAmount supplier customer gatePassNo createdAt")
+        .lean(),
+      Transaction.find({ type: "SALE" })
+        .sort({ date: -1, createdAt: -1 })
+        .limit(RECENT_LIMIT)
+        .select("companyName invoiceNo paymentStatus totalAmount partialPaid date")
+        .lean(),
+      ProductionBatch.find({ status: "COMPLETED" })
+        .sort({ updatedAt: -1 })
+        .limit(RECENT_LIMIT)
+        .select("batchNo totalOutputWeightKg updatedAt")
+        .lean(),
+      StockLedger.find({
+        type: "IN",
+        remarks: { $regex: "^Production output \\(", $options: "i" },
+      })
+        .sort({ date: -1, createdAt: -1 })
+        .limit(RECENT_LIMIT)
+        .select("companyName productTypeName netWeightKg remarks date createdAt")
+        .lean(),
+    ]);
+
+    const activityRows = [];
+    recentGatePasses.forEach((gp) => {
+      const items = Array.isArray(gp.items) ? gp.items : [];
+      const sumKg = items.reduce(
+        (sum, it) => sum + toKg(Number(it.quantity || 0), it.unit),
+        0
+      );
+      const title =
+        gp.type === "IN" ? "Inward Entry - Raw Paddy" : "Outward Entry";
+      const party =
+        gp.type === "IN" ? gp.supplier || "SMJ Own" : gp.customer || "Customer";
+      activityRows.push({
+        type: "GATE_PASS",
+        title,
+        meta: `${party} · ${items.length || 0} items · ${sumKg.toFixed(0)} kg`,
+        amount: gp.totalAmount || 0,
+        createdAt: gp.createdAt,
+      });
+    });
+    recentSales.forEach((t) => {
+      const paid = paidAmount(t);
+      if (paid <= 0) return;
+      activityRows.push({
+        type: "PAYMENT",
+        title: "Payment Received",
+        meta: `${t.companyName || "Customer"} · Invoice ${t.invoiceNo}`,
+        amount: paid,
+        createdAt: t.date || t.createdAt,
+      });
+    });
+    recentBatches.forEach((b) => {
+      activityRows.push({
+        type: "PRODUCTION",
+        title: "Production Complete",
+        meta: `${b.batchNo} · ${Number(b.totalOutputWeightKg || 0).toFixed(0)} kg`,
+        amount: 0,
+        createdAt: b.updatedAt,
+      });
+    });
+    (recentProdOutputs || []).forEach((l) => {
+      activityRows.push({
+        type: "PRODUCTION_OUTPUT",
+        title: "Production Output Completed",
+        meta: `${l.companyName || "-"} · ${l.productTypeName || "-"} · ${Number(l.netWeightKg || 0).toFixed(0)} kg`,
+        amount: 0,
+        createdAt: l.date || l.createdAt,
+      });
+    });
+
+    activityRows.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    const recentActivities = activityRows.slice(0, RECENT_LIMIT);
+
+    const [completedBatches, salesAll, purchasesAll, managerialLedger] =
+      await Promise.all([
+        ProductionBatch.find({ status: "COMPLETED" })
+          .select("outputs")
+          .lean(),
+        Transaction.find({ type: "SALE" })
+          .select("items")
+          .lean(),
+        Transaction.find({ type: "PURCHASE" })
+          .select("items")
+          .lean(),
+        ManagerialStockLedger.find({})
+          .select("type quantity itemName category")
+          .lean(),
+      ]);
+
+    const productionInKg = completedBatches.reduce((sum, b) => {
+      const outputs = b.outputs || [];
+      const outSum = outputs.reduce(
+        (s, o) => s + Number(o.netWeightKg || 0),
+        0
+      );
+      return sum + outSum;
+    }, 0);
+    const productionByProductMap = new Map();
+    const addToProduct = (name, delta) => {
+      const key = name || "Unknown";
+      const current = productionByProductMap.get(key) || 0;
+      productionByProductMap.set(key, current + delta);
+    };
+    completedBatches.forEach((b) => {
+      const outputs = b.outputs || [];
+      outputs.forEach((o) => {
+        const name = o.productTypeName || "Unknown";
+        const net = Number(o.netWeightKg || 0);
+        if (net > 0) addToProduct(name, net);
+      });
+    });
+    const purchaseInKg = purchasesAll.reduce((sum, t) => {
+      const items = t.items || [];
+      const s = items.reduce((acc, it) => {
+        if (it.productTypeId && it.netWeightKg) {
+          return acc + Number(it.netWeightKg || 0);
+        }
+        return acc;
+      }, 0);
+      return sum + s;
+    }, 0);
+    purchasesAll.forEach((t) => {
+      const items = t.items || [];
+      items.forEach((it) => {
+        if (!it.productTypeId) return;
+        const name = it.productTypeName || "Unknown";
+        const net = Number(it.netWeightKg || 0);
+        if (net > 0) addToProduct(name, net);
+      });
+    });
+    const salesOutKg = salesAll.reduce((sum, t) => {
+      const items = t.items || [];
+      const s = items.reduce(
+        (acc, it) => acc + Number(it.netWeightKg || 0),
+        0
+      );
+      return sum + s;
+    }, 0);
+    salesAll.forEach((t) => {
+      const items = t.items || [];
+      items.forEach((it) => {
+        const name = it.productTypeName || "Unknown";
+        const net = Number(it.netWeightKg || 0);
+        if (net > 0) addToProduct(name, -net);
+      });
+    });
+    const productionStockKg = productionInKg + purchaseInKg - salesOutKg;
+
+    // Raw paddy stock from full paddy ledger (gate pass + production batch allocation/returns)
+    const paddyLedgerRows = await StockLedger.find({ productTypeId: null })
+      .select("type netWeightKg productTypeName")
+      .lean();
+    const paddyKg = paddyLedgerRows.reduce((sum, l) => {
+      const n = String(l.productTypeName || "").toLowerCase().trim();
+      if (!(n === "paddy" || n === "unprocessed paddy")) return sum;
+      const net = Number(l.netWeightKg || 0);
+      if (!net) return sum;
+      return sum + (l.type === "OUT" ? -net : net);
+    }, 0);
+    const managerialStockQty = managerialLedger.reduce((sum, l) => {
+      const qty = Number(l.quantity || 0);
+      if (!qty) return sum;
+      return sum + (l.type === "OUT" ? -qty : qty);
+    }, 0);
+    const productionBreakdown = Array.from(productionByProductMap.entries())
+      .map(([name, value]) => ({ name, value: Math.max(0, value) }))
+      .filter((row) => row.value > 0)
+      .sort((a, b) => b.value - a.value);
+
+    const managerialMap = new Map();
+    managerialLedger.forEach((l) => {
+      const name = l.itemName || l.category || "Item";
+      const qty = Number(l.quantity || 0);
+      if (!qty) return;
+      const delta = l.type === "OUT" ? -qty : qty;
+      managerialMap.set(name, (managerialMap.get(name) || 0) + delta);
+    });
+    const managerialBreakdown = Array.from(managerialMap.entries())
+      .map(([name, value]) => ({ name, value: Math.max(0, value) }))
+      .filter((row) => row.value > 0)
+      .sort((a, b) => b.value - a.value);
 
     res.status(200).json({
       success: true,
@@ -51,12 +327,25 @@ const getDashboardStats = async (req, res) => {
         totalProducts,
 
         // Real-time from production
-        todayTotalPaddyKg, // used for "Bags Inward"
-        todayTotalOutputKg, // used for "Bags Outward"
+        todayTotalPaddyKg, // kg
+        todayTotalOutputKg, // kg
+        bagsInward: inwardEntries,
+        bagsOutward: outwardEntries,
 
-        // Placeholders for finance module (to be wired later)
-        totalExpenses: 0,
-        pendingPayments: 0,
+        // Finance
+        cashInHand,
+        pendingPayments,
+
+        recentActivities,
+        stockSummary: {
+          productionKg: Math.max(0, Number(productionStockKg.toFixed(3))),
+          managerialQty: Math.max(0, Number(managerialStockQty.toFixed(3))),
+          paddyKg: Math.max(0, Number(paddyKg.toFixed(3))),
+        },
+        stockSummaryBreakdown: {
+          production: productionBreakdown,
+          managerial: managerialBreakdown,
+        },
       },
     });
   } catch (error) {
@@ -70,3 +359,4 @@ const getDashboardStats = async (req, res) => {
 };
 
 module.exports = { getDashboardStats };
+

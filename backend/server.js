@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const path = require("path");
+const productionScheduler = require("./services/productionScheduler");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -40,12 +41,25 @@ const managerialStockRoutes = require("./routes/managerialStockRoutes");
 app.use("/api/managerial-stock", managerialStockRoutes);
 const aiRoutes = require("./routes/aiRoutes");
 app.use("/api/ai", aiRoutes);
+const adminRoutes = require("./routes/adminRoutes");
+app.use("/api/admin", adminRoutes);
+const hrRoutes = require("./routes/hrRoutes");
+app.use("/api/hr", hrRoutes);
+const accountingRoutes = require("./routes/accountingRoutes");
+app.use("/api/accounting", accountingRoutes);
+const reportsRoutes = require("./routes/reportsRoutes");
+app.use("/api/reports", reportsRoutes);
+const notificationRoutes = require("./routes/notificationRoutes");
+app.use("/api/notifications", notificationRoutes);
 
 // Connect MongoDB
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.log("❌ MongoDB Error:", err.message));
+
+// Background: auto-complete production outputs and batches based on schedule.
+productionScheduler.start({ intervalMs: 30_000 });
 
 // Start server
 const PORT = process.env.PORT || 5000;

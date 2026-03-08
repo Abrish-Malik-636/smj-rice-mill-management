@@ -21,12 +21,7 @@ export default function GatePass() {
   }, [searchParams]);
 
   return (
-    <div className="p-4 md:p-6">
-      <div className="mb-4">
-        <h1 className="text-2xl font-semibold text-emerald-800">Gate Pass</h1>
-        <p className="text-sm text-gray-500">Manage inwards and outwards.</p>
-      </div>
-
+    <div className="space-y-4">
       <div className="border-b border-emerald-200 mb-6">
         <div className="flex flex-wrap gap-2">
           {tabs.map((t) => {

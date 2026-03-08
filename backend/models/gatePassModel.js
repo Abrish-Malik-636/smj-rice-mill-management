@@ -63,6 +63,17 @@ const GatePassSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Multi-invoice support (preferred going forward)
+    invoiceIds: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: "Transaction",
+      default: [],
+    },
+    invoiceNos: {
+      type: [String],
+      default: [],
+    },
+
     truckNo: {
       type: String,
       required: [true, "Truck number is required."],
@@ -117,11 +128,6 @@ const GatePassSchema = new mongoose.Schema(
       default: 0,
     },
 
-    transporter: {
-      type: String,
-      trim: true,
-    },
-
     driverName: {
       type: String,
       trim: true,
@@ -162,12 +168,6 @@ const GatePassSchema = new mongoose.Schema(
     freightCharges: {
       type: Number,
       min: 0,
-    },
-
-    remarks: {
-      type: String,
-      trim: true,
-      maxlength: 500,
     },
 
     status: {

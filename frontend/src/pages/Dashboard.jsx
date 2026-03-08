@@ -1,7 +1,13 @@
-// src/pages/Dashboard.jsx
+﻿// src/pages/Dashboard.jsx
 import React, { useState, useEffect } from "react";
 import DatePicker from "react-datepicker";
 import { Truck, Box, Coins, AlertTriangle } from "lucide-react";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+} from "recharts";
 import "react-datepicker/dist/react-datepicker.css";
 import axios from "axios";
 
@@ -12,13 +18,25 @@ const leftAccent = {
   red: "border-rose-400",
 };
 
+const DONUT_COLORS = ["#0f766e", "#c2410c", "#0ea5e9", "#be123c"];
+
 export default function Dashboard() {
   const [date, setDate] = useState(new Date());
+  const [showAllActivities, setShowAllActivities] = useState(false);
   const [stats, setStats] = useState({
     cashInHand: 0,
     bagsInward: 0,
     bagsOutward: 0,
     pendingPayments: 0,
+  });
+  const [activities, setActivities] = useState([]);
+  const [stockSummary, setStockSummary] = useState({
+    productionKg: 0,
+    managerialQty: 0,
+  });
+  const [stockBreakdown, setStockBreakdown] = useState({
+    production: [],
+    managerial: [],
   });
 
   // fetch live dashboard data
@@ -30,10 +48,19 @@ export default function Dashboard() {
         const data = res.data.data || {};
 
         setStats({
-          cashInHand: data.totalExpenses || 0,
-          bagsInward: data.todayTotalPaddyKg || 0,
-          bagsOutward: data.todayTotalOutputKg || 0,
+          cashInHand: data.cashInHand || 0,
+          bagsInward: data.bagsInward || 0,
+          bagsOutward: data.bagsOutward || 0,
           pendingPayments: data.pendingPayments || 0,
+        });
+        setActivities(data.recentActivities || []);
+        setStockSummary({
+          productionKg: data.stockSummary?.productionKg || 0,
+          managerialQty: data.stockSummary?.managerialQty || 0,
+        });
+        setStockBreakdown({
+          production: data.stockSummaryBreakdown?.production || [],
+          managerial: data.stockSummaryBreakdown?.managerial || [],
         });
       } catch (err) {
         console.error("Dashboard data fetch failed:", err);
@@ -51,13 +78,13 @@ export default function Dashboard() {
       color: "teal",
     },
     {
-      title: "Bags Inward",
+      title: "Inward Entries",
       value: stats.bagsInward,
       icon: <Truck size={20} />,
       color: "blue",
     },
     {
-      title: "Bags Outward",
+      title: "Outward Entries",
       value: stats.bagsOutward,
       icon: <Box size={20} />,
       color: "amber",
@@ -70,36 +97,32 @@ export default function Dashboard() {
     },
   ];
 
-  const activities = [
-    {
-      title: "Inward Entry - Raw Paddy",
-      meta: "ABC Traders · 85 bags · 5,525 kg · Just now",
-      amount: "Rs. 3,85,000",
-      color: "teal",
-      icon: <Truck size={16} />,
-    },
-    {
-      title: "Outward Entry - Premium Rice",
-      meta: "XYZ Mills · 50 bags · 3,250 kg · 15 min ago",
-      amount: "Rs. 2,60,000",
-      color: "red",
-      icon: <Box size={16} />,
-    },
-    {
-      title: "Production Complete - Day Shift",
-      meta: "Al-Barkat · Rice 850kg · 1 hour ago",
-      amount: "92% Efficiency",
-      color: "amber",
-      icon: <Coins size={16} />,
-    },
-    {
-      title: "Payment Received",
-      meta: "ABC Traders · Invoice #SMJ-2025-089 · 2 hours ago",
-      amount: "Rs. 1,50,000",
-      color: "blue",
-      icon: <Coins size={16} />,
-    },
-  ];
+  const activityIcon = (type) => {
+    if (type === "GATE_PASS") return <Truck size={16} />;
+    if (type === "PAYMENT") return <Coins size={16} />;
+    if (type === "PRODUCTION") return <Box size={16} />;
+    return <Box size={16} />;
+  };
+
+  const activityColor = (type) => {
+    if (type === "GATE_PASS") return "teal";
+    if (type === "PAYMENT") return "blue";
+    if (type === "PRODUCTION") return "amber";
+    return "red";
+  };
+
+  const productionDonut =
+    stockBreakdown.production.length > 0
+      ? stockBreakdown.production
+      : [
+          { name: "Production", value: Number(stockSummary.productionKg || 0) },
+        ];
+  const managerialDonut =
+    stockBreakdown.managerial.length > 0
+      ? stockBreakdown.managerial
+      : [
+          { name: "Managerial", value: Number(stockSummary.managerialQty || 0) },
+        ];
 
   return (
     <div className="space-y-6">
@@ -158,13 +181,25 @@ export default function Dashboard() {
             <h3 className="text-lg font-semibold text-emerald-700">
               Recent Activities
             </h3>
-            <button className="px-3 py-1 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 transition">
-              View All
+            <button
+              type="button"
+              onClick={() => setShowAllActivities((v) => !v)}
+              className="px-3 py-1 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 transition"
+            >
+              {showAllActivities ? "Show Less" : "View All"}
             </button>
           </div>
 
-          <div className="space-y-3">
-            {activities.map((a, idx) => (
+          <div
+            className={[
+              "space-y-3",
+              showAllActivities
+                ? "max-h-[420px] overflow-y-auto pr-2 thin-scrollbar"
+                : "",
+            ].join(" ")}
+          >
+            {(showAllActivities ? activities : activities.slice(0, 8)).map(
+              (a, idx) => (
               <div
                 key={idx}
                 className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-md hover:bg-gray-50 transition"
@@ -174,16 +209,16 @@ export default function Dashboard() {
                     className={`w-11 h-11 rounded-md flex items-center justify-center text-white`}
                     style={{
                       background:
-                        a.color === "teal"
+                        activityColor(a.type) === "teal"
                           ? "#0f766e"
-                          : a.color === "red"
+                          : activityColor(a.type) === "red"
                           ? "#be123c"
-                          : a.color === "amber"
-                          ? "#c2410c"
-                          : "#0ea5e9",
+                          : activityColor(a.type) === "amber"
+                            ? "#c2410c"
+                            : "#0ea5e9",
                     }}
                   >
-                    {a.icon}
+                    {activityIcon(a.type)}
                   </div>
                   <div>
                     <div className="font-medium">{a.title}</div>
@@ -191,7 +226,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <div className="text-sm font-semibold text-gray-800">
-                  {a.amount}
+                  {a.amount ? `Rs. ${Number(a.amount || 0).toLocaleString()}` : "-"}
                 </div>
               </div>
             ))}
@@ -200,11 +235,108 @@ export default function Dashboard() {
 
         <div className="lg:col-span-1 bg-white rounded-lg shadow-sm p-4">
           <h4 className="font-semibold text-emerald-700 mb-4">Stock Summary</h4>
-          <div className="h-44 flex items-center justify-center text-gray-400">
-            📊 Graph placeholder
+          <div className="grid grid-cols-1 gap-4">
+            <div className="border rounded-lg p-3">
+              <div className="text-xs text-gray-500 mb-2">Production Stock</div>
+              <div className="h-28 flex items-center justify-center">
+                <PieChart width={180} height={120}>
+                    <Pie
+                      data={productionDonut}
+                      dataKey="value"
+                      innerRadius={30}
+                      outerRadius={45}
+                      paddingAngle={2}
+                    >
+                      {productionDonut.map((entry, index) => (
+                        <Cell
+                          key={`${entry.name}-${index}`}
+                          fill={DONUT_COLORS[index % DONUT_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value) =>
+                        `${Math.round(Number(value || 0))} kg`
+                      }
+                    />
+                  </PieChart>
+              </div>
+              <div className="text-sm font-semibold text-emerald-900 mt-2">
+                {Math.round(Number(stockSummary.productionKg || 0))} kg
+              </div>
+              <div className="mt-2 space-y-1 text-xs text-gray-600">
+                {productionDonut.map((entry, index) => (
+                  <div key={`${entry.name}-legend-${index}`} className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded"
+                      style={{
+                        backgroundColor:
+                          DONUT_COLORS[index % DONUT_COLORS.length],
+                      }}
+                    />
+                    <span className="flex-1 truncate">{entry.name}</span>
+                    <span className="font-medium text-gray-700">
+                      {Math.round(Number(entry.value || 0))} kg
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border rounded-lg p-3">
+              <div className="text-xs text-gray-500 mb-2">Managerial Stock</div>
+              <div className="h-28 flex items-center justify-center">
+                <PieChart width={180} height={120}>
+                    <Pie
+                      data={managerialDonut}
+                      dataKey="value"
+                      innerRadius={30}
+                      outerRadius={45}
+                      paddingAngle={2}
+                    >
+                      {managerialDonut.map((entry, index) => (
+                        <Cell
+                          key={`${entry.name}-${index}`}
+                          fill={DONUT_COLORS[index % DONUT_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value) =>
+                        `${Math.round(Number(value || 0))}`
+                      }
+                    />
+                  </PieChart>
+              </div>
+              <div className="text-sm font-semibold text-emerald-900 mt-2">
+                {Math.round(Number(stockSummary.managerialQty || 0))}
+              </div>
+              <div className="mt-2 space-y-1 text-xs text-gray-600">
+                {managerialDonut.map((entry, index) => (
+                  <div key={`${entry.name}-legend-${index}`} className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded"
+                      style={{
+                        backgroundColor:
+                          DONUT_COLORS[index % DONUT_COLORS.length],
+                      }}
+                    />
+                    <span className="flex-1 truncate">{entry.name}</span>
+                    <span className="font-medium text-gray-700">
+                      {Math.round(Number(entry.value || 0))}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
+
+
+
+

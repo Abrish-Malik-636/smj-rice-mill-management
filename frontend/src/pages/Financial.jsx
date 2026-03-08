@@ -16,14 +16,24 @@ import {
 import toast, { Toaster } from "react-hot-toast";
 import api from "../services/api";
 import Pin4Input from "../components/Pin4Input";
+import AddOptionModal from "../components/ui/AddOptionModal";
 
 const PAGE_SIZE = 10;
 
-const CATEGORY_OPTIONS = ["Machinery", "Equipment", "Vehicle", "Furniture", "IT & Electronics", "Other"];
-const CONDITION_OPTIONS = ["Good", "Fair", "Poor", "Under Maintenance"];
+const DEFAULT_PURCHASE_CATEGORIES = ["General"];
 
 function todayISO() {
   const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function addDaysISO(baseISO, days) {
+  const d = baseISO ? new Date(baseISO) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  d.setDate(d.getDate() + days);
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -37,7 +47,6 @@ const emptyForm = {
   paymentMethod: "CASH", // default Cash
   dueDate: "",
   partialPaid: "",
-  remarks: "",
 };
 
 const makeEmptySaleItem = () => ({
@@ -51,16 +60,77 @@ const makeEmptySaleItem = () => ({
 });
 
 const makeEmptyPurchaseItem = () => ({
-  managerialItemId: "",
   itemName: "",
   isCustom: false,
   isManagerial: true,
-  category: "",
-  condition: "",
-  unit: "Nos",
   quantity: "",
   rate: "",
 });
+const OTHER_OPTION = "__OTHER__";
+const MAX_AMOUNT_DIGITS = 8;
+const clampAmountDigits = (value, maxDigits = MAX_AMOUNT_DIGITS) =>
+  String(value ?? "")
+    .replace(/\D/g, "")
+    .slice(0, maxDigits);
+
+const emptyQuickCustomer = {
+  name: "",
+  phone: "",
+  email: "",
+  address: "",
+};
+
+const QUICK_CUSTOMER_LIMITS = {
+  name: 100,
+  phone: 12,
+  email: 100,
+  address: 200,
+};
+
+const QUICK_CUSTOMER_PHONE_REGEX = /^03\d{2}-\d{7}$/;
+
+function normalizeQuickCustomerInput(field, rawValue) {
+  let value = String(rawValue ?? "");
+  if (field === "name") {
+    value = value.replace(/[^A-Za-z\s.'-]/g, "");
+  } else if (field === "phone") {
+    const digits = value.replace(/\D/g, "").slice(0, 11);
+    if (digits.length <= 4) return digits;
+    value = `${digits.slice(0, 4)}-${digits.slice(4)}`;
+  } else if (field === "email") {
+    value = value.replace(/\s/g, "");
+  }
+  const limit = QUICK_CUSTOMER_LIMITS[field];
+  if (limit) value = value.slice(0, limit);
+  return value;
+}
+
+function validateQuickCustomerField(field, rawValue) {
+  const value = String(rawValue ?? "").trim();
+  if (field === "name") {
+    if (!value) return "Customer name is required";
+    if (value.length < 2) return "Customer name must be at least 2 characters";
+    return "";
+  }
+  if (field === "phone") {
+    if (!value) return "Phone number is required";
+    if (!QUICK_CUSTOMER_PHONE_REGEX.test(value)) {
+      return "Phone format must be 03XX-XXXXXXX";
+    }
+    return "";
+  }
+  if (field === "email") {
+    if (!value) return "Email is required";
+    const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    return validEmail ? "" : "Enter a valid email address";
+  }
+  if (field === "address") {
+    if (!value) return "Address is required";
+    if (value.length < 5) return "Address must be at least 5 characters";
+    return "";
+  }
+  return "";
+}
 
 export default function Financial() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -70,7 +140,8 @@ export default function Financial() {
   // Masters
   const [companies, setCompanies] = useState([]);
   const [products, setProducts] = useState([]);
-  const [managerialItems, setManagerialItems] = useState([]);
+  const [purchaseItemOptions, setPurchaseItemOptions] = useState([]);
+  const [purchaseCategoryOptions, setPurchaseCategoryOptions] = useState(DEFAULT_PURCHASE_CATEGORIES);
 
   // Stock balances: [{ companyId, companyName(brand), productTypeId, productTypeName, balanceKg }]
   const [stockBalances, setStockBalances] = useState([]);
@@ -92,6 +163,7 @@ export default function Financial() {
   const [saleTotal, setSaleTotal] = useState(0);
   const [salePage, setSalePage] = useState(1);
   const [saleLoading, setSaleLoading] = useState(false);
+  const [expandedPurchases, setExpandedPurchases] = useState(() => new Set());
 
   const [settings, setSettings] = useState({
     additionalStockSettingsEnabled: false,
@@ -118,6 +190,11 @@ export default function Financial() {
   const [printTxn, setPrintTxn] = useState(null);
   const [printSettings, setPrintSettings] = useState(null);
   const [loadingSettings, setLoadingSettings] = useState(false);
+  const [quickCustomerModal, setQuickCustomerModal] = useState(false);
+  const [quickCustomer, setQuickCustomer] = useState({ ...emptyQuickCustomer });
+  const [quickCustomerErrors, setQuickCustomerErrors] = useState({});
+  const [quickCustomerTouched, setQuickCustomerTouched] = useState({});
+  const [quickCustomerSaving, setQuickCustomerSaving] = useState(false);
 
   // Print-only CSS for small invoice card
   const printStyles = `
@@ -141,14 +218,12 @@ export default function Financial() {
   useEffect(() => {
     const loadMasters = async () => {
       try {
-        const [cRes, pRes, mRes] = await Promise.all([
+        const [cRes, pRes] = await Promise.all([
           api.get("/companies"),
           api.get("/product-types"),
-          api.get("/managerial-stock"),
         ]);
         setCompanies(cRes.data.data || []);
         setProducts(pRes.data.data || []);
-        setManagerialItems(mRes.data.data || []);
       } catch (err) {
         console.error("Error loading masters:", err);
         toast.error("Failed to load master data");
@@ -164,11 +239,26 @@ export default function Financial() {
     const loadSettings = async () => {
       try {
         const res = await api.get("/settings");
-        if (res.data?.data) setSettings(res.data.data);
+        if (res.data?.data) {
+          const s = res.data.data;
+          setSettings(s);
+          if (Array.isArray(s.purchaseItemOptions)) {
+            setPurchaseItemOptions(s.purchaseItemOptions);
+          }
+          if (Array.isArray(s.purchaseCategoryOptions)) {
+            setPurchaseCategoryOptions(
+              s.purchaseCategoryOptions.length
+                ? s.purchaseCategoryOptions
+                : DEFAULT_PURCHASE_CATEGORIES
+            );
+          }
+        }
       } catch {}
     };
     loadSettings();
   }, []);
+
+  
 
   useEffect(() => {
     const tab = searchParams.get("tab");
@@ -225,12 +315,95 @@ export default function Financial() {
   const totalPagesFor = (total) =>
     Math.max(1, Math.ceil((total || 0) / PAGE_SIZE));
 
+  const closeQuickCustomerModal = () => {
+    setQuickCustomerModal(false);
+    setQuickCustomer({ ...emptyQuickCustomer });
+    setQuickCustomerErrors({});
+    setQuickCustomerTouched({});
+  };
+
+  const handleQuickCustomerChange = (field, value) => {
+    const normalized = normalizeQuickCustomerInput(field, value);
+    setQuickCustomer((prev) => ({ ...prev, [field]: normalized }));
+    setQuickCustomerTouched((prev) => ({ ...prev, [field]: true }));
+    const nextError = validateQuickCustomerField(field, normalized);
+    setQuickCustomerErrors((prev) => ({ ...prev, [field]: nextError }));
+  };
+
+  const saveQuickCustomer = async () => {
+    const payload = {
+      name: String(quickCustomer.name || "").trim(),
+      phone: String(quickCustomer.phone || "").trim(),
+      email: String(quickCustomer.email || "").trim().toLowerCase(),
+      address: String(quickCustomer.address || "").trim(),
+    };
+    const touchedAll = {
+      name: true,
+      phone: true,
+      email: true,
+      address: true,
+    };
+    const validationErrors = Object.keys(touchedAll).reduce((acc, field) => {
+      const msg = validateQuickCustomerField(field, payload[field]);
+      if (msg) acc[field] = msg;
+      return acc;
+    }, {});
+    setQuickCustomerTouched(touchedAll);
+    setQuickCustomerErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      toast.error("Please fix customer form errors.");
+      return;
+    }
+    setQuickCustomerSaving(true);
+    try {
+      const res = await api.post("/companies", payload);
+      const created = res.data?.data;
+      const cRes = await api.get("/companies");
+      setCompanies(cRes.data?.data || []);
+      if (created?._id) {
+        setSaleForm((prev) => ({ ...prev, companyId: created._id }));
+      }
+      toast.success("Customer added.");
+      closeQuickCustomerModal();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to add customer");
+    } finally {
+      setQuickCustomerSaving(false);
+    }
+  };
+
   // Helpers
   const handleFormChange = (type, field, value) => {
+    if (type === "SALE" && field === "companyId" && value === OTHER_OPTION) {
+      setQuickCustomerModal(true);
+      return;
+    }
     if (type === "PURCHASE") {
-      setPurchaseForm((f) => ({ ...f, [field]: value }));
+      setPurchaseForm((f) => {
+        if (field === "paymentStatus") {
+          const shouldSetDue =
+            (value === "UNPAID" || value === "PARTIAL") && !f.dueDate;
+          return {
+            ...f,
+            paymentStatus: value,
+            dueDate: shouldSetDue ? addDaysISO(f.date, 7) : f.dueDate,
+          };
+        }
+        return { ...f, [field]: value };
+      });
     } else {
-      setSaleForm((f) => ({ ...f, [field]: value }));
+      setSaleForm((f) => {
+        if (field === "paymentStatus") {
+          const shouldSetDue =
+            (value === "UNPAID" || value === "PARTIAL") && !f.dueDate;
+          return {
+            ...f,
+            paymentStatus: value,
+            dueDate: shouldSetDue ? addDaysISO(f.date, 7) : f.dueDate,
+          };
+        }
+        return { ...f, [field]: value };
+      });
     }
   };
 
@@ -240,42 +413,30 @@ export default function Financial() {
 
     if (type === "PURCHASE") {
       if (field === "itemSelect") {
-        if (value === "__OTHER__") {
+        if (value === OTHER_OPTION) {
           item.isCustom = true;
-          item.managerialItemId = "";
           item.itemName = "";
-          item.category = "";
-          item.condition = "";
-          item.unit = "Nos";
         } else {
-          const selected = managerialItems.find((m) => String(m._id) === String(value));
           item.isCustom = false;
-          item.managerialItemId = value;
-          item.itemName = selected?.name || "";
-          item.category = selected?.category || "";
-          item.condition = selected?.condition || "";
-          item.unit = selected?.unit || "Nos";
+          item.itemName = value;
         }
       }
-
       if (field === "itemName") {
         item.itemName = value;
         item.isCustom = true;
       }
 
       if (field === "quantity") {
-        const digits = String(value || "").replace(/\D/g, "").slice(0, 5);
+        const digits = String(value || "")
+          .replace(/\D/g, "")
+          .slice(0, 5);
         item.quantity = digits;
       }
 
       if (field === "rate") {
-        const digits = String(value || "").replace(/\D/g, "");
+        const digits = clampAmountDigits(value);
         item.rate = digits;
       }
-
-      if (field === "category") item.category = value;
-      if (field === "condition") item.condition = value;
-      if (field === "unit") item.unit = value;
 
       list[index] = item;
       setPurchaseItems(list);
@@ -283,7 +444,9 @@ export default function Financial() {
     }
 
     if (field === "numBags") {
-      const digits = String(value || "").replace(/\D/g, "").slice(0, 5);
+      const digits = String(value || "")
+        .replace(/\D/g, "")
+        .slice(0, 5);
       item.numBags = digits;
       value = digits;
     }
@@ -333,14 +496,14 @@ export default function Financial() {
       const preferredUnit = units.includes("Bag")
         ? "Bag"
         : units.includes("Ton")
-        ? "Ton"
-        : "KG";
+          ? "Ton"
+          : "KG";
       const nextRateType =
         preferredUnit === "Bag"
           ? "per_bag"
           : preferredUnit === "Ton"
-          ? "per_ton"
-          : "per_kg";
+            ? "per_ton"
+            : "per_kg";
 
       item.rateType = nextRateType;
       const unitKg = unitWeightForRate(nextRateType);
@@ -350,9 +513,9 @@ export default function Financial() {
       const qty = Number(item.numBags || 0);
       if (qty) {
         if (nextRateType === "per_kg") {
-          item.netWeightKg = qty.toFixed(3);
+          item.netWeightKg = String(Math.round(qty));
         } else if (unitKg) {
-          item.netWeightKg = (qty * unitKg).toFixed(3);
+          item.netWeightKg = String(Math.round(qty * unitKg));
         } else {
           item.netWeightKg = "";
         }
@@ -370,9 +533,9 @@ export default function Financial() {
       const qty = Number(item.numBags || 0);
       if (qty) {
         if (value === "per_kg") {
-          item.netWeightKg = qty.toFixed(3);
+          item.netWeightKg = String(Math.round(qty));
         } else if (unitKg) {
-          item.netWeightKg = (qty * unitKg).toFixed(3);
+          item.netWeightKg = String(Math.round(qty * unitKg));
         } else {
           item.netWeightKg = "";
         }
@@ -382,20 +545,16 @@ export default function Financial() {
     }
 
     if (field === "numBags" || field === "perBagWeightKg") {
-      const qty =
-        Number(field === "numBags" ? value : item.numBags || 0) || 0;
+      const qty = Number(field === "numBags" ? value : item.numBags || 0) || 0;
       const unitKg =
-        Number(
-          field === "perBagWeightKg"
-            ? value
-            : item.perBagWeightKg || 0
-        ) || 0;
+        Number(field === "perBagWeightKg" ? value : item.perBagWeightKg || 0) ||
+        0;
       if (!qty) {
         item.netWeightKg = "";
       } else if (item.rateType === "per_kg") {
-        item.netWeightKg = qty.toFixed(3);
+        item.netWeightKg = String(Math.round(qty));
       } else if (unitKg) {
-        item.netWeightKg = (qty * unitKg).toFixed(3);
+        item.netWeightKg = String(Math.round(qty * unitKg));
       } else {
         item.netWeightKg = "";
       }
@@ -436,13 +595,29 @@ export default function Financial() {
     return qty * unitKg;
   };
 
-  const computeInvoiceTotal = (items) =>
-    items.reduce((sum, it) => sum + computeLineAmount(it), 0);
+const computeInvoiceTotal = (items) =>
+  items.reduce((sum, it) => sum + computeLineAmount(it), 0);
+
+const computePaidRemaining = (form, total) => {
+  const roundedTotal = Math.round(total);
+  if (form.paymentStatus === "PAID") {
+    return { paid: roundedTotal, remaining: 0 };
+  }
+  if (form.paymentStatus === "UNPAID") {
+    return { paid: 0, remaining: roundedTotal };
+  }
+  const paid = Number(form.partialPaid || 0);
+  const remaining = Math.max(total - paid, 0);
+  return { paid, remaining };
+};
 
   // Stock helper
   const getStockBalance = (productTypeId) => {
     if (!productTypeId) return null;
-    const row = stockBalances.find((b) => b.productTypeId === productTypeId);
+    const targetId = String(productTypeId);
+    const row = stockBalances.find(
+      (b) => String(b.productTypeId || "") === targetId,
+    );
     if (!row) return null;
     return Number(row.balanceKg || 0);
   };
@@ -455,7 +630,7 @@ export default function Financial() {
       toast.error("Date is required");
       return false;
     }
-    if (!form.companyId) {
+    if (type === "SALE" && !form.companyId) {
       toast.error("Please select a customer");
       return false;
     }
@@ -501,14 +676,6 @@ export default function Financial() {
           toast.error(`Item ${i + 1}: Select or enter an item name`);
           return false;
         }
-        if (!it.category || !it.category.trim()) {
-          toast.error(`Item ${i + 1}: Category is required`);
-          return false;
-        }
-        if (!it.condition || !it.condition.trim()) {
-          toast.error(`Item ${i + 1}: Condition is required`);
-          return false;
-        }
         const qty = Number(it.quantity || 0);
         if (!qty || qty <= 0) {
           toast.error(`Item ${i + 1}: Quantity must be greater than 0`);
@@ -548,9 +715,9 @@ export default function Financial() {
 
         if (bal != null && net > bal + 0.0001) {
           toast.error(
-            `Item ${i + 1}: Net weight (${net.toFixed(
-              3
-            )} kg) exceeds available stock (${bal.toFixed(3)} kg)`
+            `Item ${i + 1}: Net weight (${Math.round(
+              net,
+            )} kg) exceeds available stock (${Math.round(bal)} kg)`,
           );
           return false;
         }
@@ -568,11 +735,10 @@ export default function Financial() {
     const mappedItems = items.map((it) => {
       if (type === "PURCHASE") {
         return {
-          managerialItemId: it.managerialItemId || null,
           itemName: it.itemName || "",
-          category: it.category || "",
-          condition: it.condition || "",
-          unit: it.unit || "Nos",
+          category: "",
+          condition: "",
+          unit: "Nos",
           quantity: Number(it.quantity || 0),
           rate: Number(it.rate || 0),
           rateType: "per_unit",
@@ -594,16 +760,6 @@ export default function Financial() {
       };
     });
 
-    const baseRemarks = form.remarks || "";
-    let finalRemarks = baseRemarks;
-
-    if (form.paymentStatus === "PARTIAL") {
-      const paid = Number(form.partialPaid || 0);
-      const remaining = Math.max(total - paid, 0);
-      const extra = `Paid: Rs ${Math.round(paid)}, Remaining: Rs ${Math.round(remaining)}, Due: ${form.dueDate || "-"}`;
-      finalRemarks = baseRemarks ? `${baseRemarks} | ${extra}` : extra;
-    }
-
     return {
       type: type === "PURCHASE" ? "PURCHASE" : "SALE",
       date: form.date,
@@ -611,9 +767,9 @@ export default function Financial() {
       paymentStatus: form.paymentStatus || "PAID",
       paymentMethod: form.paymentMethod || "CASH",
       dueDate: form.paymentStatus === "PAID" ? null : form.dueDate || null,
-      remarks: finalRemarks,
+      remarks: "",
       items: mappedItems,
-      partialPaid: form.paymentStatus === "PARTIAL" ? Number(form.partialPaid || 0) : 0,
+      partialPaid: computePaidRemaining(form, total).paid,
     };
   };
 
@@ -651,8 +807,24 @@ export default function Financial() {
       // reload stock after any transaction
       loadStockBalances();
       if (type === "PURCHASE") {
-        const mRes = await api.get("/managerial-stock");
-        setManagerialItems(mRes.data.data || []);
+        const names = (payload.items || [])
+          .map((it) => (it.itemName || "").trim())
+          .filter(Boolean);
+        const nextItems = Array.from(
+          new Set([...purchaseItemOptions, ...names])
+        );
+        if (
+          nextItems.length !== purchaseItemOptions.length
+        ) {
+          try {
+            await api.put("/settings", {
+              purchaseItemOptions: nextItems,
+            });
+            setPurchaseItemOptions(nextItems);
+          } catch (e) {
+            toast.error("Failed to update purchase dropdowns");
+          }
+        }
       }
     } catch (err) {
       console.error("Save transaction error:", err);
@@ -675,33 +847,37 @@ export default function Financial() {
         ? new Date(txn.dueDate).toISOString().slice(0, 10)
         : "",
       partialPaid: txn.partialPaid != null ? String(txn.partialPaid) : "",
-      remarks: txn.remarks || "",
     };
 
     const items = (txn.items || []).map((it) => {
       if (type === "PURCHASE" && (it.isManagerial || it.itemName)) {
-        const matched = managerialItems.find(
-          (m) => String(m._id) === String(it.managerialItemId || "")
-        );
+        const inList = purchaseItemOptions.includes(it.itemName || "");
         return {
-          managerialItemId: it.managerialItemId || matched?._id || "",
-          itemName: it.itemName || matched?.name || "",
-          isCustom: !it.managerialItemId,
-          category: it.category || matched?.category || "",
-          condition: it.condition || matched?.condition || "",
-          unit: it.unit || matched?.unit || "Nos",
+          itemName: it.itemName || "",
+          isCustom: !inList,
           quantity: it.quantity != null ? String(it.quantity) : "",
           rate: it.rate != null ? String(it.rate) : "",
         };
       }
 
-      const product = products.find((p) => String(p._id) === String(it.productTypeId));
+      const product = products.find(
+        (p) => String(p._id) === String(it.productTypeId),
+      );
       return {
         brand: product?.brand || "",
         productTypeId: it.productTypeId || "",
-        numBags: it.numBags !== null && it.numBags !== undefined ? String(it.numBags) : "",
-        perBagWeightKg: it.perBagWeightKg !== null && it.perBagWeightKg !== undefined ? String(it.perBagWeightKg) : "",
-        netWeightKg: it.netWeightKg !== null && it.netWeightKg !== undefined ? String(it.netWeightKg) : "",
+        numBags:
+          it.numBags !== null && it.numBags !== undefined
+            ? String(it.numBags)
+            : "",
+        perBagWeightKg:
+          it.perBagWeightKg !== null && it.perBagWeightKg !== undefined
+            ? String(it.perBagWeightKg)
+            : "",
+        netWeightKg:
+          it.netWeightKg !== null && it.netWeightKg !== undefined
+            ? String(it.netWeightKg)
+            : "",
         rate: it.rate !== null && it.rate !== undefined ? String(it.rate) : "",
         rateType: it.rateType || "per_kg",
       };
@@ -757,11 +933,11 @@ export default function Financial() {
   const todaySummaryCards = () => {
     const saleTotalToday = saleList.reduce(
       (sum, t) => sum + (t.totalAmount || 0),
-      0
+      0,
     );
     const purchaseTotalToday = purchaseList.reduce(
       (sum, t) => sum + (t.totalAmount || 0),
-      0
+      0,
     );
 
     const cards = [
@@ -815,16 +991,16 @@ export default function Financial() {
     const working = type === "PURCHASE" ? purchaseLoading : saleLoading;
 
     const total = computeInvoiceTotal(items);
-    const partialPaid = Number(form.partialPaid || 0);
-    const partialRemaining =
-      form.paymentStatus === "PARTIAL" ? Math.max(total - partialPaid, 0) : 0;
+    const { paid: paidComputed, remaining: remainingComputed } =
+      computePaidRemaining(form, total);
+    const isPartial = form.paymentStatus === "PARTIAL";
 
     const dateLocked =
       type === "SALE"
         ? !saleDateUnlocked
         : type === "PURCHASE"
-        ? !purchaseDateUnlocked
-        : false;
+          ? !purchaseDateUnlocked
+          : false;
 
     return (
       <form
@@ -832,7 +1008,11 @@ export default function Financial() {
         className="space-y-4 bg-emerald-50 p-4 rounded-lg"
       >
         {/* Row 1: Date + Customer */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div
+          className={`grid grid-cols-1 ${
+            type === "PURCHASE" ? "md:grid-cols-1" : "md:grid-cols-4"
+          } gap-3`}
+        >
           <div className="col-span-1 md:col-span-1">
             <label className="text-xs text-gray-600 flex items-center gap-1">
               Date <span className="text-red-500">*</span>
@@ -847,75 +1027,73 @@ export default function Financial() {
                 readOnly={dateLocked}
                 onChange={(e) => handleFormChange(type, "date", e.target.value)}
               />
-              {settings.additionalStockSettingsEnabled && (type === "SALE" || type === "PURCHASE") && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (type === "SALE") {
-                      if (saleDateUnlocked) {
-                        setSaleDateUnlocked(false);
+              {settings.additionalStockSettingsEnabled &&
+                (type === "SALE" || type === "PURCHASE") && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (type === "SALE") {
+                        if (saleDateUnlocked) {
+                          setSaleDateUnlocked(false);
+                          return;
+                        }
+                        setSaleDatePinDialog({
+                          open: true,
+                          pin: "",
+                          pinError: "",
+                        });
                         return;
                       }
-                      setSaleDatePinDialog({ open: true, pin: "", pinError: "" });
-                      return;
+                      if (purchaseDateUnlocked) {
+                        setPurchaseDateUnlocked(false);
+                        return;
+                      }
+                      setPurchaseDatePinDialog({
+                        open: true,
+                        pin: "",
+                        pinError: "",
+                      });
+                    }}
+                    className="p-2 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50"
+                    title={
+                      type === "SALE"
+                        ? saleDateUnlocked
+                          ? "Lock date"
+                          : "Unlock date"
+                        : purchaseDateUnlocked
+                          ? "Lock date"
+                          : "Unlock date"
                     }
-                    if (purchaseDateUnlocked) {
-                      setPurchaseDateUnlocked(false);
-                      return;
-                    }
-                    setPurchaseDatePinDialog({ open: true, pin: "", pinError: "" });
-                  }}
-                  className="p-2 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50"
-                  title={
-                    type === "SALE"
-                      ? saleDateUnlocked
-                        ? "Lock date"
-                        : "Unlock date"
-                      : purchaseDateUnlocked
-                      ? "Lock date"
-                      : "Unlock date"
-                  }
-                >
-                  <Lock size={14} />
-                </button>
-              )}
+                  >
+                    <Lock size={14} />
+                  </button>
+                )}
             </div>
           </div>
 
-          <div className="col-span-1 md:col-span-3">
-            <label className="text-xs text-gray-600 flex items-center gap-1">
-              Customer <span className="text-red-500">*</span>
-            </label>
-            <select
-              className="w-full border p-2 rounded text-sm"
-              value={form.companyId}
-              onChange={(e) =>
-                handleFormChange(type, "companyId", e.target.value)
-              }
-            >
-              <option value="">Select customer</option>
-              {companies.map((c) => (
-                <option key={c._id} value={c._id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {type === "SALE" && (
+            <div className="col-span-1 md:col-span-3">
+              <label className="text-xs text-gray-600 flex items-center gap-1">
+                Customer <span className="text-red-500">*</span>
+              </label>
+              <select
+                className="w-full border p-2 rounded text-sm"
+                value={form.companyId}
+                onChange={(e) =>
+                  handleFormChange(type, "companyId", e.target.value)
+                }
+              >
+                <option value="">Select customer</option>
+                {companies.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.name}
+                  </option>
+                ))}
+                <option value={OTHER_OPTION}>Other (Add New)</option>
+              </select>
+            </div>
+          )}
         </div>
-
-        {/* Row 2: Remarks (purchase only) */}
-        {type === "PURCHASE" && (
-          <div>
-            <label className="text-xs text-gray-600">Remarks</label>
-            <input
-              type="text"
-              className="w-full border p-2 rounded text-sm"
-              value={form.remarks}
-              onChange={(e) => handleFormChange(type, "remarks", e.target.value)}
-              placeholder="Optional notes"
-            />
-          </div>
-        )}
 
         {/* Items table */}
         {type === "PURCHASE" ? (
@@ -934,15 +1112,11 @@ export default function Financial() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full table-fixed text-xs">
                 <thead className="bg-emerald-100 text-emerald-800">
                   <tr>
                     <th className="p-2 text-left">Item</th>
-                    <th className="p-2 text-left">Category</th>
-                    <th className="p-2 text-left">Condition</th>
-                    <th className="p-2 text-left">Unit</th>
                     <th className="p-2 text-right">Qty</th>
-                    <th className="p-2 text-right">Rate</th>
                     <th className="p-2 text-right">Amount</th>
                   </tr>
                 </thead>
@@ -955,115 +1129,55 @@ export default function Financial() {
                           {!it.isCustom ? (
                             <select
                               className="border p-1 rounded w-full"
-                              value={it.managerialItemId || ""}
+                              value={it.itemName || ""}
                               onChange={(e) =>
                                 handleItemChange(
                                   type,
                                   idx,
                                   "itemSelect",
-                                  e.target.value
+                                  e.target.value,
                                 )
                               }
                             >
                               <option value="">Select item</option>
-                              {managerialItems.map((m) => (
-                                <option key={m._id} value={m._id}>
-                                  {m.name}
+                              {purchaseItemOptions.map((name, optIdx) => (
+                                <option key={`${name}-${optIdx}`} value={name}>
+                                  {name}
                                 </option>
                               ))}
-                              <option value="__OTHER__">Other...</option>
+                              <option value={OTHER_OPTION}>Other</option>
                             </select>
                           ) : (
-                            <div className="space-y-1">
+                            <div className="flex items-center gap-2">
                               <input
                                 type="text"
                                 className="border p-1 rounded w-full"
-                                placeholder="Type item name"
+                                placeholder="Enter new item"
                                 value={it.itemName}
                                 onChange={(e) =>
                                   handleItemChange(
                                     type,
                                     idx,
                                     "itemName",
-                                    e.target.value
+                                    e.target.value,
                                   )
                                 }
                               />
                               <button
                                 type="button"
-                                className="text-[10px] text-emerald-700 hover:underline"
                                 onClick={() =>
-                                  handleItemChange(type, idx, "itemSelect", "")
+                                  handleItemChange(
+                                    type,
+                                    idx,
+                                    "itemSelect",
+                                    "",
+                                  )
                                 }
+                                className="px-2 py-1 text-[10px] rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
                               >
-                                Choose from list
+                                List
                               </button>
                             </div>
-                          )}
-                        </td>
-                        <td className="p-2">
-                          {it.isCustom ? (
-                            <select
-                              className="border p-1 rounded w-full"
-                              value={it.category}
-                              onChange={(e) =>
-                                handleItemChange(
-                                  type,
-                                  idx,
-                                  "category",
-                                  e.target.value
-                                )
-                              }
-                            >
-                              <option value="">Select</option>
-                              {CATEGORY_OPTIONS.map((c) => (
-                                <option key={c} value={c}>
-                                  {c}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="text-gray-700">{it.category || "-"}</span>
-                          )}
-                        </td>
-                        <td className="p-2">
-                          <select
-                            className="border p-1 rounded w-full"
-                            value={it.condition}
-                            onChange={(e) =>
-                              handleItemChange(
-                                type,
-                                idx,
-                                "condition",
-                                e.target.value
-                              )
-                            }
-                          >
-                            <option value="">Select</option>
-                            {CONDITION_OPTIONS.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="p-2">
-                          {it.isCustom ? (
-                            <input
-                              type="text"
-                              className="border p-1 rounded w-full"
-                              value={it.unit || "Nos"}
-                              onChange={(e) =>
-                                handleItemChange(
-                                  type,
-                                  idx,
-                                  "unit",
-                                  e.target.value
-                                )
-                              }
-                            />
-                          ) : (
-                            <span className="text-gray-700">{it.unit || "Nos"}</span>
                           )}
                         </td>
                         <td className="p-2">
@@ -1078,7 +1192,7 @@ export default function Financial() {
                                 type,
                                 idx,
                                 "quantity",
-                                e.target.value
+                                e.target.value,
                               )
                             }
                           />
@@ -1095,18 +1209,20 @@ export default function Financial() {
                                 type,
                                 idx,
                                 "rate",
-                                e.target.value
+                                e.target.value,
                               )
                             }
                           />
                         </td>
-                        <td className="p-2 text-right">{Math.round(lineAmount)}</td>
+                        <td className="p-2 text-right">
+                          {Math.round(lineAmount)}
+                        </td>
                       </tr>
                     );
                   })}
                   {items.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="text-center text-gray-400 p-3">
+                      <td colSpan={4} className="text-center text-gray-400 p-3">
                         No items added
                       </td>
                     </tr>
@@ -1131,7 +1247,7 @@ export default function Financial() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full table-fixed text-xs">
                 <thead className="bg-emerald-100 text-emerald-800">
                   <tr>
                     <th className="p-2 text-left">Brand</th>
@@ -1140,40 +1256,56 @@ export default function Financial() {
                     <th className="p-2 text-right">Qty</th>
                     <th className="p-2 text-right">Unit Weight (kg)</th>
                     <th className="p-2 text-right">Net Weight (kg)</th>
-                    <th className="p-2 text-right">Rate</th>
                     <th className="p-2 text-right">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((it, idx) => {
                     const lineAmount = computeLineAmount(it);
-                    const product = products.find((p) => String(p._id) === String(it.productTypeId));
-                    const tonKg = Number(product?.conversionFactors?.Ton || 1000) || 1000;
+                    const product = products.find(
+                      (p) => String(p._id) === String(it.productTypeId),
+                    );
+                    const tonKg =
+                      Number(product?.conversionFactors?.Ton || 1000) || 1000;
 
                     // Stock-aware product options for SALE
                     let productOptions = products;
                     let brandOptions = [];
                     if (type === "SALE" && stockBalances.length) {
-                      const availableIds = new Set(
-                        stockBalances
-                          .filter((b) => Number(b.balanceKg || 0) > 0)
-                          .map((b) => b.productTypeId)
+                      // Only consider rows that represent finished products (exclude Unprocessed Paddy / null productTypeId).
+                      const inStockRows = stockBalances.filter(
+                        (b) =>
+                          b &&
+                          b.productTypeId &&
+                          Number(b.balanceKg || 0) > 0 &&
+                          String(b.productTypeName || "")
+                            .toLowerCase()
+                            .trim() !== "unprocessed paddy",
                       );
-                      const availableProducts = products.filter((p) =>
-                        availableIds.has(p._id)
-                      );
+
+                      // Brands come from stock rows (companyName is used as brand/trademark in /stock/current).
                       brandOptions = Array.from(
                         new Set(
-                          availableProducts.map((p) => p.brand).filter(Boolean)
-                        )
+                          inStockRows
+                            .map((r) => String(r.companyName || "").trim())
+                            .filter(Boolean),
+                        ),
                       ).sort();
-                      if (it.brand) {
-                        productOptions = availableProducts.filter(
-                          (p) => p.brand === it.brand
-                        );
-                      } else {
-                        productOptions = availableProducts;
-                      }
+
+                      const selectedBrand = String(it.brand || "").trim();
+                      const allowedIds = new Set(
+                        inStockRows
+                          .filter((r) =>
+                            selectedBrand ? String(r.companyName || "").trim() === selectedBrand : true,
+                          )
+                          .map((r) => String(r.productTypeId)),
+                      );
+
+                      const availableProducts = products.filter((p) =>
+                        allowedIds.has(String(p._id)),
+                      );
+
+                      productOptions = availableProducts;
                     }
 
                     const balance =
@@ -1189,8 +1321,8 @@ export default function Financial() {
                       it.rateType === "per_kg"
                         ? "kg"
                         : it.rateType === "per_ton"
-                        ? "ton"
-                        : "bags";
+                          ? "ton"
+                          : "bags";
                     const suggestedQty =
                       exceeds && unitKg
                         ? Math.max(0, Math.floor(balance / unitKg))
@@ -1212,7 +1344,12 @@ export default function Financial() {
                               className="border p-1 rounded w-full"
                               value={it.brand}
                               onChange={(e) =>
-                                handleItemChange(type, idx, "brand", e.target.value)
+                                handleItemChange(
+                                  type,
+                                  idx,
+                                  "brand",
+                                  e.target.value,
+                                )
                               }
                             >
                               <option value="">Select brand</option>
@@ -1231,7 +1368,12 @@ export default function Financial() {
                             className="border p-1 rounded w-full"
                             value={it.productTypeId}
                             onChange={(e) =>
-                              handleItemChange(type, idx, "productTypeId", e.target.value)
+                              handleItemChange(
+                                type,
+                                idx,
+                                "productTypeId",
+                                e.target.value,
+                              )
                             }
                           >
                             <option value="">
@@ -1251,12 +1393,19 @@ export default function Financial() {
                             className="border p-1 rounded w-full"
                             value={it.rateType}
                             onChange={(e) =>
-                              handleItemChange(type, idx, "rateType", e.target.value)
+                              handleItemChange(
+                                type,
+                                idx,
+                                "rateType",
+                                e.target.value,
+                              )
                             }
                           >
                             <option value="per_kg">Per Kg</option>
                             <option value="per_bag">Per Bag</option>
-                            {canShowPerTon && <option value="per_ton">Per Ton</option>}
+                            {canShowPerTon && (
+                              <option value="per_ton">Per Ton</option>
+                            )}
                           </select>
                         </td>
                         <td className="p-2">
@@ -1270,11 +1419,16 @@ export default function Financial() {
                               it.rateType === "per_kg"
                                 ? "KG"
                                 : it.rateType === "per_ton"
-                                ? "Ton"
-                                : "Bags"
+                                  ? "Ton"
+                                  : "Bags"
                             }
                             onChange={(e) =>
-                              handleItemChange(type, idx, "numBags", e.target.value)
+                              handleItemChange(
+                                type,
+                                idx,
+                                "numBags",
+                                e.target.value,
+                              )
                             }
                           />
                           {exceeds && suggestedQty !== null && (
@@ -1292,14 +1446,19 @@ export default function Financial() {
                             value={it.perBagWeightKg}
                             readOnly={perBagReadOnly}
                             onChange={(e) =>
-                              handleItemChange(type, idx, "perBagWeightKg", e.target.value)
+                              handleItemChange(
+                                type,
+                                idx,
+                                "perBagWeightKg",
+                                e.target.value,
+                              )
                             }
                           />
                         </td>
                         <td className="p-2">
                           <input
                             type="number"
-                            step="0.001"
+                            step="1"
                             className={`border p-1 rounded w-full text-right bg-gray-50 ${exceeds ? "border-red-500" : ""}`}
                             value={it.netWeightKg}
                             readOnly
@@ -1307,35 +1466,20 @@ export default function Financial() {
                           {type === "SALE" && it.brand && it.productTypeId && (
                             <div className="mt-1 text-[10px] text-gray-500 text-right">
                               {balance != null
-                                ? `Available: ${balance.toFixed(3)} kg in stock`
+                                ? `Available: ${Math.round(balance)} kg in stock`
                                 : "No stock info"}
                             </div>
                           )}
                         </td>
-                        <td className="p-2">
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            className="border p-1 rounded w-full text-right"
-                            value={it.rate}
-                            onChange={(e) =>
-                              handleItemChange(
-                                type,
-                                idx,
-                                "rate",
-                                e.target.value.replace(/\D/g, "")
-                              )
-                            }
-                          />
+                        <td className="p-2 text-right">
+                          {Math.round(lineAmount)}
                         </td>
-                        <td className="p-2 text-right">{Math.round(lineAmount)}</td>
                       </tr>
                     );
                   })}
                   {items.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="text-center text-gray-400 p-3">
+                      <td colSpan={7} className="text-center text-gray-400 p-3">
                         No items added
                       </td>
                     </tr>
@@ -1346,9 +1490,10 @@ export default function Financial() {
           </div>
         )}
 
-        {/* Payment section AFTER items */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-          <div className="col-span-1 md:col-span-2">
+        {/* Payment section AFTER items (SALE only) */}
+        {type === "SALE" && (
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 items-end">
+          <div className="col-span-1 lg:col-span-2">
             <label className="text-xs text-gray-600">Payment Status</label>
             <div className="flex items-center gap-4 mt-1 text-sm">
               <label className="inline-flex items-center gap-1">
@@ -1390,7 +1535,7 @@ export default function Financial() {
             </div>
           </div>
 
-          <div className="col-span-1 md:col-span-1">
+          <div className="col-span-1 lg:col-span-1">
             <label className="text-xs text-gray-600">Payment Method</label>
             <select
               className="w-full border p-2 rounded text-sm"
@@ -1405,7 +1550,7 @@ export default function Financial() {
             </select>
           </div>
 
-          <div className="col-span-1 md:col-span-1">
+          <div className="col-span-1 lg:col-span-1">
             <label className="text-xs text-gray-600 flex items-center gap-1">
               Due Date
               {form.paymentStatus !== "PAID" && (
@@ -1423,40 +1568,47 @@ export default function Financial() {
             />
           </div>
 
-          <div className="col-span-1 md:col-span-1">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div className="col-span-1 lg:col-span-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div>
                 <label className="text-xs text-gray-600">Total Amount</label>
-                <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
+                <div className="w-full min-w-[120px] border p-2 rounded text-sm bg-gray-50 text-right whitespace-nowrap">
                   Rs. {Math.round(total)}
                 </div>
               </div>
               <div>
-                <label className="text-xs text-gray-600">Amount Paid (Rs)</label>
+                <label className="text-xs text-gray-600">
+                  Amount Paid (Rs)
+                </label>
                 <input
                   type="number"
                   min="0"
                   step="1"
-                  className="w-full border p-2 rounded text-sm text-right"
-                  value={form.partialPaid}
+                  className={`w-full min-w-[140px] border p-2 rounded text-sm text-right ${
+                    isPartial ? "" : "bg-gray-50 text-gray-600"
+                  }`}
+                  value={isPartial ? form.partialPaid : String(paidComputed)}
                   onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, "");
+                    if (!isPartial) return;
+                    const digits = clampAmountDigits(e.target.value);
                     const capped = digits
                       ? String(Math.min(Number(digits), Math.round(total)))
                       : "";
                     handleFormChange(type, "partialPaid", capped);
                   }}
+                  disabled={!isPartial}
                 />
               </div>
               <div>
                 <label className="text-xs text-gray-600">Remaining (Rs)</label>
-                <div className="w-full border p-2 rounded text-sm bg-gray-50 text-right">
-                  Rs. {Math.round(partialRemaining)}
+                <div className="w-full min-w-[120px] border p-2 rounded text-sm bg-gray-50 text-right whitespace-nowrap">
+                  Rs. {Math.round(remainingComputed)}
                 </div>
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        )}
 
         {/* Buttons */}
         <div className="flex items-center justify-between">
@@ -1484,10 +1636,10 @@ export default function Financial() {
                   ? "Updating..."
                   : "Update Transaction"
                 : working
-                ? "Saving..."
-                : type === "PURCHASE"
-                ? "Save Purchase"
-                : "Save Sale"}
+                  ? "Saving..."
+                  : type === "PURCHASE"
+                    ? "Save Purchase"
+                    : "Save Sale"}
             </button>
           </div>
         </div>
@@ -1500,6 +1652,7 @@ export default function Financial() {
     const total = type === "PURCHASE" ? purchaseTotal : saleTotal;
     const page = type === "PURCHASE" ? purchasePage : salePage;
     const loading = type === "PURCHASE" ? purchaseLoading : saleLoading;
+    const colCount = type === "PURCHASE" ? 5 : 9;
 
     const totalPages = totalPagesFor(total);
 
@@ -1538,10 +1691,25 @@ export default function Financial() {
               <tr>
                 <th className="p-2 text-left">Date</th>
                 <th className="p-2 text-left">Invoice #</th>
-                <th className="p-2 text-left">Customer</th>
-                <th className="p-2 text-right">Items</th>
-                <th className="p-2 text-right">Total Amount</th>
-                <th className="p-2 text-left">Payment</th>
+                {type === "SALE" && (
+                  <th className="p-2 text-left">Customer</th>
+                )}
+                {type === "PURCHASE" && (
+                  <th className="p-2 text-center">View Items</th>
+                )}
+                <th className="p-2 text-center">Items</th>
+                {type === "SALE" && (
+                  <th className="p-2 text-right">Total Amount</th>
+                )}
+                {type === "SALE" && (
+                  <th className="p-2 text-right">Amount Paid</th>
+                )}
+                {type === "SALE" && (
+                  <th className="p-2 text-right">Remaining</th>
+                )}
+                {type === "SALE" && (
+                  <th className="p-2 text-left">Payment</th>
+                )}
                 <th className="p-2 text-left">Actions</th>
               </tr>
             </thead>
@@ -1550,71 +1718,163 @@ export default function Financial() {
                 const dateStr = t.date
                   ? new Date(t.date).toLocaleDateString()
                   : "-";
+                const totalAmount = Number(t.totalAmount || 0);
+                const paidAmount =
+                  t.paymentStatus === "PAID"
+                    ? totalAmount
+                    : t.paymentStatus === "PARTIAL"
+                    ? Number(t.partialPaid || 0)
+                    : 0;
+                const remainingAmount =
+                  t.paymentStatus === "PAID"
+                    ? 0
+                    : Math.max(totalAmount - paidAmount, 0);
+                const isExpanded =
+                  type === "PURCHASE" && expandedPurchases.has(t._id);
                 return (
-                  <tr key={t._id} className="border-t hover:bg-gray-50">
-                    <td className="p-2">{dateStr}</td>
-                    <td className="p-2">{t.invoiceNo}</td>
-                    <td className="p-2">{t.companyName}</td>
-                    <td className="p-2 text-right">{t.items?.length || 0}</td>
-                    <td className="p-2 text-right">
-                      {Math.round(t.totalAmount || 0)}
-                    </td>
-                    <td className="p-2">
-                      <div className="flex flex-col gap-0.5">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                            t.paymentStatus === "PAID"
-                              ? "bg-emerald-100 text-emerald-700"
-                              : t.paymentStatus === "PARTIAL"
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-rose-100 text-rose-700"
-                          }`}
-                        >
-                          {t.paymentStatus}
-                        </span>
-                        <span className="text-[10px] text-gray-500">
-                          {t.paymentMethod || "CASH"}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="p-2">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleEdit(type, t)}
-                          className="text-blue-500 hover:text-blue-700"
-                          title="Edit"
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                        <button
-                          onClick={() => openPrintDialog(t)}
-                          className="text-emerald-600 hover:text-emerald-800"
-                          title="Print"
-                        >
-                          <Printer size={14} />
-                        </button>
-                        <button
-                          onClick={() => openDeleteDialog(t)}
-                          className="text-red-500 hover:text-red-700"
-                          title="Delete"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                  <React.Fragment key={t._id}>
+                    <tr className="border-t hover:bg-gray-50">
+                      <td className="p-2">{dateStr}</td>
+                      <td className="p-2">{t.invoiceNo}</td>
+                    {type === "SALE" && (
+                      <td className="p-2">{t.companyName}</td>
+                    )}
+                      {type === "PURCHASE" && (
+                        <td className="p-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedPurchases((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(t._id)) next.delete(t._id);
+                                else next.add(t._id);
+                                return next;
+                              })
+                            }
+                            className="px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+                            title="View items"
+                          >
+                            {isExpanded ? "Hide" : "View"}
+                          </button>
+                        </td>
+                      )}
+                      <td className="p-2 text-center">{t.items?.length || 0}</td>
+                      {type === "SALE" && (
+                        <td className="p-2 text-right">
+                          {Math.round(totalAmount)}
+                        </td>
+                      )}
+                      {type === "SALE" && (
+                        <td className="p-2 text-right">
+                          {Math.round(paidAmount)}
+                        </td>
+                      )}
+                      {type === "SALE" && (
+                        <td className="p-2 text-right">
+                          {Math.round(remainingAmount)}
+                        </td>
+                      )}
+                      {type === "SALE" && (
+                        <td className="p-2">
+                          <div className="flex flex-col gap-0.5">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                t.paymentStatus === "PAID"
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : t.paymentStatus === "PARTIAL"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-rose-100 text-rose-700"
+                              }`}
+                            >
+                              {t.paymentStatus}
+                            </span>
+                            <span className="text-[10px] text-gray-500">
+                              {t.paymentMethod || "CASH"}
+                            </span>
+                          </div>
+                        </td>
+                      )}
+                      <td className="p-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleEdit(type, t)}
+                            className="text-blue-500 hover:text-blue-700"
+                            title="Edit"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button
+                            onClick={() => openPrintDialog(t)}
+                            className="text-emerald-600 hover:text-emerald-800"
+                            title="Print"
+                          >
+                            <Printer size={14} />
+                          </button>
+                          <button
+                            onClick={() => openDeleteDialog(t)}
+                            className="text-red-500 hover:text-red-700"
+                            title="Delete"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {type === "PURCHASE" && isExpanded && (
+                      <tr className="bg-gray-50/60">
+                        <td colSpan={colCount} className="p-3">
+                          <div className="overflow-x-auto rounded border border-gray-200 bg-white">
+                            <table className="min-w-[520px] w-full text-xs">
+                              <thead className="bg-emerald-50 text-emerald-800">
+                                <tr>
+                                  <th className="p-2 text-left">Item</th>
+                                  <th className="p-2 text-right">Qty</th>
+                                  <th className="p-2 text-right">Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(t.items || []).map((it, i) => (
+                                  <tr key={i} className="border-t">
+                                    <td className="p-2">
+                                      {it.itemName || "-"}
+                                    </td>
+                                    <td className="p-2 text-right">
+                                      {Number(it.quantity || 0)}
+                                    </td>
+                                    <td className="p-2 text-right">
+                                      {Math.round(Number(it.amount || 0))}
+                                    </td>
+                                  </tr>
+                                ))}
+                                {(t.items || []).length === 0 && (
+                                  <tr>
+                                    <td
+                                      colSpan={3}
+                                      className="p-3 text-center text-gray-400"
+                                    >
+                                      No items
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
               {list.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={7} className="text-center text-gray-400 p-3">
+                  <td colSpan={colCount} className="text-center text-gray-400 p-3">
                     No transactions found
                   </td>
                 </tr>
               )}
               {loading && (
                 <tr>
-                  <td colSpan={7} className="text-center text-gray-400 p-3">
+                  <td colSpan={colCount} className="text-center text-gray-400 p-3">
                     Loading...
                   </td>
                 </tr>
@@ -1644,16 +1904,8 @@ export default function Financial() {
       <style>{printStyles}</style>
       <Toaster position="top-center" />
 
-      {/* Title */}
-      <div>
-        <h2 className="text-3xl font-bold text-emerald-900">Sales &amp; Procurement</h2>
-        <p className="text-gray-500 text-sm">
-          Manage sale and purchase invoices linked with master data and stock.
-        </p>
-      </div>
-
       {/* Tabs */}
-      <div className="flex flex-wrap gap-2 border-b border-gray-200 mt-4">
+      <div className="flex flex-wrap gap-2 border-b border-emerald-200">
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -1786,7 +2038,11 @@ export default function Financial() {
                 const expected = settings.adminPin || "0000";
                 if (entered === expected) {
                   setPurchaseDateUnlocked(true);
-                  setPurchaseDatePinDialog({ open: false, pin: "", pinError: "" });
+                  setPurchaseDatePinDialog({
+                    open: false,
+                    pin: "",
+                    pinError: "",
+                  });
                 } else {
                   setPurchaseDatePinDialog((p) => ({
                     ...p,
@@ -1805,7 +2061,11 @@ export default function Financial() {
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() =>
-                  setPurchaseDatePinDialog({ open: false, pin: "", pinError: "" })
+                  setPurchaseDatePinDialog({
+                    open: false,
+                    pin: "",
+                    pinError: "",
+                  })
                 }
                 className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
               >
@@ -1917,34 +2177,38 @@ export default function Financial() {
                   <span className="font-semibold">Type: </span>
                   {printTxn.type}
                 </div>
-                <div>
-                  <span className="font-semibold">Customer: </span>
-                  {printTxn.companyName}
-                </div>
-              </div>
-              <div className="flex justify-between mt-1">
-                <div>
-                  <span className="font-semibold">Payment: </span>
-                  {printTxn.paymentStatus}
-                  {printTxn.paymentMethod && (
-                    <span className="ml-1 text-gray-500">
-                      ({printTxn.paymentMethod})
-                    </span>
-                  )}
-                </div>
-                {printTxn.dueDate && (
+                {printTxn.type !== "PURCHASE" && (
                   <div>
-                    <span className="font-semibold">Due Date: </span>
-                    {new Date(printTxn.dueDate).toLocaleDateString()}
+                    <span className="font-semibold">Customer: </span>
+                    {printTxn.companyName}
                   </div>
                 )}
               </div>
+              {printTxn.type !== "PURCHASE" && (
+                <div className="flex justify-between mt-1">
+                  <div>
+                    <span className="font-semibold">Payment: </span>
+                    {printTxn.paymentStatus}
+                    {printTxn.paymentMethod && (
+                      <span className="ml-1 text-gray-500">
+                        ({printTxn.paymentMethod})
+                      </span>
+                    )}
+                  </div>
+                  {printTxn.dueDate && (
+                    <div>
+                      <span className="font-semibold">Due Date: </span>
+                      {new Date(printTxn.dueDate).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="border rounded mb-3 overflow-hidden">
               {(() => {
                 const printHasManagerial = (printTxn.items || []).some(
-                  (it) => it.itemName || it.isManagerial
+                  (it) => it.itemName || it.isManagerial,
                 );
                 return (
                   <table className="w-full text-[11px]">
@@ -1959,6 +2223,7 @@ export default function Financial() {
                         </tr>
                       ) : (
                         <tr>
+                          <th className="p-1 text-left">Brand</th>
                           <th className="p-1 text-left">Product</th>
                           <th className="p-1 text-right">Qty</th>
                           <th className="p-1 text-right">Unit (kg)</th>
@@ -1975,26 +2240,53 @@ export default function Financial() {
                             <>
                               <td className="p-1">{it.itemName || "-"}</td>
                               <td className="p-1 text-right">{it.quantity}</td>
-                              <td className="p-1 text-right">{it.unit || "Nos"}</td>
+                              <td className="p-1 text-right">
+                                {it.unit || "Nos"}
+                              </td>
                               <td className="p-1 text-right">{it.rate}</td>
-                              <td className="p-1 text-right">{Math.round(it.amount || 0)}</td>
+                              <td className="p-1 text-right">
+                                {Math.round(it.amount || 0)}
+                              </td>
                             </>
                           ) : (
                             <>
+                              <td className="p-1">
+                                {it.brand ||
+                                  products.find(
+                                    (p) =>
+                                      String(p._id) ===
+                                      String(it.productTypeId),
+                                  )?.brand ||
+                                  "-"}
+                              </td>
                               <td className="p-1">{it.productTypeName}</td>
                               <td className="p-1 text-right">{it.numBags}</td>
-                              <td className="p-1 text-right">{it.perBagWeightKg}</td>
-                              <td className="p-1 text-right">{it.netWeightKg}</td>
                               <td className="p-1 text-right">
-                                {it.rate} / {it.rateType === "per_bag" ? "bag" : it.rateType === "per_ton" ? "ton" : "kg"}
+                                {it.perBagWeightKg}
                               </td>
-                              <td className="p-1 text-right">{Math.round(it.amount || 0)}</td>
+                              <td className="p-1 text-right">
+                                {it.netWeightKg}
+                              </td>
+                              <td className="p-1 text-right">
+                                {it.rate} /{" "}
+                                {it.rateType === "per_bag"
+                                  ? "bag"
+                                  : it.rateType === "per_ton"
+                                    ? "ton"
+                                    : "kg"}
+                              </td>
+                              <td className="p-1 text-right">
+                                {Math.round(it.amount || 0)}
+                              </td>
                             </>
                           )}
                         </tr>
                       ))}
                       <tr className="border-t bg-emerald-50">
-                        <td className="p-1 text-right font-semibold" colSpan={printHasManagerial ? 4 : 5}>
+                        <td
+                          className="p-1 text-right font-semibold"
+                          colSpan={printHasManagerial ? 4 : 6}
+                        >
                           Total
                         </td>
                         <td className="p-1 text-right font-semibold">
@@ -2006,13 +2298,6 @@ export default function Financial() {
                 );
               })()}
             </div>
-            {printTxn.remarks && (
-              <div className="text-[11px] text-gray-600 mb-3">
-                <span className="font-semibold">Remarks: </span>
-                {printTxn.remarks}
-              </div>
-            )}
-
             <div className="flex justify-end gap-2 print:hidden">
               <button
                 type="button"
@@ -2035,6 +2320,100 @@ export default function Financial() {
           </div>
         </div>
       )}
+
+      <AddOptionModal
+        open={quickCustomerModal}
+        title="Add New Customer"
+        subtitle="This customer will be available immediately in the dropdown."
+        onClose={closeQuickCustomerModal}
+        onSubmit={saveQuickCustomer}
+        submitLabel="Add Customer"
+        loading={quickCustomerSaving}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <label className="block text-xs text-gray-600 mb-1">Customer Name *</label>
+            <input
+              type="text"
+              className={`w-full rounded px-3 py-2 text-sm border ${
+                quickCustomerTouched.name && quickCustomerErrors.name
+                  ? "border-red-400 bg-red-50"
+                  : "border-gray-300"
+              }`}
+              value={quickCustomer.name}
+              placeholder="Customer Name *"
+              onChange={(e) => handleQuickCustomerChange("name", e.target.value)}
+            />
+            {quickCustomerTouched.name && quickCustomerErrors.name ? (
+              <p className="mt-1 text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle size={12} />
+                {quickCustomerErrors.name} ({quickCustomer.name.length}/{QUICK_CUSTOMER_LIMITS.name})
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Phone (03XX-XXXXXXX) *</label>
+            <input
+              type="text"
+              className={`w-full rounded px-3 py-2 text-sm border ${
+                quickCustomerTouched.phone && quickCustomerErrors.phone
+                  ? "border-red-400 bg-red-50"
+                  : "border-gray-300"
+              }`}
+              value={quickCustomer.phone}
+              placeholder="Phone (03XX-XXXXXXX) *"
+              onChange={(e) => handleQuickCustomerChange("phone", e.target.value)}
+            />
+            {quickCustomerTouched.phone && quickCustomerErrors.phone ? (
+              <p className="mt-1 text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle size={12} />
+                {quickCustomerErrors.phone} ({quickCustomer.phone.length}/{QUICK_CUSTOMER_LIMITS.phone})
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Email *</label>
+            <input
+              type="email"
+              className={`w-full rounded px-3 py-2 text-sm border ${
+                quickCustomerTouched.email && quickCustomerErrors.email
+                  ? "border-red-400 bg-red-50"
+                  : "border-gray-300"
+              }`}
+              value={quickCustomer.email}
+              placeholder="Email *"
+              onChange={(e) => handleQuickCustomerChange("email", e.target.value)}
+            />
+            {quickCustomerTouched.email && quickCustomerErrors.email ? (
+              <p className="mt-1 text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle size={12} />
+                {quickCustomerErrors.email} ({quickCustomer.email.length}/{QUICK_CUSTOMER_LIMITS.email})
+              </p>
+            ) : null}
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-xs text-gray-600 mb-1">Address *</label>
+            <input
+              type="text"
+              className={`w-full rounded px-3 py-2 text-sm border ${
+                quickCustomerTouched.address && quickCustomerErrors.address
+                  ? "border-red-400 bg-red-50"
+                  : "border-gray-300"
+              }`}
+              value={quickCustomer.address}
+              placeholder="Address *"
+              onChange={(e) => handleQuickCustomerChange("address", e.target.value)}
+            />
+            {quickCustomerTouched.address && quickCustomerErrors.address ? (
+              <p className="mt-1 text-xs text-red-500 flex items-center gap-1">
+                <AlertCircle size={12} />
+                {quickCustomerErrors.address} ({quickCustomer.address.length}/{QUICK_CUSTOMER_LIMITS.address})
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </AddOptionModal>
+
     </div>
   );
 }

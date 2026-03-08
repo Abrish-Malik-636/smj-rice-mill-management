@@ -6,8 +6,8 @@ import {
   Home,
   Wallet,
   Box,
+  BarChart3,
   Settings,
-  BarChart2,
   Truck,
   Bell,
   User,
@@ -16,6 +16,11 @@ import {
   Menu,
   Lightbulb,
   ChevronDown,
+  HandCoins,
+  ChartNoAxesCombined,
+  BriefcaseBusiness,
+  ShieldAlert,
+  Bot,
 } from "lucide-react";
 
 const MENU = [
@@ -31,7 +36,7 @@ const MENU = [
   },
   {
     name: "Sales & Purchases",
-    icon: <Wallet size={18} />,
+    icon: <HandCoins size={18} />,
     path: "/financial",
     children: [
       { name: "Sales", path: "/financial?tab=sale" },
@@ -54,7 +59,7 @@ const MENU = [
   },
   {
     name: "Accounting & Finance",
-    icon: <Wallet size={18} />,
+    icon: <BriefcaseBusiness size={18} />,
     path: "/accounting-finance",
     children: [
       { name: "Day Book", path: "/accounting-finance?tab=daybook" },
@@ -63,13 +68,33 @@ const MENU = [
       { name: "Expenses Report", path: "/accounting-finance?tab=expenses" },
       { name: "Profit & Loss", path: "/accounting-finance?tab=pl" },
       { name: "Balance Sheet", path: "/accounting-finance?tab=balance" },
+      { name: "Trial Balance", path: "/accounting-finance?tab=trial" },
+      { name: "Receivables", path: "/accounting-finance?tab=receivables" },
+      { name: "Payables", path: "/accounting-finance?tab=payables" },
       { name: "Party Ledger", path: "/accounting-finance?tab=party-ledger" },
+      { name: "Journal", path: "/accounting-finance?tab=journal" },
+      { name: "Accounts", path: "/accounting-finance?tab=accounts" },
     ],
   },
   {
-    name: "Reports & Analytics",
-    icon: <BarChart2 size={18} />,
+    name: "Reports",
+    icon: <ChartNoAxesCombined size={18} />,
     path: "/reports",
+    children: [
+      { name: "Stock Report", path: "/reports?tab=stock" },
+      { name: "Production Report", path: "/reports?tab=production" },
+      { name: "Sales Report", path: "/reports?tab=sales" },
+      { name: "Purchase Report", path: "/reports?tab=purchases" },
+      { name: "P&L", path: "/reports?tab=pl" },
+      { name: "Trial Balance", path: "/reports?tab=trial" },
+      { name: "Balance Sheet", path: "/reports?tab=balance" },
+      { name: "Receivables", path: "/reports?tab=receivables" },
+      { name: "Payables", path: "/reports?tab=payables" },
+      { name: "Day Book", path: "/reports?tab=daybook" },
+      { name: "Ledger", path: "/reports?tab=ledger" },
+      { name: "Customer Report", path: "/reports?tab=customers" },
+      { name: "Brand Report", path: "/reports?tab=brands" },
+    ],
   },
   {
     name: "HR & Payroll",
@@ -78,24 +103,13 @@ const MENU = [
   },
   {
     name: "Notifications & Alerts",
-    icon: <Bell size={18} />,
+    icon: <ShieldAlert size={18} />,
     path: "/notifications",
-  },
-  {
-    name: "AI Assistant",
-    icon: <Lightbulb className="w-5 h-5" />,
-    path: "/ai/suggestions",
   },
   {
     name: "System Settings",
     icon: <Settings size={18} />,
-    path: "/masterdata",
-    children: [
-      { name: "Customer Management", path: "/masterdata?tab=parties" },
-      { name: "Stock Management", path: "/masterdata?tab=stock" },
-      { name: "Expense Categories", path: "/masterdata?tab=expense" },
-      { name: "System Settings", path: "/masterdata?tab=system" },
-    ],
+    path: "/masterdata?tab=system",
   },
 ];
 
@@ -160,7 +174,9 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
             {/* MENU */}
             <nav className="px-2 py-4 space-y-1 overflow-y-auto no-scrollbar flex-1 min-h-0 scroll-smooth">
               {MENU.map((m) => {
-                const active = location.pathname === m.path;
+                const currentRoute = location.pathname + location.search;
+                const active =
+                  location.pathname === m.path || currentRoute === m.path;
                 const isExpanded = openMenu === m.name;
                 const hasChildren =
                   Array.isArray(m.children) && m.children.length > 0;
@@ -169,6 +185,7 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
                     {hasChildren ? (
                       <button
                         type="button"
+                        title={!isOpen ? m.name : ""}
                         onClick={() => {
                           setOpenMenu((prev) =>
                             prev === m.name ? null : m.name,
@@ -202,6 +219,7 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
                     ) : (
                       <Link
                         to={m.path}
+                        title={!isOpen ? m.name : ""}
                         onClick={() => {
                           if (window.innerWidth < 768 && isOpen)
                             toggleSidebar();
@@ -222,13 +240,13 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
 
                     {hasChildren && isOpen && (
                       <div
-                        className={`ml-6 mt-1 overflow-hidden rounded-lg border border-emerald-700/40 bg-emerald-900/40 transition-all duration-300 ${
+                        className={`ml-8 mt-1 overflow-hidden border-l border-emerald-400/40 pl-2 transition-all duration-300 ease-out ${
                           isExpanded
                             ? "max-h-96 opacity-100"
                             : "max-h-0 opacity-0"
                         }`}
                       >
-                        <div className="space-y-1 p-2">
+                        <div className="space-y-1 py-1">
                           {m.children.map((c) => {
                             const childActive =
                               location.pathname + location.search === c.path;
@@ -240,11 +258,11 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
                                   if (window.innerWidth < 768 && isOpen)
                                     toggleSidebar();
                                 }}
-                                className={`block px-3 py-2 rounded text-xs transition
+                                className={`block px-2.5 py-1.5 rounded-md text-xs transition
                                 ${
                                   childActive
-                                    ? "bg-emerald-600 text-white"
-                                    : "hover:bg-emerald-700 text-emerald-100"
+                                    ? "bg-emerald-600/90 text-white"
+                                    : "text-emerald-100 hover:bg-emerald-700/60"
                                 }
                               `}
                               >
@@ -263,12 +281,17 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
 
           {/* PROFILE */}
           <div className="px-3 py-4 border-t border-emerald-700 mt-auto">
-            <div
-              className={`flex items-center gap-3 ${isOpen ? "" : "flex-col"}`}
-            >
-              <div className="bg-emerald-600 p-1 rounded-full">
+          <div
+            className={`flex items-center gap-3 ${isOpen ? "" : "flex-col"}`}
+          >
+              <button
+                type="button"
+                className="bg-emerald-600 p-1 rounded-full"
+                onClick={() => navigate("/masterdata?tab=system")}
+                title="System Settings"
+              >
                 <User size={20} />
-              </div>
+              </button>
 
               {isOpen && (
                 <div>

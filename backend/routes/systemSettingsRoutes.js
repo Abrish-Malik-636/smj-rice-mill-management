@@ -10,6 +10,7 @@ const {
   restoreBackup,
   sendEmailOtp,
   verifyEmailOtp,
+  renameBrandEverywhere,
 } = require("../controllers/systemSettingsController");
 
 // Multer storage config (store in backend/uploads)
@@ -33,5 +34,6 @@ router.get("/backup", exportBackup); // download backup JSON
 router.post("/restore", upload.single("backup"), restoreBackup); // restore from JSON file
 router.post("/otp/send", sendEmailOtp);
 router.post("/otp/verify", verifyEmailOtp);
+router.post("/rename-brand", renameBrandEverywhere);
 
 module.exports = router;

@@ -32,19 +32,6 @@ const TransactionItemSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-    category: {
-      type: String,
-      trim: true,
-    },
-    condition: {
-      type: String,
-      trim: true,
-    },
-    unit: {
-      type: String,
-      trim: true,
-      default: "Nos",
-    },
     quantity: {
       type: Number,
       min: 0,
@@ -94,11 +81,9 @@ const TransactionSchema = new mongoose.Schema(
     companyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",
-      required: true,
     },
     companyName: {
       type: String,
-      required: true,
       trim: true,
     },
 
@@ -120,12 +105,6 @@ const TransactionSchema = new mongoose.Schema(
       default: null,
     },
 
-    remarks: {
-      type: String,
-      default: "",
-      trim: true,
-    },
-
     items: {
       type: [TransactionItemSchema],
       validate: {
@@ -143,6 +122,19 @@ const TransactionSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+
+    // Gate pass usage:
+    // - PURCHASE invoice -> Gate Pass IN (optional)
+    // - SALE invoice -> Gate Pass OUT (required)
+    gatePassUsed: {
+      type: Boolean,
+      default: false,
+    },
+    gatePassId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "GatePass",
+      default: null,
     },
   },
   { timestamps: true }

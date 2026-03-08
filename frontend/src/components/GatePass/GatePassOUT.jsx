@@ -7,15 +7,13 @@ import DataTable from "../ui/DataTable";
 export default function GatePassOUT() {
   const [companies, setCompanies] = useState([]);
   const [salesInvoices, setSalesInvoices] = useState([]);
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
   const [form, setForm] = useState({
     truckNo: "",
     customer: "",
-    transporter: "",
     driverName: "",
     driverContact: "",
     freightCharges: "",
-    remarks: "",
   });
 
   const [errors, setErrors] = useState({});
@@ -64,10 +62,10 @@ export default function GatePassOUT() {
   };
 
   const validateDriverName = (v) =>
-    !v ? "" : nameRegex.test(v) ? "" : "Driver name: letters and spaces only.";
+    !v ? "Driver name is required." : nameRegex.test(v) ? "" : "Driver name: letters and spaces only.";
 
   const validateDriverContact = (v) => {
-    if (!v) return "";
+    if (!v) return "Driver contact is required.";
     if (!contactRegex.test(v)) return "Format: 03XX-XXXXXXX (11 digits)";
     return "";
   };
@@ -78,6 +76,7 @@ export default function GatePassOUT() {
     if (name === "customer") msg = validateCustomer(value);
     if (name === "driverName") msg = validateDriverName(value);
     if (name === "driverContact") msg = validateDriverContact(value);
+    if (name === "freightCharges") msg = value ? "" : "Freight charges are required.";
     if (msg) setFieldError(name, msg);
     else clearFieldError(name);
   };
@@ -87,16 +86,15 @@ export default function GatePassOUT() {
     const e2 = validateCustomer(form.customer);
     const e3 = validateDriverName(form.driverName);
     const e4 = validateDriverContact(form.driverContact);
+    const e5 = form.freightCharges ? "" : "Freight charges are required.";
 
     const newErr = {};
     if (e1) newErr.truckNo = e1;
     if (e2) newErr.customer = e2;
     if (e3) newErr.driverName = e3;
     if (e4) newErr.driverContact = e4;
+    if (e5) newErr.freightCharges = e5;
 
-    if (!selectedInvoiceId) {
-      newErr.invoiceId = "Invoice is required.";
-    }
     setErrors(newErr);
     if (Object.keys(newErr).length > 0) {
       const firstKey = Object.keys(newErr)[0];
@@ -152,17 +150,18 @@ export default function GatePassOUT() {
     loadCompanies();
   }, []);
 
+  const fetchInvoices = async () => {
+    try {
+      const res = await api.get("/transactions", {
+        params: { type: "SALE", limit: 5000, skip: 0 },
+      });
+      setSalesInvoices(res.data?.data || []);
+    } catch {}
+  };
+
   // Load sales invoices
   useEffect(() => {
-    const loadInvoices = async () => {
-      try {
-        const res = await api.get("/transactions", {
-          params: { type: "SALE", limit: 500, skip: 0 },
-        });
-        setSalesInvoices(res.data?.data || []);
-      } catch {}
-    };
-    loadInvoices();
+    fetchInvoices();
   }, []);
 
   // Fetch rows
@@ -190,20 +189,9 @@ export default function GatePassOUT() {
     // eslint-disable-next-line
   }, []);
 
-  const normalizeType = (value) => {
-    if (!value) return "";
-    const trimmed = String(value).trim();
-    if (/^both/i.test(trimmed)) return "Both";
-    if (/^all/i.test(trimmed)) return "All";
-    return trimmed;
-  };
-
-  const transporterOptions = companies.filter((c) => {
-    const t = normalizeType(c.type);
-    return t === "Transporter" || t === "Both" || t === "All";
-  });
-  const filteredInvoices = salesInvoices;
-  const filteredTransporterOptions = transporterOptions;
+  const filteredInvoices = (salesInvoices || []).filter(
+    (inv) => !inv?.gatePassUsed || selectedInvoiceIds.includes(String(inv?._id))
+  );
 
   // Handlers
   const handleChange = (e) => {
@@ -226,16 +214,7 @@ export default function GatePassOUT() {
     validateField(name, v);
   };
 
-  const handleInvoiceChange = (id) => {
-    setSelectedInvoiceId(id);
-    clearFieldError("invoiceId");
-    const invoice = salesInvoices.find((t) => t._id === id);
-    if (!invoice) return;
-    setForm((prev) => ({
-      ...prev,
-      customer: invoice.companyName || "",
-    }));
-  };
+  // invoice selection handled by <select multiple>
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -244,18 +223,28 @@ export default function GatePassOUT() {
       return;
     }
 
-    const invoice = salesInvoices.find((t) => t._id === selectedInvoiceId);
-    if (!invoice) {
-      toast.error("Select a valid invoice.");
+    const selectedInvoices = (selectedInvoiceIds || [])
+      .map((id) => salesInvoices.find((t) => String(t._id) === String(id)))
+      .filter(Boolean);
+    if (!selectedInvoices.length) {
+      toast.error("Select at least one invoice.");
+      return;
+    }
+    const companyNames = Array.from(
+      new Set(selectedInvoices.map((i) => String(i.companyName || "").trim()).filter(Boolean))
+    );
+    if (companyNames.length > 1) {
+      toast.error("Selected invoices must belong to the same customer.");
       return;
     }
 
     const payload = {
       ...form,
       type: "OUT",
-      invoiceId: invoice._id,
-      invoiceNo: invoice.invoiceNo,
-      items: (invoice.items || []).map((it) => ({
+      invoiceIds: selectedInvoices.map((i) => i._id),
+      invoiceId: selectedInvoices[0]?._id,
+      invoiceNo: selectedInvoices[0]?.invoiceNo,
+      items: selectedInvoices.flatMap((inv) => (inv?.items || [])).map((it) => ({
         itemType: it.productTypeName,
         stockType: "Production",
         customItemName: "",
@@ -272,7 +261,19 @@ export default function GatePassOUT() {
     try {
       const url = editingId ? `/gatepasses/${editingId}` : "/gatepasses";
       const method = editingId ? "put" : "post";
-      const res = await api[method](url, payload);
+      let res;
+      try {
+        res = await api[method](url, payload);
+      } catch (err) {
+        const status = err?.response?.status;
+        if (editingId && status === 404) {
+          // If the gate pass was deleted elsewhere, create a fresh one
+          res = await api.post("/gatepasses", payload);
+          setEditingId(null);
+        } else {
+          throw err;
+        }
+      }
       if (res.data && res.data.success === false)
         throw new Error(res.data.message || "Save failed");
       toast.success(editingId ? "Gate pass updated." : "Gate pass created.");
@@ -281,16 +282,15 @@ export default function GatePassOUT() {
       setForm({
         truckNo: "",
         customer: "",
-        transporter: "",
         driverName: "",
         driverContact: "",
         freightCharges: "",
-        remarks: "",
       });
-      setSelectedInvoiceId("");
+      setSelectedInvoiceIds([]);
       setEditingId(null);
       setErrors({});
       fetchRows();
+      fetchInvoices();
     } catch (err) {
       toast.error(err.message || "Unable to save.");
       document.getElementById("gatepass-out-form")?.scrollIntoView({
@@ -301,18 +301,22 @@ export default function GatePassOUT() {
   };
 
   const handleEdit = (row) => {
+    if (!row || !row._id) {
+      toast.error("Gate pass not found.");
+      return;
+    }
     setForm({
       truckNo: row.truckNo || "",
       customer: row.customer || "",
-      transporter: row.transporter || "",
       driverName: row.driverName || "",
       driverContact: row.driverContact || "",
       freightCharges: row.freightCharges ? String(row.freightCharges) : "",
-      remarks: row.remarks || "",
     });
 
-    setSelectedInvoiceId(row.invoiceId || "");
-    setForm((prev) => ({ ...prev, transporter: row.transporter || "" }));
+    const ids = Array.isArray(row.invoiceIds) && row.invoiceIds.length
+      ? row.invoiceIds
+      : (row.invoiceId ? [row.invoiceId] : []);
+    setSelectedInvoiceIds(ids.map((x) => String(x)));
 
     setEditingId(row._id);
     setErrors({});
@@ -412,7 +416,7 @@ export default function GatePassOUT() {
         .value{color:#111;font-weight:600;}
         table{width:100%;border-collapse:collapse;margin:12px 0;font-size:11px;}
         th{background:#f0fdf4;color:#065f46;padding:6px;border:1px solid #ddd;text-align:left;}
-        .remarks{font-size:11px;color:#6b7280;margin-top:12px;padding:8px;background:#f9fafb;border-radius:4px;}
+        .remarks{display:none;}
         .footer{margin-top:20px;font-size:10px;color:#9ca3af;text-align:center;border-top:1px solid #e5e7eb;padding-top:8px;}
       </style></head><body>
       <div class="header">
@@ -446,9 +450,6 @@ export default function GatePassOUT() {
         <div><span class="label">Contact:</span><span class="value">${
           row.driverContact || "-"
         }</span></div>
-        <div><span class="label">Transporter:</span><span class="value">${
-          row.transporter || "-"
-        }</span></div>
       </div>
 
       <table>
@@ -467,12 +468,6 @@ export default function GatePassOUT() {
         </tfoot>
       </table>
 
-      ${
-        row.remarks
-          ? `<div class="remarks"><strong>Remarks:</strong> ${row.remarks}</div>`
-          : ""
-      }
-      
       <div class="footer">
         <div>Authorized Signature: _________________</div>
         <div style="margin-top:4px;">Printed on ${new Date().toLocaleString()}</div>
@@ -517,7 +512,7 @@ export default function GatePassOUT() {
     {
       key: "totalAmount",
       label: "Amount",
-      render: (val) => (val != null ? Number(val).toFixed(2) : "0"),
+      render: (val) => (val != null ? Math.round(Number(val)) : "0"),
     },
     {
       key: "actions",
@@ -640,22 +635,53 @@ export default function GatePassOUT() {
           {/* Invoice */}
           <div id="field-invoiceId">
             <label className="block text-sm font-medium mb-1">
-              Invoice No <span className="text-red-500">*</span>
+              Invoice No
             </label>
             <select
-              value={selectedInvoiceId}
-              onChange={(e) => handleInvoiceChange(e.target.value)}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.invoiceId ? "border-red-500" : "border-gray-300"
-              }`}
+              multiple
+              value={selectedInvoiceIds}
+              onChange={(e) => {
+                const values = Array.from(e.target.selectedOptions || []).map((o) => o.value);
+                setSelectedInvoiceIds(values);
+                clearFieldError("invoiceId");
+              }}
+              className="hidden"
             >
-              <option value="">Select invoice</option>
+              <option value="" disabled>Select one or more invoices</option>
               {filteredInvoices.map((inv) => (
                 <option key={inv._id} value={inv._id}>
                   {inv.invoiceNo} — {inv.companyName}
                 </option>
               ))}
             </select>
+            <div className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${errors.invoiceId ? "border-red-500 bg-red-50" : "border-gray-300"}`}>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {filteredInvoices.map((inv) => {
+                  const id = String(inv._id);
+                  const checked = selectedInvoiceIds.includes(id);
+                  return (
+                    <label key={id} className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setSelectedInvoiceIds((prev) =>
+                            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+                          )
+                        }
+                      />
+                      <span className="text-xs text-gray-700">
+                        {inv.invoiceNo} - {inv.companyName}
+                        {inv.gatePassUsed && !checked ? " (USED)" : ""}
+                      </span>
+                    </label>
+                  );
+                })}
+                {filteredInvoices.length === 0 && (
+                  <div className="text-xs text-gray-500">No available invoices.</div>
+                )}
+              </div>
+            </div>
             {errors.invoiceId && (
               <p className="text-xs text-red-500 mt-1">{errors.invoiceId}</p>
             )}
@@ -686,11 +712,11 @@ export default function GatePassOUT() {
             <input
               name="customer"
               value={form.customer}
-              readOnly
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none bg-gray-50 ${
+              onChange={handleChange}
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
                 errors.customer ? "border-red-500" : "border-gray-300"
               }`}
-              placeholder="Auto from invoice"
+              placeholder="Enter customer"
             />
             {errors.customer && (
               <p className="text-xs text-red-500 mt-1">{errors.customer}</p>
@@ -700,7 +726,7 @@ export default function GatePassOUT() {
           {/* Driver Name */}
           <div id="field-driverName">
             <label className="block text-sm font-medium mb-1">
-              Driver Name
+              Driver Name <span className="text-red-500">*</span>
             </label>
             <input
               name="driverName"
@@ -719,7 +745,7 @@ export default function GatePassOUT() {
           {/* Driver Contact */}
           <div id="field-driverContact">
             <label className="block text-sm font-medium mb-1">
-              Driver Contact
+              Driver Contact <span className="text-red-500">*</span>
             </label>
             <input
               name="driverContact"
@@ -738,43 +764,23 @@ export default function GatePassOUT() {
             )}
           </div>
 
-          {/* Transporter */}
-          <div id="field-transporter">
-            <label className="block text-sm font-medium mb-1">
-              Transporter
-            </label>
-            <select
-              name="transporter"
-              value={form.transporter}
-              onChange={handleChange}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.transporter ? "border-red-500" : "border-gray-300"
-              }`}
-            >
-              <option value="">Select transporter</option>
-              {filteredTransporterOptions.map((t) => (
-                <option key={t._id} value={t.name}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            {errors.transporter && (
-              <p className="text-xs text-red-500 mt-1">{errors.transporter}</p>
-            )}
-          </div>
-
           {/* Freight Charges */}
-          <div>
+          <div id="field-freightCharges">
             <label className="block text-sm font-medium mb-1">
-              Freight Charges
+              Freight Charges <span className="text-red-500">*</span>
             </label>
             <input
               name="freightCharges"
               value={form.freightCharges}
               onChange={handleChange}
               placeholder="0"
-              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.freightCharges ? "border-red-500" : "border-gray-300"
+              }`}
             />
+            {errors.freightCharges && (
+              <p className="text-xs text-red-500 mt-1">{errors.freightCharges}</p>
+            )}
           </div>
         </div>
 
@@ -784,32 +790,24 @@ export default function GatePassOUT() {
             Invoice Items (read only)
           </h3>
           <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
-            {selectedInvoiceId ? (
+            {selectedInvoiceIds.length ? (
               <ul className="list-disc pl-5 space-y-1">
-                {(salesInvoices.find((t) => t._id === selectedInvoiceId)?.items || []).map(
+                {selectedInvoiceIds
+                  .map((id) => salesInvoices.find((t) => String(t._id) === String(id)))
+                  .filter(Boolean)
+                  .flatMap((inv) => inv.items || [])
+                  .map(
                   (it, i) => (
                     <li key={i}>
-                      {it.productTypeName} — {Number(it.netWeightKg || 0).toFixed(2)} kg
+                      {it.productTypeName} — {Math.round(Number(it.netWeightKg || 0))} kg
                     </li>
                   )
-                )}
+                  )}
               </ul>
             ) : (
-              <span>Select an invoice to see items.</span>
+              <span>Select invoice(s) to see items.</span>
             )}
           </div>
-        </div>
-
-        {/* Remarks */}
-        <div>
-          <label className="block text-sm font-medium mb-1">Remarks</label>
-          <textarea
-            name="remarks"
-            value={form.remarks}
-            onChange={handleChange}
-            rows={2}
-            className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-          />
         </div>
 
         {/* Submit Buttons */}
@@ -829,13 +827,11 @@ export default function GatePassOUT() {
                 setForm({
                   truckNo: "",
                   customer: "",
-                  transporter: "",
                   driverName: "",
                   driverContact: "",
                   freightCharges: "",
-                  remarks: "",
                 });
-                setSelectedInvoiceId("");
+                setSelectedInvoiceIds([]);
                 setErrors({});
               }}
               className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-xs"
@@ -853,6 +849,19 @@ export default function GatePassOUT() {
         idKey="_id"
         searchPlaceholder="Search gate passes..."
         emptyMessage={loading ? "Loading..." : "No gate passes found."}
+        deleteAll={{
+          description: "This will permanently delete ALL Gate Pass OUT records from the database.",
+          onConfirm: async (adminPin) => {
+            const res = await api.post("/admin/purge", {
+              adminPin,
+              key: "gatePasses",
+              filter: { type: "OUT" },
+            });
+            const deleted = res?.data?.data?.deletedCount ?? 0;
+            toast.success(`Deleted ${deleted} Gate Pass OUT records`);
+            fetchRows();
+          },
+        }}
       />
     </div>
   );

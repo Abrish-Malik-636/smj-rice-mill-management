@@ -1,11 +1,16 @@
 // backend/controllers/transactionController.js
 const mongoose = require("mongoose");
 const Transaction = require("../models/transactionModel");
+const GatePass = require("../models/gatePassModel");
 const Company = require("../models/companyModel");
 const ProductType = require("../models/productTypeModel");
 const SystemSettings = require("../models/systemSettingsModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ManagerialStock = require("../models/managerialStockModel");
+const {
+  postTransactionEntry,
+  reverseBySource,
+} = require("../services/accountingJournalService");
 
 async function ensureManagerialItem(item) {
   const name = item.itemName ? String(item.itemName).trim() : "";
@@ -27,24 +32,17 @@ async function ensureManagerialItem(item) {
  * Generate a UNIQUE invoice number.
  *
  * Uses SystemSettings invoicePrefix (default "INV-")
- * and type-specific postfix:
- *   - SALE:    INV-S-YYYYMMDD-HHMMSS-1234
- *   - PURCHASE:INV-P-YYYYMMDD-HHMMSS-5678
+ * and compact type/date token:
+ *   - SALE:    INV-S-YYMMDD-AB12CD
+ *   - PURCHASE:INV-P-YYMMDD-EF34GH
  *
  * We also check DB a few times to avoid collisions.
  */
-function buildInvoiceString(prefix) {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const YYYY = d.getFullYear();
-  const MM = pad(d.getMonth() + 1);
-  const DD = pad(d.getDate());
-  const HH = pad(d.getHours());
-  const mm = pad(d.getMinutes());
-  const ss = pad(d.getSeconds());
-  const rand = Math.floor(1000 + Math.random() * 9000); // 4-digit
-
-  return `${prefix}${YYYY}${MM}${DD}-${HH}${mm}${ss}-${rand}`;
+function buildInvoiceString(prefix, typeToken) {
+  const compact = Date.now().toString(36).toUpperCase().slice(-5);
+  const rand = Math.random().toString(36).toUpperCase().slice(2, 4);
+  // Keep invoice short with a single hyphen while still unique enough.
+  return `${typeToken}-${compact}${rand}`;
 }
 
 async function generateInvoiceNo(txnType) {
@@ -58,19 +56,17 @@ async function generateInvoiceNo(txnType) {
 
   // You can later extend with separate prefixes:
   // settings.saleInvoicePrefix, settings.purchaseInvoicePrefix, etc.
-  let prefix = basePrefix;
+  let typeToken = "X";
   if (txnType === "SALE") {
-    prefix = `${basePrefix}S-`;
+    typeToken = "S";
   } else if (txnType === "PURCHASE") {
-    prefix = `${basePrefix}P-`;
-  } else {
-    prefix = `${basePrefix}`;
+    typeToken = "P";
   }
 
   // Try a few times to avoid duplicates
   let attempts = 0;
   while (attempts < 5) {
-    const candidate = buildInvoiceString(prefix);
+    const candidate = buildInvoiceString(basePrefix, typeToken);
     // eslint-disable-next-line no-await-in-loop
     const exists = await Transaction.exists({ invoiceNo: candidate });
     if (!exists) return candidate;
@@ -106,9 +102,6 @@ function computeItemAmounts(itemsRaw) {
       items.push({
         managerialItemId: raw.managerialItemId || null,
         itemName: raw.itemName ? String(raw.itemName).trim() : "",
-        category: raw.category ? String(raw.category).trim() : "",
-        condition: raw.condition ? String(raw.condition).trim() : "",
-        unit: raw.unit ? String(raw.unit).trim() : "Nos",
         quantity,
         isManagerial: true,
         rate,
@@ -164,13 +157,17 @@ function computeItemAmounts(itemsRaw) {
  * Basic validation for transaction payload.
  */
 function validatePayload(body) {
-  const requiredFields = ["type", "date", "companyId", "items"];
+  const requiredFields = ["type", "date", "items"];
   for (const f of requiredFields) {
     if (!body[f]) return `Field "${f}" is required.`;
   }
 
   if (!["PURCHASE", "SALE"].includes(body.type)) {
     return 'Field "type" must be "PURCHASE" or "SALE".';
+  }
+
+  if (body.type === "SALE" && !body.companyId) {
+    return 'Field "companyId" is required for sales.';
   }
 
   if (!Array.isArray(body.items) || body.items.length === 0) {
@@ -199,8 +196,6 @@ function validatePayload(body) {
     const isManagerial = it.isManagerial === true || (!!it.itemName && !it.productTypeId);
     if (isManagerial) {
       if (!it.itemName) return `Item ${i + 1}: "itemName" is required.`;
-      if (!it.category) return `Item ${i + 1}: "category" is required.`;
-      if (!it.condition) return `Item ${i + 1}: "condition" is required.`;
       if (it.quantity === undefined || it.quantity === null || it.quantity === "") {
         return `Item ${i + 1}: "quantity" is required.`;
       }
@@ -232,12 +227,19 @@ exports.createTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: validationMsg });
     }
 
-    // Company check
-    const company = await Company.findById(payload.companyId).lean();
-    if (!company) {
+    // Company check (required for SALE, optional for PURCHASE)
+    let company = null;
+    if (payload.companyId) {
+      company = await Company.findById(payload.companyId).lean();
+      if (!company) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid companyId" });
+      }
+    } else if (payload.type === "SALE") {
       return res
         .status(400)
-        .json({ success: false, message: "Invalid companyId" });
+        .json({ success: false, message: "companyId is required for sales." });
     }
 
     // Compute item amounts
@@ -264,20 +266,6 @@ exports.createTransaction = async (req, res) => {
       }
     }
 
-    if (existing.type === "PURCHASE") {
-      for (const item of items) {
-        if (!item.isManagerial || item.managerialItemId) continue;
-        // eslint-disable-next-line no-await-in-loop
-        const created = await ensureManagerialItem(item);
-        if (created) {
-          item.managerialItemId = created._id;
-          item.category = created.category;
-          item.condition = created.condition;
-          item.unit = created.unit;
-        }
-      }
-    }
-
     // Ensure managerial master items exist for purchase entries
     if (payload.type === "PURCHASE") {
       for (const item of items) {
@@ -286,9 +274,6 @@ exports.createTransaction = async (req, res) => {
         const created = await ensureManagerialItem(item);
         if (created) {
           item.managerialItemId = created._id;
-          item.category = created.category;
-          item.condition = created.condition;
-          item.unit = created.unit;
         }
       }
     }
@@ -316,38 +301,52 @@ exports.createTransaction = async (req, res) => {
         });
       }
     }
+    const finalPaid =
+      payStatus === "PAID"
+        ? totalAmount
+        : payStatus === "PARTIAL"
+        ? partialPaid
+        : 0;
 
     const doc = new Transaction({
       type: payload.type, // PURCHASE or SALE
       invoiceNo,
       date: new Date(payload.date),
-      companyId: payload.companyId,
-      companyName: company.name,
+      companyId: payload.companyId || null,
+      companyName: company?.name || payload.companyName || "Purchase",
       paymentStatus: payStatus,
       paymentMethod: payload.paymentMethod || "CASH",
       dueDate,
-      remarks: payload.remarks || "",
       items,
       totalAmount,
-      partialPaid: payStatus === "PARTIAL" ? partialPaid : 0,
+      partialPaid: finalPaid,
     });
 
     const saved = await doc.save();
+    await reverseBySource({
+      sourceModule: "TRANSACTION",
+      sourceRefType: saved.type,
+      sourceRefId: saved._id,
+      reason: "Repost",
+    });
+    await postTransactionEntry(saved);
 
     if (payload.type === "PURCHASE") {
       const managerialOps = items
         .filter((i) => i.isManagerial && i.itemName)
-        .map((i) => ({
+        .map((i) => {
+          const name = String(i.itemName || "").trim();
+          return {
           date: new Date(payload.date),
-          type: "IN",
-          itemName: i.itemName,
+          type: "ORDER",
+          itemName: name || "Item",
           quantity: Number(i.quantity || 0),
-          unit: i.unit || "Nos",
-          sourceType: "Purchase",
+          unit: "Nos",
+          sourceType: "Purchase Order",
           refNo: saved.invoiceNo || "-",
           transactionId: saved._id,
-          remarks: payload.remarks || "",
-        }))
+        };
+        })
         .filter((i) => i.quantity > 0);
       if (managerialOps.length) {
         await ManagerialStockLedger.insertMany(managerialOps);
@@ -415,6 +414,72 @@ exports.getTransactions = async (req, res) => {
       .skip(Number(skip))
       .limit(Number(limit))
       .lean();
+
+    // Sync gate pass usage for dropdown filtering (works even for older data)
+    const ids = (docs || []).map((d) => d && d._id).filter(Boolean);
+    if (ids.length > 0) {
+      const gps = await GatePass.find({
+        $or: [
+          { invoiceId: { $in: ids } }, // legacy
+          { invoiceIds: { $in: ids } }, // multi
+        ],
+      })
+        .select("invoiceId invoiceIds _id")
+        .lean();
+      const usedMap = new Map();
+      (gps || []).forEach((g) => {
+        const gpId = String(g._id);
+        const all = [
+          ...(Array.isArray(g.invoiceIds) ? g.invoiceIds : []),
+          ...(g.invoiceId ? [g.invoiceId] : []),
+        ].filter(Boolean);
+        all.forEach((invId) => usedMap.set(String(invId), gpId));
+      });
+
+      let didUpdate = false;
+      const bulk = [];
+      docs.forEach((d) => {
+        const gpId = usedMap.get(String(d._id));
+        const prevUsed = !!d.gatePassUsed;
+        const prevGpId = d.gatePassId ? String(d.gatePassId) : "";
+
+        if (gpId) {
+          d.gatePassUsed = true;
+          d.gatePassId = gpId;
+          if (!prevUsed || prevGpId !== gpId) {
+            didUpdate = true;
+            bulk.push({
+              updateOne: {
+                filter: { _id: d._id },
+                update: { $set: { gatePassUsed: true, gatePassId: gpId } },
+              },
+            });
+          }
+        } else {
+          // If we used to have a gate pass but it was deleted, clear stale flags.
+          if (prevUsed || prevGpId) {
+            didUpdate = true;
+            d.gatePassUsed = false;
+            d.gatePassId = null;
+            bulk.push({
+              updateOne: {
+                filter: { _id: d._id },
+                update: { $set: { gatePassUsed: false, gatePassId: null } },
+              },
+            });
+          }
+        }
+      });
+
+      if (didUpdate && bulk.length > 0) {
+        try {
+          await Transaction.bulkWrite(bulk, { ordered: false });
+        } catch (e) {
+          // Not fatal for the response; next call will retry.
+          console.error("transactions gatePassUsed bulkWrite error:", e?.message || e);
+        }
+      }
+    }
 
     return res.json({ success: true, total, data: docs });
   } catch (err) {
@@ -497,13 +562,20 @@ exports.updateTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: validationMsg });
     }
 
-    // Company
-    const companyId = payload.companyId || existing.companyId;
-    const company = await Company.findById(companyId).lean();
-    if (!company) {
+    // Company (required for SALE, optional for PURCHASE)
+    let company = null;
+    const companyId = payload.companyId || existing.companyId || null;
+    if (companyId) {
+      company = await Company.findById(companyId).lean();
+      if (!company) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid companyId" });
+      }
+    } else if (existing.type === "SALE") {
       return res
         .status(400)
-        .json({ success: false, message: "Invalid companyId" });
+        .json({ success: false, message: "companyId is required for sales." });
     }
 
     // Items & totals
@@ -549,20 +621,32 @@ exports.updateTransaction = async (req, res) => {
         });
       }
     }
+    const finalPaid =
+      payStatus === "PAID"
+        ? totalAmount
+        : payStatus === "PARTIAL"
+        ? partialPaid
+        : 0;
 
     existing.date = new Date(payload.date);
     existing.companyId = companyId;
-    existing.companyName = company.name;
+    existing.companyName = company?.name || payload.companyName || "Purchase";
     existing.paymentStatus = payStatus;
     existing.paymentMethod =
       payload.paymentMethod || existing.paymentMethod || "CASH";
     existing.dueDate = dueDate;
-    existing.remarks = payload.remarks || "";
     existing.items = items;
     existing.totalAmount = totalAmount;
-    existing.partialPaid = payStatus === "PARTIAL" ? partialPaid : 0;
+    existing.partialPaid = finalPaid;
 
     const saved = await existing.save();
+    await reverseBySource({
+      sourceModule: "TRANSACTION",
+      sourceRefType: saved.type,
+      sourceRefId: saved._id,
+      reason: "Transaction updated",
+    });
+    await postTransactionEntry(saved);
 
     if (existing.type === "PURCHASE") {
       await ManagerialStockLedger.deleteMany({ transactionId: existing._id });
@@ -570,14 +654,13 @@ exports.updateTransaction = async (req, res) => {
         .filter((i) => i.isManagerial && i.itemName)
         .map((i) => ({
           date: new Date(payload.date),
-          type: "IN",
+          type: "ORDER",
           itemName: i.itemName,
           quantity: Number(i.quantity || 0),
-          unit: i.unit || "Nos",
-          sourceType: "Purchase",
+          unit: "Nos",
+          sourceType: "Purchase Order",
           refNo: existing.invoiceNo || "-",
           transactionId: existing._id,
-          remarks: payload.remarks || "",
         }))
         .filter((i) => i.quantity > 0);
       if (managerialOps.length) {
@@ -614,6 +697,12 @@ exports.deleteTransaction = async (req, res) => {
     }
 
     await ManagerialStockLedger.deleteMany({ transactionId: deleted._id });
+    await reverseBySource({
+      sourceModule: "TRANSACTION",
+      sourceRefType: deleted.type,
+      sourceRefId: deleted._id,
+      reason: "Transaction deleted",
+    });
 
     return res.json({ success: true, message: "Transaction deleted." });
   } catch (err) {

@@ -2,14 +2,29 @@
 const ProductionBatch = require("../models/productionBatchModel");
 const Transaction = require("../models/transactionModel");
 const Company = require("../models/companyModel");
+const ProductType = require("../models/productTypeModel");
 const StockLedger = require("../models/stockLedgerModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const SystemSettings = require("../models/systemSettingsModel");
 
-function makeKey(companyId, productTypeId, productTypeName) {
-  const c = companyId != null ? String(companyId) : "NONE";
-  const p = (productTypeId != null ? String(productTypeId) : null) || productTypeName || "UNKNOWN";
+function makeKey(companyId, companyName, productTypeId, productTypeName) {
+  const c =
+    (companyId != null ? String(companyId) : null) ||
+    (companyName || "").trim() ||
+    "NO_COMPANY";
+  const p =
+    (productTypeId != null ? String(productTypeId) : null) ||
+    productTypeName ||
+    "UNKNOWN";
   return `${c}::${p}`;
+}
+
+function normalizeProductName(productTypeId, productTypeName) {
+  if (!productTypeId) {
+    const n = String(productTypeName || "").trim().toLowerCase();
+    if (n === "paddy" || n === "unprocessed paddy") return "Unprocessed Paddy";
+  }
+  return productTypeName || "";
 }
 
 exports.getCurrentStock = async (req, res) => {
@@ -28,6 +43,19 @@ exports.getCurrentStock = async (req, res) => {
       return name;
     };
 
+    const productDocs = await ProductType.find({})
+      .select("name brand")
+      .lean();
+    const productMeta = new Map(
+      productDocs.map((p) => [String(p._id), { name: p.name, brand: p.brand }])
+    );
+
+    const getBrandName = (productTypeId, fallback = "") => {
+      if (!productTypeId) return fallback || "";
+      const meta = productMeta.get(String(productTypeId));
+      return (meta && meta.brand) || fallback || "";
+    };
+
     const addToMap = (
       companyId,
       companyName,
@@ -37,16 +65,20 @@ exports.getCurrentStock = async (req, res) => {
       updatedAt,
       sourceInfo = null
     ) => {
-      if (!productTypeId && !productTypeName) return;
+      const normalizedName = normalizeProductName(productTypeId, productTypeName);
+      if (!productTypeId && !normalizedName) return;
       const qty = Number(deltaKg || 0);
       if (!qty) return;
 
-      const key = makeKey(companyId, productTypeId, productTypeName);
+      const key = makeKey(companyId, companyName, productTypeId, normalizedName);
       const existing = map.get(key) || {
-        companyId: companyId || null,
+        companyId: null,
         companyName: companyName || "",
+        // Explicit alias: in production stock we often use "companyName" as brand/trademark.
+        // Keeping both reduces confusion on the frontend/AI side.
+        brandName: companyName || "",
         productTypeId: productTypeId || null,
-        productTypeName: productTypeName || "",
+        productTypeName: normalizedName,
         balanceKg: 0,
         lastUpdated: null,
         sources: [],
@@ -65,10 +97,12 @@ exports.getCurrentStock = async (req, res) => {
       map.set(key, existing);
     };
 
-    // 0️⃣ Gate pass / production ledger (Paddy only)
+    // 0️⃣ Raw paddy from full paddy ledger (gate pass + production batch allocation/returns)
     const ledgerRows = await StockLedger.find({ productTypeId: null }).lean();
     for (const l of ledgerRows) {
       if (!l.productTypeName) continue;
+      const normalized = normalizeProductName(null, l.productTypeName);
+      if (normalized !== "Unprocessed Paddy") continue;
       const net = Number(l.netWeightKg || 0);
       if (!net) continue;
       const delta = l.type === "OUT" ? -net : net;
@@ -77,11 +111,11 @@ exports.getCurrentStock = async (req, res) => {
         l.companyId || null,
         l.companyName || "",
         null,
-        l.productTypeName,
+        "Unprocessed Paddy",
         delta,
         dateTime,
         {
-          sourceType: "Gate Pass",
+          sourceType: l.gatePassId ? "Gate Pass" : "Production",
           refNo: l.gatePassNo || "-",
           date: l.date,
           dateTime,
@@ -102,16 +136,16 @@ exports.getCurrentStock = async (req, res) => {
       const batchDateTime = b.updatedAt || b.createdAt;
 
       for (const o of outputs) {
-        const companyId = o.companyId != null ? o.companyId : null;
-        const rawCompanyName = o.companyName || "";
-        const productTypeId = o.productTypeId != null ? String(o.productTypeId) : null;
+        const productTypeId =
+          o.productTypeId != null ? String(o.productTypeId) : null;
+        const brandName = getBrandName(productTypeId, o.companyName || "");
         const productTypeName = o.productTypeName || "";
         const net = Number(o.netWeightKg || 0);
 
         if (net > 0) {
           addToMap(
-            companyId,
-            rawCompanyName,
+            null,
+            brandName,
             productTypeId,
             productTypeName,
             net,
@@ -132,8 +166,6 @@ exports.getCurrentStock = async (req, res) => {
     // 2️⃣ PURCHASE transactions → add items
     const purchases = await Transaction.find({ type: "PURCHASE" }).lean();
     for (const t of purchases) {
-      const companyId = t.companyId || null;
-      const companyName = t.companyName || "";
       const items = t.items || [];
       const tDate = t.date || t.createdAt;
       const tDateTime = t.updatedAt || t.createdAt;
@@ -142,12 +174,13 @@ exports.getCurrentStock = async (req, res) => {
         if (it.isManagerial || !it.productTypeId) continue;
         const productTypeId = it.productTypeId?.toString();
         const productTypeName = it.productTypeName || "";
+        const brandName = getBrandName(productTypeId, "");
         const net = Number(it.netWeightKg || 0);
 
         if (net > 0) {
           addToMap(
-            companyId,
-            companyName,
+            null,
+            brandName,
             productTypeId,
             productTypeName,
             net,
@@ -168,8 +201,6 @@ exports.getCurrentStock = async (req, res) => {
     // 3️⃣ SALE transactions → subtract items
     const sales = await Transaction.find({ type: "SALE" }).lean();
     for (const t of sales) {
-      const companyId = t.companyId || null;
-      const companyName = t.companyName || "";
       const items = t.items || [];
       const tDate = t.date || t.createdAt;
       const tDateTime = t.updatedAt || t.createdAt;
@@ -177,12 +208,13 @@ exports.getCurrentStock = async (req, res) => {
       for (const it of items) {
         const productTypeId = it.productTypeId?.toString();
         const productTypeName = it.productTypeName || "";
+        const brandName = getBrandName(productTypeId, "");
         const net = Number(it.netWeightKg || 0);
 
         if (net > 0) {
           addToMap(
-            companyId,
-            companyName,
+            null,
+            brandName,
             productTypeId,
             productTypeName,
             -net,
@@ -221,6 +253,8 @@ exports.getCurrentStock = async (req, res) => {
       if (!val.companyId && !val.companyName) {
         val.companyName = "Mill Own Stock";
       }
+
+      if (!val.brandName) val.brandName = val.companyName || "";
 
       rows.push(val);
     }

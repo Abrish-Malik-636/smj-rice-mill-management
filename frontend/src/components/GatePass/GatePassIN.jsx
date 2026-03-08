@@ -1,34 +1,66 @@
-import React, { useEffect, useState } from "react";
-import { Edit2, Trash2, Printer, X } from "lucide-react";
+﻿import React, { useEffect, useState } from "react";
+import { Edit2, Trash2, Printer, X, Plus } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../../services/api";
 import DataTable from "../ui/DataTable";
+import AddOptionModal from "../ui/AddOptionModal";
 
 const UNITS = ["kg", "ton", "bags", "pcs", "mounds"];
+const OTHER_OPTION = "__OTHER__";
+const createBrandModalState = () => ({
+  open: false,
+  value: "",
+  valueOther: "",
+  deleteValue: "",
+  renameFrom: "",
+  renameTo: "",
+  renamePin: "",
+  renamePinError: "",
+  productRows: [],
+  draft: {
+    nameSelect: "",
+    nameOther: "",
+    bagKg: "65",
+    tonKg: "1000",
+    pricePerKg: "",
+  },
+  saving: false,
+  deleting: false,
+  renaming: false,
+  errors: { value: "", rows: [], rowsGeneral: "", draft: {} },
+});
 
 export default function GatePassIN() {
-  const [companies, setCompanies] = useState([]);
+  const [brandOptions, setBrandOptions] = useState([]);
+  const [productCatalog, setProductCatalog] = useState([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState([]);
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState("");
-  const [otherSource, setOtherSource] = useState("");
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
   const [form, setForm] = useState({
     truckNo: "",
     supplier: "",
-    transporter: "",
     driverName: "",
     driverContact: "",
     freightCharges: "",
-    remarks: "",
   });
   const [items, setItems] = useState([
     { itemType: "Paddy", quantity: "", unit: "kg" },
   ]);
+
+  const toggleInvoiceId = (id) => {
+    const sid = String(id || "");
+    if (!sid) return;
+    setSelectedInvoiceIds((prev) =>
+      prev.includes(sid) ? prev.filter((x) => x !== sid) : [...prev, sid]
+    );
+    clearFieldError("invoiceId");
+  };
 
   const [errors, setErrors] = useState({});
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [settings, setSettings] = useState(null);
+  const [brandModal, setBrandModal] = useState(createBrandModalState);
 
   // Confirmation dialog
   const [confirmDialog, setConfirmDialog] = useState({
@@ -63,13 +95,6 @@ export default function GatePassIN() {
     return "";
   };
 
-  const validateSupplier = (v) => {
-    if (!v) return "";
-    if (v === "Other") return "";
-    if (!nameRegex.test(v)) return "Source: letters and spaces only.";
-    return "";
-  };
-
   const validateDriverName = (v) =>
     !v ? "" : nameRegex.test(v) ? "" : "Driver name: letters and spaces only.";
 
@@ -79,39 +104,57 @@ export default function GatePassIN() {
     return "";
   };
 
+  const needsBrand = () => {
+    // Brand/Trademark is required only when receiving Production/Paddy stock.
+    const hasManualProduction = (items || []).some((it) => {
+      const name = String(it?.itemType || "").trim().toLowerCase();
+      const qty = Number(it?.quantity || 0);
+      return (name === "paddy" || name === "unprocessed paddy") && qty > 0;
+    });
+
+    const invoice = selectedInvoiceIds.length
+      ? purchaseInvoices.find((t) => String(t._id) === String(selectedInvoiceIds[0]))
+      : null;
+    const hasInvoiceProduction = (invoice?.items || []).some((it) => !it?.isManagerial);
+
+    return hasManualProduction || hasInvoiceProduction;
+  };
+
   const validateField = (name, value) => {
     let msg = "";
     if (name === "truckNo") msg = validateTruckNo(value);
-    if (name === "supplier") msg = validateSupplier(value);
-    if (name === "driverName") msg = validateDriverName(value);
-    if (name === "driverContact") msg = validateDriverContact(value);
+    if (name === "supplier") msg = needsBrand() ? (value ? "" : "Brand / trademark is required.") : "";
+    if (name === "driverName")
+      msg = value ? validateDriverName(value) : "Driver name is required.";
+    if (name === "driverContact")
+      msg = value ? validateDriverContact(value) : "Driver contact is required.";
+    if (name === "freightCharges")
+      msg = value ? "" : "Freight charges are required.";
     if (msg) setFieldError(name, msg);
     else clearFieldError(name);
   };
 
   const validateForm = () => {
     const e1 = validateTruckNo(form.truckNo);
-    const e2 = validateSupplier(form.supplier);
-    const e3 = validateDriverName(form.driverName);
-    const e4 = validateDriverContact(form.driverContact);
+    const e2 = needsBrand() ? (form.supplier ? "" : "Brand / trademark is required.") : "";
+    const e3 = form.driverName
+      ? validateDriverName(form.driverName)
+      : "Driver name is required.";
+    const e4 = form.driverContact
+      ? validateDriverContact(form.driverContact)
+      : "Driver contact is required.";
+    const e5 = form.freightCharges ? "" : "Freight charges are required.";
 
     const newErr = {};
     if (e1) newErr.truckNo = e1;
     if (e2) newErr.supplier = e2;
     if (e3) newErr.driverName = e3;
     if (e4) newErr.driverContact = e4;
+    if (e5) newErr.freightCharges = e5;
 
-    if (selectedInvoiceId && !purchaseInvoices.find((t) => t._id === selectedInvoiceId)) {
+    if (selectedInvoiceIds.length && !purchaseInvoices.find((t) => String(t._id) === String(selectedInvoiceIds[0]))) {
       newErr.invoiceId = "Select a valid invoice.";
     }
-    if (form.supplier === "Other") {
-      if (!otherSource.trim()) {
-        newErr.otherSource = "Please specify source.";
-      } else if (!nameRegex.test(otherSource.trim())) {
-        newErr.otherSource = "Source: letters and spaces only.";
-      }
-    }
-
     setErrors(newErr);
     if (Object.keys(newErr).length > 0) {
       const firstKey = Object.keys(newErr)[0];
@@ -130,10 +173,10 @@ export default function GatePassIN() {
   const formatTruckInput = (raw) => {
     let s = raw.toUpperCase();
     s = s.replace(/[^A-Z0-9]/g, "");
-    const letters = s.match(/^[A-Z]*/)[0] || "";
-    const digits = s.slice(letters.length) || "";
+    const letters = (s.match(/^[A-Z]*/)[0] || "").slice(0, 4);
+    const digits = s.slice(letters.length).replace(/[^0-9]/g, "").slice(0, 4);
     if (!digits) return letters;
-    return `${letters}-${digits}`.slice(0, 12);
+    return `${letters}-${digits}`;
   };
 
   // Format contact input: 03XX-XXXXXXX
@@ -149,35 +192,51 @@ export default function GatePassIN() {
       try {
         const res = await api.get("/settings");
         if (res.data && res.data.success !== false) {
-          setSettings(res.data.data || res.data);
+          const s = res.data.data || res.data;
+          setSettings(s);
+          if (Array.isArray(s.brandOptions)) {
+            setBrandOptions((prev) =>
+              Array.from(
+                new Set([...(prev || []), ...s.brandOptions.filter(Boolean)])
+              ).sort()
+            );
+          }
         }
       } catch {}
     };
     loadSettings();
   }, []);
 
-  // Load companies for supplier dropdown
-  useEffect(() => {
-    const loadCompanies = async () => {
-      try {
-        const res = await api.get("/companies");
-        setCompanies(res.data.data || []);
-      } catch {}
-    };
-    loadCompanies();
-  }, []);
+  const fetchInvoices = async () => {
+    try {
+      const res = await api.get("/transactions", {
+        params: { type: "PURCHASE", limit: 5000, skip: 0 },
+      });
+      setPurchaseInvoices(res.data?.data || []);
+    } catch {}
+  };
 
   // Load purchase invoices
   useEffect(() => {
-    const loadInvoices = async () => {
+    fetchInvoices();
+  }, []);
+
+  // Load brand/trademark list for paddy ownership
+  useEffect(() => {
+    const loadBrands = async () => {
       try {
-        const res = await api.get("/transactions", {
-          params: { type: "PURCHASE", limit: 500, skip: 0 },
-        });
-        setPurchaseInvoices(res.data?.data || []);
+        const res = await api.get("/product-types");
+        const rows = res.data?.data || [];
+        setProductCatalog(rows);
+        const brands = Array.from(
+          new Set(rows.map((r) => String(r.brand || "").trim()).filter(Boolean))
+        ).sort();
+        setBrandOptions((prev) =>
+          Array.from(new Set([...(prev || []), ...brands])).sort()
+        );
       } catch {}
     };
-    loadInvoices();
+    loadBrands();
   }, []);
 
 
@@ -206,26 +265,194 @@ export default function GatePassIN() {
     // eslint-disable-next-line
   }, []);
 
-  const normalizeType = (value) => {
-    if (!value) return "";
-    const trimmed = String(value).trim();
-    if (/^both/i.test(trimmed)) return "Both";
-    if (/^all/i.test(trimmed)) return "All";
-    return trimmed;
+  const filteredInvoices = (purchaseInvoices || []).filter(
+    (inv) => !inv?.gatePassUsed || selectedInvoiceIds.includes(String(inv?._id))
+  );
+  const productNameOptions = Array.from(
+    new Set((productCatalog || []).map((p) => String(p.name || "").trim()).filter(Boolean))
+  ).sort();
+
+  const normalizeText = (v) => String(v || "").trim().toLowerCase();
+
+  const makeProductRow = (name, template = null) => {
+    const bag = Number(template?.conversionFactors?.Bag || 65);
+    const ton = Number(template?.conversionFactors?.Ton || 1000);
+    const kgPrice = Number(template?.pricePerKg || 0);
+    return {
+      name: String(name || "").trim(),
+      bagKg: String(bag || 65),
+      tonKg: String(ton || 1000),
+      pricePerKg: String(Math.round(kgPrice || 0)),
+      pricePerBag: String(
+        Math.round(Number(template?.pricePerBag ?? kgPrice * bag) || 0)
+      ),
+      pricePerTon: String(
+        Math.round(Number(template?.pricePerTon ?? kgPrice * ton) || 0)
+      ),
+    };
   };
 
-  const supplierOptions = companies.filter((c) => {
-    const t = normalizeType(c.type);
-    return t === "Supplier" || t === "Both" || t === "All";
-  });
-  const transporterOptions = companies.filter((c) => {
-    const t = normalizeType(c.type);
-    return t === "Transporter" || t === "Both" || t === "All";
-  });
-  const filteredSupplierOptions = supplierOptions;
-  const filteredTransporterOptions = transporterOptions;
-  const filteredInvoices = purchaseInvoices;
+  const validateBrandValue = (value) => {
+    const v = String(value || "").trim();
+    if (!v) return "Brand is required";
+    if (v.length > 100) return "Brand must be 100 characters or less";
+    return "";
+  };
 
+  const getBrandModalName = (modal) =>
+    String(
+      modal?.value === OTHER_OPTION ? modal?.valueOther || "" : modal?.value || ""
+    ).trim();
+
+  const sanitizeBrandText = (value, max = 100) =>
+    String(value || "")
+      .replace(/[^a-zA-Z0-9\s.,&()\-]/g, "")
+      .slice(0, max);
+
+  const toTitleCase = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const sanitizeIntegerText = (value, max = 8) =>
+    String(value || "")
+      .replace(/\D/g, "")
+      .slice(0, max);
+
+  const validateBrandRow = (row = {}) => {
+    const errors = {};
+    const name = String(row.name || "").trim();
+    if (!name) errors.name = "Product name is required";
+    if (!String(row.bagKg || "").trim()) errors.bagKg = "Required";
+    if (!String(row.tonKg || "").trim()) errors.tonKg = "Required";
+    if (!String(row.pricePerKg || "").trim()) errors.pricePerKg = "Required";
+    if (!errors.bagKg && Number(row.bagKg) <= 0) errors.bagKg = "Must be greater than 0";
+    if (!errors.tonKg && Number(row.tonKg) <= 0) errors.tonKg = "Must be greater than 0";
+    return errors;
+  };
+
+  const validateBrandModalBeforeSave = (modal) => {
+    const valueError = validateBrandValue(getBrandModalName(modal));
+    const rows = Array.isArray(modal.productRows) ? modal.productRows : [];
+    const rowErrors = rows.map((row) => validateBrandRow(row));
+    const hasRowErrors = rowErrors.some((e) => Object.keys(e).length > 0);
+    const cleanedNames = rows
+      .map((r) => String(r.name || "").trim().toLowerCase())
+      .filter(Boolean);
+    const duplicateName =
+      cleanedNames.length !== new Set(cleanedNames).size
+        ? "Duplicate product names are not allowed."
+        : "";
+    const rowsGeneral =
+      rows.length === 0
+        ? "Add at least one product row."
+        : duplicateName || "";
+
+    return {
+      isValid: !valueError && !hasRowErrors && !rowsGeneral,
+      errors: { value: valueError, rows: rowErrors, rowsGeneral },
+    };
+  };
+
+  const getDraftProductName = () =>
+    brandModal.draft?.nameSelect === OTHER_OPTION
+      ? String(brandModal.draft?.nameOther || "").trim()
+      : String(brandModal.draft?.nameSelect || "").trim();
+
+  const getBrandProducts = (brandName) =>
+    (productCatalog || [])
+      .filter((p) => normalizeText(p.brand) === normalizeText(brandName))
+      .map((p) => ({
+        name: String(p.name || "").trim(),
+        bagKg: String(Number(p?.conversionFactors?.Bag || 65)),
+        tonKg: String(Number(p?.conversionFactors?.Ton || 1000)),
+        pricePerKg: String(Math.round(Number(p?.pricePerKg || 0))),
+        pricePerBag: String(Math.round(Number(p?.pricePerBag || 0))),
+        pricePerTon: String(Math.round(Number(p?.pricePerTon || 0))),
+      }));
+
+  const handleBrandDraftChange = (field, rawValue) => {
+    setBrandModal((prev) => {
+      const draft = { ...(prev.draft || {}) };
+      if (field === "nameSelect") {
+        draft.nameSelect = rawValue;
+        if (rawValue !== OTHER_OPTION) draft.nameOther = "";
+        const template = (productCatalog || []).find(
+          (p) =>
+            normalizeText(p.brand) === normalizeText(prev.value) &&
+            normalizeText(p.name) === normalizeText(rawValue)
+        );
+        if (template) {
+          draft.bagKg = String(Number(template?.conversionFactors?.Bag || 65));
+          draft.tonKg = String(Number(template?.conversionFactors?.Ton || 1000));
+          draft.pricePerKg = String(Math.round(Number(template?.pricePerKg || 0)));
+        }
+      } else if (field === "nameOther") {
+        draft.nameOther = sanitizeBrandText(rawValue, 80);
+      } else if (field === "bagKg" || field === "tonKg") {
+        draft[field] = sanitizeIntegerText(rawValue, 5);
+      } else {
+        draft[field] = sanitizeIntegerText(rawValue, 8);
+      }
+      return {
+        ...prev,
+        draft,
+        errors: { ...(prev.errors || {}), draft: {}, rowsGeneral: "" },
+      };
+    });
+  };
+
+  const addDraftProductRow = () => {
+    const name = getDraftProductName();
+    const row = {
+      name,
+      bagKg: String(brandModal.draft?.bagKg || "").trim(),
+      tonKg: String(brandModal.draft?.tonKg || "").trim(),
+      pricePerKg: String(brandModal.draft?.pricePerKg || "").trim(),
+    };
+    const rowError = validateBrandRow(row);
+    if (Object.keys(rowError).length > 0) {
+      setBrandModal((prev) => ({
+        ...prev,
+        errors: { ...(prev.errors || {}), draft: rowError },
+      }));
+      return;
+    }
+    const duplicate = (brandModal.productRows || []).some(
+      (r) => normalizeText(r.name) === normalizeText(name)
+    );
+    if (duplicate) {
+      toast.error("Product already exists in this brand list.");
+      return;
+    }
+    setBrandModal((prev) => ({
+      ...prev,
+      productRows: [
+        ...(prev.productRows || []),
+        {
+          ...row,
+          pricePerBag: String(
+            Math.round(Number(row.pricePerKg || 0) * Number(row.bagKg || 0))
+          ),
+          pricePerTon: String(
+            Math.round(Number(row.pricePerKg || 0) * Number(row.tonKg || 0))
+          ),
+        },
+      ],
+      draft: {
+        nameSelect: "",
+        nameOther: "",
+        bagKg: prev.draft?.bagKg || "65",
+        tonKg: prev.draft?.tonKg || "1000",
+        pricePerKg: "",
+      },
+      errors: { ...(prev.errors || {}), draft: {}, rowsGeneral: "" },
+    }));
+  };
+
+  const selectedBrandName = getBrandModalName(brandModal);
   // Handlers
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -233,7 +460,7 @@ export default function GatePassIN() {
     if (name === "truckNo") {
       v = formatTruckInput(value);
     }
-    if (name === "supplier" || name === "driverName") {
+    if (name === "driverName") {
       if (value !== "Other") {
         v = value.replace(/[^A-Za-z\s]/g, "");
       }
@@ -242,6 +469,10 @@ export default function GatePassIN() {
     if (name === "driverContact") {
       v = formatContactInput(value);
     }
+    if (name === "supplier" && value === OTHER_OPTION) {
+      setBrandModal({ ...createBrandModalState(), open: true });
+      return;
+    }
     if (name === "freightCharges") {
       v = value.replace(/[^\d.]/g, "");
     }
@@ -249,16 +480,88 @@ export default function GatePassIN() {
     validateField(name, v);
   };
 
+  const saveBrandFromModal = async () => {
+    const validation = validateBrandModalBeforeSave(brandModal);
+    setBrandModal((prev) => ({ ...prev, errors: validation.errors }));
+    if (!validation.isValid) {
+      toast.error("Please fix brand form errors.");
+      return;
+    }
+    const brandName = getBrandModalName(brandModal);
+
+    const nextOptions = Array.from(
+      new Set([...(brandOptions || []), brandName])
+    ).sort();
+    setBrandModal((prev) => ({ ...prev, saving: true }));
+    try {
+      await api.put("/settings", { brandOptions: nextOptions });
+      setBrandOptions(nextOptions);
+      const rows = (brandModal.productRows || []).filter(
+        (r) => String(r.name || "").trim() !== ""
+      );
+      let changedCount = 0;
+      for (const row of rows) {
+        const name = String(row.name || "").trim();
+        const bagKg = Math.max(1, Number(row.bagKg || 65));
+        const tonKg = Math.max(1, Number(row.tonKg || 1000));
+        const priceKg = Math.max(0, Number(row.pricePerKg || 0));
+        const priceBag = Math.max(
+          0,
+          Number(row.pricePerBag || Math.round(priceKg * bagKg) || 0)
+        );
+        const priceTon = Math.max(
+          0,
+          Number(row.pricePerTon || Math.round(priceKg * tonKg) || 0)
+        );
+
+        const existing = (productCatalog || []).find(
+          (p) =>
+            String(p.brand || "").trim().toLowerCase() === brandName.toLowerCase() &&
+            String(p.name || "").trim().toLowerCase() === name.toLowerCase()
+        );
+        const payload = {
+          name,
+          brand: brandName,
+          baseUnit: "KG",
+          allowableSaleUnits: ["Bag", "Ton", "KG"],
+          conversionFactors: { KG: 1, Bag: bagKg, Ton: tonKg },
+          pricePerKg: Math.round(priceKg),
+          pricePerBag: Math.round(priceBag),
+          pricePerTon: Math.round(priceTon),
+        };
+        try {
+          if (existing?._id) {
+            await api.put(`/product-types/${existing._id}`, payload);
+          } else {
+            await api.post("/product-types", payload);
+          }
+          changedCount += 1;
+        } catch {
+          // continue remaining rows
+        }
+      }
+
+      const pRes = await api.get("/product-types");
+      setProductCatalog(pRes.data?.data || []);
+
+      setForm((prev) => ({ ...prev, supplier: brandName }));
+      clearFieldError("supplier");
+      setBrandModal(createBrandModalState());
+      toast.success(
+        changedCount > 0
+          ? `Brand saved with ${changedCount} product row(s).`
+          : "Brand added."
+      );
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to add brand");
+      setBrandModal((prev) => ({ ...prev, saving: false }));
+    }
+  };
+
   const handleInvoiceChange = (id) => {
-    setSelectedInvoiceId(id);
-    clearFieldError("invoiceId");
-    const invoice = purchaseInvoices.find((t) => t._id === id);
-    if (!invoice) return;
-    setForm((prev) => ({
-      ...prev,
-      supplier: invoice.companyName || "",
-    }));
-    setOtherSource("");
+    // handled by <select multiple>
+    // Important: supplier is used as Brand/Trademark for paddy ownership.
+    // Linking an invoice should NOT overwrite the selected brand.
   };
 
   const handleItemChange = (idx, field, value) => {
@@ -278,40 +581,60 @@ export default function GatePassIN() {
       return;
     }
 
-    const invoice = selectedInvoiceId
-      ? purchaseInvoices.find((t) => t._id === selectedInvoiceId)
+    const normalizeUnit = (unit) => {
+      const u = String(unit || "").toLowerCase().trim();
+      if (u === "nos" || u === "no" || u === "nos.") return "pcs";
+      if (u === "pcs" || u === "pc") return "pcs";
+      if (u === "kg" || u === "ton" || u === "bags" || u === "mounds") return u;
+      return "pcs";
+    };
+
+    const invoice = selectedInvoiceIds.length
+      ? purchaseInvoices.find((t) => String(t._id) === String(selectedInvoiceIds[0]))
       : null;
-    if (selectedInvoiceId && !invoice) {
+    if (selectedInvoiceIds.length && !invoice) {
       toast.error("Select a valid purchase invoice.");
       return;
     }
 
+    const labelForInvoiceItem = (it) =>
+      it.itemName || it.productTypeName || "SMJ Own";
     const itemsFromInvoice = invoice
-      ? (invoice.items || []).map((it) => ({
-          itemType: it.productTypeName,
-          stockType: "Production",
-          customItemName: "",
-          quantity: it.netWeightKg || 0,
-          unit: "kg",
-        }))
+      ? (invoice.items || []).map((it) => {
+          const qty =
+            it.netWeightKg != null && it.netWeightKg !== ""
+              ? Number(it.netWeightKg || 0)
+              : Number(it.quantity || 0);
+          const unit =
+            it.netWeightKg != null && it.netWeightKg !== ""
+              ? "kg"
+              : it.unit || "pcs";
+          return {
+            itemType: labelForInvoiceItem(it),
+            stockType: it.isManagerial ? "Managerial" : "Production",
+            customItemName: "",
+            quantity: qty,
+            unit: normalizeUnit(unit),
+          };
+        })
       : [];
     const manualItems = items
       .filter((it) => it.itemType && Number(it.quantity) > 0)
       .map((it) => ({
         itemType: it.itemType,
-        stockType: "Production",
+        stockType:
+          String(it.itemType || "").toLowerCase() === "paddy"
+            ? "Production"
+            : "Managerial",
         customItemName: "",
         quantity: Number(it.quantity),
-        unit: it.unit,
+        unit: normalizeUnit(it.unit),
       }));
-
-    const supplierName =
-      form.supplier === "Other" ? otherSource.trim() : form.supplier;
 
     const payload = {
       ...form,
       type: "IN",
-      supplier: supplierName || "",
+      invoiceIds: selectedInvoiceIds.map((id) => purchaseInvoices.find((t) => String(t._id) === String(id))?._id).filter(Boolean),
       invoiceId: invoice ? invoice._id : undefined,
       invoiceNo: invoice ? invoice.invoiceNo : undefined,
       items: [...itemsFromInvoice, ...manualItems],
@@ -332,18 +655,16 @@ export default function GatePassIN() {
       setForm({
         truckNo: "",
         supplier: "",
-        transporter: "",
         driverName: "",
         driverContact: "",
         freightCharges: "",
-        remarks: "",
       });
-      setSelectedInvoiceId("");
-      setOtherSource("");
+      setSelectedInvoiceIds([]);
       setItems([{ itemType: "Paddy", quantity: "", unit: "kg" }]);
       setEditingId(null);
       setErrors({});
       fetchRows();
+      fetchInvoices();
     } catch (err) {
       toast.error(err.message || "Unable to save.");
       document.getElementById("gatepass-in-form")?.scrollIntoView({
@@ -357,26 +678,16 @@ export default function GatePassIN() {
     setForm({
       truckNo: row.truckNo || "",
       supplier: row.supplier || "",
-      transporter: row.transporter || "",
       driverName: row.driverName || "",
       driverContact: row.driverContact || "",
       freightCharges: row.freightCharges ? String(row.freightCharges) : "",
-      remarks: row.remarks || "",
     });
-    setSelectedInvoiceId(row.invoiceId || "");
-    const knownSupplier =
-      row.supplier &&
-      supplierOptions.some(
-        (s) => s.name.toLowerCase() === String(row.supplier).toLowerCase()
-      );
-    if (row.supplier && !knownSupplier) {
-      setForm((prev) => ({ ...prev, supplier: "Other" }));
-      setOtherSource(row.supplier);
-    } else {
-      setOtherSource("");
-    }
+    const ids = Array.isArray(row.invoiceIds) && row.invoiceIds.length
+      ? row.invoiceIds
+      : (row.invoiceId ? [row.invoiceId] : []);
+    setSelectedInvoiceIds(ids.map((x) => String(x)));
     const rowItems = (row.items || []).map((it) => ({
-      itemType: it.itemType || "Paddy",
+      itemType: it.itemType || it.customItemName || "SMJ Own",
       quantity: it.quantity ? String(it.quantity) : "",
       unit: it.unit || "kg",
     }));
@@ -476,7 +787,7 @@ export default function GatePassIN() {
         .value{color:#111;font-weight:600;}
         table{width:100%;border-collapse:collapse;margin:12px 0;font-size:11px;}
         th{background:#f0fdf4;color:#065f46;padding:6px;border:1px solid #ddd;text-align:left;}
-        .remarks{font-size:11px;color:#6b7280;margin-top:12px;padding:8px;background:#f9fafb;border-radius:4px;}
+        .remarks{display:none;}
         .footer{margin-top:20px;font-size:10px;color:#9ca3af;text-align:center;border-top:1px solid #e5e7eb;padding-top:8px;}
       </style></head><body>
       <div class="header">
@@ -501,17 +812,11 @@ export default function GatePassIN() {
         <div><span class="label">Truck No:</span><span class="value">${
           row.truckNo || "-"
         }</span></div>
-        <div><span class="label">Source:</span><span class="value">${
-          row.supplier || "-"
-        }</span></div>
         <div><span class="label">Driver:</span><span class="value">${
           row.driverName || "-"
         }</span></div>
         <div><span class="label">Contact:</span><span class="value">${
           row.driverContact || "-"
-        }</span></div>
-        <div><span class="label">Transporter:</span><span class="value">${
-          row.transporter || "-"
         }</span></div>
       </div>
 
@@ -528,12 +833,6 @@ export default function GatePassIN() {
         </tfoot>
       </table>
 
-      ${
-        row.remarks
-          ? `<div class="remarks"><strong>Remarks:</strong> ${row.remarks}</div>`
-          : ""
-      }
-      
       <div class="footer">
         <div>Authorized Signature: _________________</div>
         <div style="margin-top:4px;">Printed on ${new Date().toLocaleString()}</div>
@@ -553,23 +852,19 @@ export default function GatePassIN() {
       render: (val) => (val ? new Date(val).toLocaleDateString() : "-"),
     },
     { key: "gatePassNo", label: "GP No" },
+    { key: "supplier", label: "Brand / Trademark" },
     { key: "truckNo", label: "Truck" },
     {
       key: "items",
       label: "Items",
       render: (val, row) => {
         const list = (row.items || [])
-          .map((it) => it.itemType)
+          .map((it) => it.itemType || it.customItemName || "SMJ Own")
           .filter(Boolean);
         return list.length ? Array.from(new Set(list)).join(", ") : "-";
       },
     },
     { key: "invoiceNo", label: "Invoice No" },
-    {
-      key: "supplier",
-      label: "Source",
-      filterOptions: Array.from(new Set(rows.map((r) => r.supplier).filter(Boolean))),
-    },
     { key: "driverName", label: "Driver" },
     {
       key: "actions",
@@ -689,6 +984,36 @@ export default function GatePassIN() {
         </h2>
 
         <div className="grid md:grid-cols-3 gap-4">
+          {/* Purchase Invoice */}
+          <div id="field-invoiceId">
+            <label className="block text-sm font-medium mb-1">
+              Purchase Invoice (optional)
+            </label>
+            <div className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${errors.invoiceId ? "border-red-500 bg-red-50" : "border-gray-300"}`}>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {filteredInvoices.map((inv) => {
+                  const id = String(inv._id);
+                  const checked = selectedInvoiceIds.includes(id);
+                  return (
+                    <label key={id} className="flex items-center gap-2 cursor-pointer select-none">
+                      <input type="checkbox" checked={checked} onChange={() => toggleInvoiceId(id)} />
+                      <span className="text-xs text-gray-700">
+                        {inv.invoiceNo}
+                        {inv.gatePassUsed && !checked ? " (USED)" : ""}
+                      </span>
+                    </label>
+                  );
+                })}
+                {filteredInvoices.length === 0 && (
+                  <div className="text-xs text-gray-500">No available invoices.</div>
+                )}
+              </div>
+            </div>
+            {errors.invoiceId && (
+              <p className="text-xs text-red-500 mt-1">{errors.invoiceId}</p>
+            )}
+          </div>
+
           {/* Truck No */}
           <div id="field-truckNo">
             <label className="block text-sm font-medium mb-1">
@@ -698,7 +1023,7 @@ export default function GatePassIN() {
               name="truckNo"
               value={form.truckNo}
               onChange={handleChange}
-              placeholder="ABC-1234"
+              placeholder="ABCD-1234"
               className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
                 errors.truckNo ? "border-red-500" : "border-gray-300"
               }`}
@@ -708,78 +1033,10 @@ export default function GatePassIN() {
             )}
           </div>
 
-          {/* Purchase Invoice */}
-          <div id="field-invoiceId">
-            <label className="block text-sm font-medium mb-1">
-              Purchase Invoice (optional)
-            </label>
-            <select
-              value={selectedInvoiceId}
-              onChange={(e) => handleInvoiceChange(e.target.value)}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.invoiceId ? "border-red-500" : "border-gray-300"
-              }`}
-            >
-              <option value="">Select invoice</option>
-              {filteredInvoices.map((inv) => (
-                <option key={inv._id} value={inv._id}>
-                  {inv.invoiceNo}
-                </option>
-              ))}
-            </select>
-            {errors.invoiceId && (
-              <p className="text-xs text-red-500 mt-1">{errors.invoiceId}</p>
-            )}
-          </div>
-
-          {/* Source (optional) */}
-          <div id="field-supplier">
-            <label className="block text-sm font-medium mb-1">
-              Source (optional)
-            </label>
-            <select
-              name="supplier"
-              value={form.supplier}
-              onChange={handleChange}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.supplier ? "border-red-500" : "border-gray-300"
-              }`}
-            >
-              <option value="">Select source</option>
-              {filteredSupplierOptions.map((s) => (
-                <option key={s._id} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-              <option value="Other">Other</option>
-            </select>
-            {errors.supplier && (
-              <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
-            )}
-          </div>
-          {form.supplier === "Other" && (
-            <div id="field-otherSource">
-              <label className="block text-sm font-medium mb-1">
-                Specify Source
-              </label>
-              <input
-                value={otherSource}
-                onChange={(e) => setOtherSource(e.target.value.replace(/\s+/g, " "))}
-                placeholder="Enter source name"
-                className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                  errors.otherSource ? "border-red-500" : "border-gray-300"
-                }`}
-              />
-              {errors.otherSource && (
-                <p className="text-xs text-red-500 mt-1">{errors.otherSource}</p>
-              )}
-            </div>
-          )}
-
           {/* Driver Name */}
           <div id="field-driverName">
             <label className="block text-sm font-medium mb-1">
-              Driver Name
+              Driver Name <span className="text-red-500">*</span>
             </label>
             <input
               name="driverName"
@@ -798,7 +1055,7 @@ export default function GatePassIN() {
           {/* Driver Contact */}
           <div id="field-driverContact">
             <label className="block text-sm font-medium mb-1">
-              Driver Contact
+              Driver Contact <span className="text-red-500">*</span>
             </label>
             <input
               name="driverContact"
@@ -817,43 +1074,23 @@ export default function GatePassIN() {
             )}
           </div>
 
-          {/* Transporter */}
-          <div id="field-transporter">
-            <label className="block text-sm font-medium mb-1">
-              Transporter
-            </label>
-            <select
-              name="transporter"
-              value={form.transporter}
-              onChange={handleChange}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.transporter ? "border-red-500" : "border-gray-300"
-              }`}
-            >
-              <option value="">Select transporter</option>
-              {filteredTransporterOptions.map((t) => (
-                <option key={t._id} value={t.name}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            {errors.transporter && (
-              <p className="text-xs text-red-500 mt-1">{errors.transporter}</p>
-            )}
-          </div>
-
           {/* Freight Charges */}
-          <div>
+          <div id="field-freightCharges">
             <label className="block text-sm font-medium mb-1">
-              Freight Charges
+              Freight Charges <span className="text-red-500">*</span>
             </label>
             <input
               name="freightCharges"
               value={form.freightCharges}
               onChange={handleChange}
               placeholder="0"
-              className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                errors.freightCharges ? "border-red-500" : "border-gray-300"
+              }`}
             />
+            {errors.freightCharges && (
+              <p className="text-xs text-red-500 mt-1">{errors.freightCharges}</p>
+            )}
           </div>
         </div>
 
@@ -862,12 +1099,54 @@ export default function GatePassIN() {
           <h3 className="text-sm font-semibold text-gray-700 mb-3">
             Paddy (optional)
           </h3>
-          <div className="grid md:grid-cols-3 gap-3 items-start p-3 bg-gray-50 rounded-lg max-w-2xl">
+          <div className="p-3 bg-gray-50 rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-600">Add one or more paddy lines (same brand/trademark).</div>
+              <button
+                type="button"
+                onClick={() => setItems((prev) => [...(prev || []), { itemType: "Paddy", quantity: "", unit: "kg" }])}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+              >
+                <Plus size={14} />
+                Add
+              </button>
+            </div>
+
+            <div className="grid md:grid-cols-4 gap-3 items-start">
+            <div id="field-supplier">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs text-gray-500">
+                  Brand / Trademark
+                </label>
+              </div>
+              <select
+                name="supplier"
+                value={form.supplier}
+                onChange={handleChange}
+                className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                  errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
+                }`}
+              >
+                <option value="">Select brand / trademark</option>
+                {form.supplier && !brandOptions.includes(form.supplier) && (
+                  <option value={form.supplier}>{form.supplier}</option>
+                )}
+                {brandOptions.map((b, idx) => (
+                  <option key={`${b}-${idx}`} value={b}>
+                    {b}
+                  </option>
+                ))}
+                <option value={OTHER_OPTION}>Other (Add New)</option>
+              </select>
+              {errors.supplier && (
+                <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
+              )}
+            </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Item</label>
               <select
-                value={items[0]?.itemType ?? "Paddy"}
-                onChange={(e) => handleItemChange(0, "itemType", e.target.value)}
+                value="Paddy"
+                onChange={() => {}}
                 className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
               >
                 <option value="Paddy">Paddy</option>
@@ -892,9 +1171,7 @@ export default function GatePassIN() {
               <label className="block text-xs text-gray-500 mb-1">Unit</label>
               <select
                 value={items[0]?.unit ?? "kg"}
-                onChange={(e) =>
-                  handleItemChange(0, "unit", e.target.value)
-                }
+                onChange={(e) => handleItemChange(0, "unit", e.target.value)}
                 className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
               >
                 {UNITS.map((u) => (
@@ -904,6 +1181,86 @@ export default function GatePassIN() {
                 ))}
               </select>
             </div>
+            </div>
+
+            {(items || []).length > 1 && (
+              <div className="space-y-2">
+                {(items || []).slice(1).map((it, idx) => {
+                  const realIdx = idx + 1;
+                  return (
+                    <div key={`paddy-${realIdx}`} className="grid md:grid-cols-4 gap-3 items-end">
+                      <div className="md:col-span-1">
+                        <label className="block text-xs text-gray-500 mb-1">Brand / Trademark</label>
+                        <select
+                          value={form.supplier}
+                          onChange={handleChange}
+                          className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                            errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
+                          }`}
+                        >
+                          <option value="">Select brand / trademark</option>
+                          {form.supplier && !brandOptions.includes(form.supplier) && (
+                            <option value={form.supplier}>{form.supplier}</option>
+                          )}
+                          {brandOptions.map((b, idx2) => (
+                            <option key={`${b}-${idx2}`} value={b}>
+                              {b}
+                            </option>
+                          ))}
+                          <option value={OTHER_OPTION}>Other (Add New)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Item</label>
+                        <input
+                          value="Paddy"
+                          readOnly
+                          className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300 bg-gray-100 cursor-not-allowed"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Quantity</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={it?.quantity ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
+                            handleItemChange(realIdx, "quantity", v);
+                          }}
+                          className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+                        />
+                      </div>
+                      <div className="flex gap-2 items-end">
+                        <div className="flex-1">
+                          <label className="block text-xs text-gray-500 mb-1">Unit</label>
+                          <select
+                            value={it?.unit ?? "kg"}
+                            onChange={(e) => handleItemChange(realIdx, "unit", e.target.value)}
+                            className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
+                          >
+                            {UNITS.map((u) => (
+                              <option key={u} value={u}>
+                                {u}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setItems((prev) => prev.filter((_x, i) => i !== realIdx))}
+                          className="px-3 py-2 rounded-lg border border-rose-200 text-rose-700 text-xs hover:bg-rose-50"
+                          title="Remove line"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
 
@@ -913,32 +1270,35 @@ export default function GatePassIN() {
             Invoice Items (read only)
           </h3>
           <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-600">
-            {selectedInvoiceId ? (
-              <ul className="list-disc pl-5 space-y-1">
-                {(purchaseInvoices.find((t) => t._id === selectedInvoiceId)?.items || []).map(
-                  (it, i) => (
-                    <li key={`inv-${i}`}>
-                      {it.productTypeName} — {Number(it.netWeightKg || 0).toFixed(2)} kg
-                    </li>
-                  )
-                )}
-              </ul>
-            ) : (
-              <span>Select an invoice to see items.</span>
-            )}
+            {selectedInvoiceIds.length ? (
+  <ul className="list-disc pl-5 space-y-1">
+    {selectedInvoiceIds
+      .map((id) => purchaseInvoices.find((t) => String(t._id) === String(id)))
+      .filter(Boolean)
+      .flatMap((inv) => inv.items || [])
+      .map(
+      (it, i) => {
+        const label = it.itemName || it.productTypeName || "SMJ Own";
+        const qty =
+          it.netWeightKg != null && it.netWeightKg !== ""
+            ? String(Math.round(Number(it.netWeightKg || 0)))
+            : Number(it.quantity || 0).toFixed(0);
+        const unit =
+          it.netWeightKg != null && it.netWeightKg !== ""
+            ? "kg"
+            : it.unit || "pcs";
+        return (
+          <li key={`inv-${i}`}>
+            {label} — {qty} {unit}
+          </li>
+        );
+      }
+    )}
+  </ul>
+) : (
+  <span>Select invoice(s) to see items.</span>
+)}
           </div>
-        </div>
-
-        {/* Remarks */}
-        <div>
-          <label className="block text-sm font-medium mb-1">Remarks</label>
-          <textarea
-            name="remarks"
-            value={form.remarks}
-            onChange={handleChange}
-            rows={2}
-            className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-          />
         </div>
 
         {/* Submit Buttons */}
@@ -958,14 +1318,11 @@ export default function GatePassIN() {
                 setForm({
                   truckNo: "",
                   supplier: "",
-                  transporter: "",
                   driverName: "",
                   driverContact: "",
                   freightCharges: "",
-                  remarks: "",
                 });
                 setSelectedInvoiceId("");
-                setOtherSource("");
                 setItems([
                   { itemType: "Paddy", quantity: "", unit: "kg" },
                 ]);
@@ -986,7 +1343,425 @@ export default function GatePassIN() {
         idKey="_id"
         searchPlaceholder="Search gate passes..."
         emptyMessage={loading ? "Loading..." : "No gate passes found."}
+        deleteAll={{
+          description: "This will permanently delete ALL Gate Pass IN records from the database.",
+          onConfirm: async (adminPin) => {
+            const res = await api.post("/admin/purge", {
+              adminPin,
+              key: "gatePasses",
+              filter: { type: "IN" },
+            });
+            const deleted = res?.data?.data?.deletedCount ?? 0;
+            toast.success(`Deleted ${deleted} Gate Pass IN records`);
+            fetchRows();
+          },
+        }}
       />
+
+      <AddOptionModal
+        open={brandModal.open}
+        title="Manage Brand / Trademark"
+        subtitle="Add brand, select products, set conversion and pricing."
+        maxWidthClass="max-w-[20cm]"
+        onClose={() => setBrandModal(createBrandModalState())}
+        onSubmit={saveBrandFromModal}
+        submitLabel="Add"
+        loading={brandModal.saving}
+      >
+        <div className="space-y-4">
+          <div>
+          </div>
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-12 md:col-span-6">
+                <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+                {brandModal.value !== OTHER_OPTION ? (
+                  <select
+                    className={`w-full border rounded px-3 py-2 text-sm ${
+                      brandModal.errors?.value ? "border-red-400 bg-red-50" : "border-gray-300"
+                    }`}
+                    value={brandModal.value}
+                    onChange={(e) =>
+                      setBrandModal((prev) => {
+                        const nextValue = e.target.value;
+                        const nextBrandName =
+                          nextValue === OTHER_OPTION ? prev.valueOther : nextValue;
+                        return {
+                          ...prev,
+                          value: nextValue,
+                          valueOther: nextValue === OTHER_OPTION ? prev.valueOther : "",
+                          productRows:
+                            nextValue && nextValue !== OTHER_OPTION
+                              ? getBrandProducts(nextValue)
+                              : prev.productRows,
+                          draft: {
+                            ...(prev.draft || {}),
+                            nameSelect: "",
+                            nameOther: "",
+                          },
+                          errors: {
+                            ...(prev.errors || {}),
+                            value: validateBrandValue(nextBrandName),
+                            rowsGeneral: "",
+                          },
+                        };
+                      })
+                    }
+                  >
+                    <option value="">Select brand</option>
+                    {brandOptions.map((b, idx) => (
+                      <option key={`brand-opt-${b}-${idx}`} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                    <option value={OTHER_OPTION}>Other</option>
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className={`w-full border rounded px-3 py-2 text-sm ${
+                        brandModal.errors?.value ? "border-red-400 bg-red-50" : "border-gray-300"
+                      }`}
+                      value={brandModal.valueOther || ""}
+                      onChange={(e) =>
+                        setBrandModal((prev) => {
+                          const next = sanitizeBrandText(e.target.value, 100);
+                          return {
+                            ...prev,
+                            valueOther: next,
+                            errors: { ...(prev.errors || {}), value: validateBrandValue(next) },
+                          };
+                        })
+                      }
+                      onBlur={() =>
+                        setBrandModal((prev) => ({
+                          ...prev,
+                          valueOther: toTitleCase(prev.valueOther || ""),
+                        }))
+                      }
+                      placeholder="Enter brand name"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setBrandModal((prev) => ({
+                          ...prev,
+                          value: "",
+                          valueOther: "",
+                          errors: { ...(prev.errors || {}), value: "" },
+                        }))
+                      }
+                      className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                    >
+                      List
+                    </button>
+                  </div>
+                )}
+                {brandModal.errors?.value ? (
+                  <p className="mt-1 text-xs text-red-500">{brandModal.errors.value}</p>
+                ) : null}
+              </div>
+              <div className="col-span-12 md:col-span-6">
+                <label className="block text-xs text-gray-600 mb-1">Product Name *</label>
+                {brandModal.draft?.nameSelect !== OTHER_OPTION ? (
+                  <select
+                    className={`w-full border rounded px-3 py-2 text-sm ${
+                      brandModal.errors?.draft?.name ? "border-red-400 bg-red-50" : "border-gray-300"
+                    }`}
+                    value={brandModal.draft?.nameSelect || ""}
+                    onChange={(e) => handleBrandDraftChange("nameSelect", e.target.value)}
+                  >
+                    <option value="">Select product</option>
+                    {productNameOptions.map((name, idx) => (
+                      <option key={`brand-template-${name}-${idx}`} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                    <option value={OTHER_OPTION}>Other</option>
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className={`w-full border rounded px-3 py-2 text-sm ${
+                        brandModal.errors?.draft?.name ? "border-red-400 bg-red-50" : "border-gray-300"
+                      }`}
+                      value={brandModal.draft?.nameOther || ""}
+                      onChange={(e) => handleBrandDraftChange("nameOther", e.target.value)}
+                      onBlur={() =>
+                        setBrandModal((prev) => ({
+                          ...prev,
+                          draft: {
+                            ...(prev.draft || {}),
+                            nameOther: toTitleCase(prev.draft?.nameOther || ""),
+                          },
+                        }))
+                      }
+                      placeholder="Enter product name"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleBrandDraftChange("nameSelect", "")}
+                      className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                    >
+                      List
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="col-span-12 md:col-span-3">
+                <label className="block text-xs text-gray-600 mb-1">Base Unit</label>
+                <input
+                  type="text"
+                  value="KG"
+                  readOnly
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-gray-100 text-gray-600"
+                />
+              </div>
+
+              <div className="col-span-12 md:col-span-9">
+                <label className="block text-xs text-gray-600 mb-1">Pricing per KG (PKR) *</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className={`w-full border rounded px-3 py-2 text-sm ${
+                    brandModal.errors?.draft?.pricePerKg ? "border-red-400 bg-red-50" : "border-gray-300"
+                  }`}
+                  value={brandModal.draft?.pricePerKg || ""}
+                  onChange={(e) =>
+                    setBrandModal((prev) => {
+                      const pricePerKg = sanitizeIntegerText(e.target.value, 8);
+                      return {
+                        ...prev,
+                        draft: {
+                          ...(prev.draft || {}),
+                          pricePerKg,
+                        },
+                        errors: { ...(prev.errors || {}), draft: {} },
+                      };
+                    })
+                  }
+                  placeholder="Required"
+                />
+              </div>
+
+              <div className="col-span-12">
+                <label className="block text-xs text-gray-600 mb-1">
+                  Conversion Factor (1 unit = ? KG) - editable
+                </label>
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span>1 Bag =</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className={`w-24 border rounded px-2 py-1 ${
+                      brandModal.errors?.draft?.bagKg ? "border-red-400 bg-red-50" : "border-gray-300"
+                    }`}
+                    value={brandModal.draft?.bagKg || ""}
+                    onChange={(e) => handleBrandDraftChange("bagKg", e.target.value)}
+                  />
+                  <span>KG</span>
+                  <span>1 Ton =</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className={`w-24 border rounded px-2 py-1 ${
+                      brandModal.errors?.draft?.tonKg ? "border-red-400 bg-red-50" : "border-gray-300"
+                    }`}
+                    value={brandModal.draft?.tonKg || ""}
+                    onChange={(e) => handleBrandDraftChange("tonKg", e.target.value)}
+                  />
+                  <span>KG</span>
+                  <button
+                    type="button"
+                    onClick={addDraftProductRow}
+                    className="ml-auto px-3 py-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    + Add Product
+                  </button>
+                </div>
+                {Object.values(brandModal.errors?.draft || {}).length > 0 ? (
+                  <p className="mt-1 text-xs text-red-500">Please fill all required product fields.</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+          <div>
+            <div className="rounded border border-gray-200 p-2 min-h-[44px]">
+              {(brandModal.productRows || []).length === 0 ? (
+                <div className="text-xs text-gray-400">No products added yet.</div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(brandModal.productRows || []).map((row, idx) => (
+                    <div key={`brand-product-pill-${idx}`} className="inline-flex items-center px-2 py-1 rounded bg-emerald-100 text-emerald-800 text-xs">
+                      <span>{row.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {brandModal.errors?.rowsGeneral ? (
+              <p className="mt-1 text-xs text-red-500">{brandModal.errors.rowsGeneral}</p>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 items-end">
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Rename Brand</label>
+              <select
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                value={brandModal.renameFrom}
+                onChange={(e) =>
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renameFrom: e.target.value,
+                  }))
+                }
+              >
+                <option value="">Select brand</option>
+                {brandOptions.map((b, idx) => (
+                  <option key={`rename-from-${b}-${idx}`} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-gray-600 mb-1">New Brand Name</label>
+              <input
+                type="text"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                value={brandModal.renameTo}
+                onChange={(e) =>
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renameTo: sanitizeBrandText(e.target.value, 100),
+                  }))
+                }
+                onBlur={() =>
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renameTo: toTitleCase(prev.renameTo || ""),
+                  }))
+                }
+                placeholder="Enter new brand name"
+              />
+            </div>
+            <div className="relative">
+              <label className="block text-xs text-gray-600 mb-1">Admin PIN</label>
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                className={`w-full border rounded px-3 py-2 text-sm ${
+                  brandModal.renamePinError ? "border-red-500 bg-red-50" : "border-gray-300"
+                }`}
+                value={brandModal.renamePin || ""}
+                onChange={(e) =>
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renamePin: String(e.target.value || "").replace(/\D/g, "").slice(0, 4),
+                    renamePinError: "",
+                  }))
+                }
+                placeholder="4-digit PIN"
+              />
+              {brandModal.renamePinError ? (
+                <p className="absolute left-0 top-full mt-1 text-xs text-red-500">
+                  {brandModal.renamePinError}
+                </p>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                const from = String(brandModal.renameFrom || "").trim();
+                const to = toTitleCase(String(brandModal.renameTo || "").trim());
+                const pin = String(brandModal.renamePin || "").trim();
+                if (!from || !to) {
+                  toast.error("Select brand and enter new brand name.");
+                  return;
+                }
+                if (pin.length === 0) {
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renamePinError: "Admin PIN is required.",
+                  }));
+                  return;
+                }
+                if (pin.length !== 4) {
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renamePinError: "Enter complete 4-digit PIN.",
+                  }));
+                  return;
+                }
+                if (normalizeText(from) === normalizeText(to)) {
+                  toast.error("Old and new brand names are same.");
+                  return;
+                }
+                const duplicate = (brandOptions || []).some(
+                  (b) => normalizeText(b) === normalizeText(to)
+                );
+                if (duplicate) {
+                  toast.error("Brand already exists.");
+                  return;
+                }
+                setBrandModal((prev) => ({ ...prev, renaming: true }));
+                try {
+                  await api.post("/settings/rename-brand", {
+                    oldName: from,
+                    newName: to,
+                    adminPin: pin,
+                  });
+
+                  const pRes = await api.get("/product-types");
+                  setProductCatalog(pRes.data?.data || []);
+                  const refreshedBrands = Array.from(
+                    new Set(
+                      (pRes.data?.data || [])
+                        .map((r) => String(r.brand || "").trim())
+                        .filter(Boolean)
+                    )
+                  ).sort();
+                  setBrandOptions(refreshedBrands);
+
+                  if (normalizeText(form.supplier) === normalizeText(from)) {
+                    setForm((prev) => ({ ...prev, supplier: to }));
+                  }
+
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renameFrom: "",
+                    renameTo: "",
+                    renamePin: "",
+                    renamePinError: "",
+                    renaming: false,
+                  }));
+                  toast.success("Brand renamed successfully.");
+                } catch (err) {
+                  const message =
+                    err?.response?.data?.message || "Failed to rename brand.";
+                  toast.error(message);
+                  setBrandModal((prev) => ({
+                    ...prev,
+                    renaming: false,
+                    renamePinError:
+                      message === "Invalid admin PIN." ? "PIN is incorrect." : "",
+                  }));
+                }
+              }}
+              className="w-full px-3 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-60"
+              disabled={brandModal.renaming}
+            >
+              {brandModal.renaming ? "Renaming..." : "Rename"}
+            </button>
+          </div>
+        </div>
+      </AddOptionModal>
     </div>
   );
 }
+
+
+

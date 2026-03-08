@@ -11,3 +11,24 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Thin scrollbar (use on scrollable panels) */
+.thin-scrollbar {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: rgba(16, 185, 129, 0.55) rgba(17, 24, 39, 0.06);
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: rgba(17, 24, 39, 0.06);
+  border-radius: 999px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.55);
+  border-radius: 999px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.75);
+}

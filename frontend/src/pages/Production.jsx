@@ -33,6 +33,7 @@ export default function Production() {
     productWiseOutput: [],
   });
   const [paddyStockKg, setPaddyStockKg] = useState(0);
+  const [paddyByCompany, setPaddyByCompany] = useState([]);
 
   const [activeTab, setActiveTab] = useState("IN_PROCESS");
   const [inProcessBatches, setInProcessBatches] = useState([]);
@@ -50,23 +51,25 @@ export default function Production() {
 
   const [batchForm, setBatchForm] = useState({
     date: todayISODate(),
+    sourceCompanyName: "",
     paddyWeightKg: "",
     remarks: "",
   });
 
   const [editBatchForm, setEditBatchForm] = useState({
     date: "",
+    sourceCompanyName: "",
     paddyWeightKg: "",
     remarks: "",
   });
 
   const [outputForm, setOutputForm] = useState({
-    brand: "",
     productTypeId: "",
     numBags: "",
     perBagWeightKg: "",
     netWeightKg: "",
-    shift: "DAY",
+    durationMinutes: "0",
+    durationUnit: "min",
   });
 
   // Delete completed batch confirmation
@@ -80,8 +83,10 @@ export default function Production() {
   const [completedBatchUnlocked, setCompletedBatchUnlocked] = useState(false);
   const [lastEnteredPin, setLastEnteredPin] = useState("");
   const [editingOutputId, setEditingOutputId] = useState(null);
-  const [editOutputForm, setEditOutputForm] = useState({ numBags: "", perBagWeightKg: "", shift: "DAY", brand: "", productTypeId: "" });
+  const [editOutputForm, setEditOutputForm] = useState({ numBags: "", perBagWeightKg: "", durationMinutes: "0", productTypeId: "" });
+  const [nowTick, setNowTick] = useState(Date.now());
   const [savingOutputId, setSavingOutputId] = useState(null);
+  const [editingBatchInfo, setEditingBatchInfo] = useState(false);
   const [settings, setSettings] = useState({
     defaultBagWeightKg: 65,
     adminPin: "0000",
@@ -114,9 +119,13 @@ export default function Production() {
     loadMillInfo();
   }, []);
 
-  const brandOptions = Array.from(
-    new Set((products || []).map((p) => p.brand).filter(Boolean))
+  const paddyCompanyOptions = Array.from(
+    new Set((paddyByCompany || []).map((r) => r.companyName).filter(Boolean))
   ).sort();
+  const selectedSourcePaddyKg = Number(
+    paddyByCompany.find((r) => r.companyName === batchForm.sourceCompanyName)
+      ?.balanceKg || 0
+  );
 
   useEffect(() => {
     const onKey = (e) => {
@@ -157,11 +166,24 @@ export default function Production() {
     try {
       const res = await api.get("/stock/current");
       const rows = res.data?.data || [];
-      const paddyTotal = rows
-        .filter((r) => (r.productTypeName || "").toLowerCase() === "paddy")
-        .reduce((sum, r) => sum + (Number(r.balanceKg) || 0), 0);
+      const paddyRows = rows
+        .filter((r) => {
+          const n = String(r.productTypeName || "").toLowerCase();
+          return n === "paddy" || n === "unprocessed paddy";
+        })
+        .filter((r) => Number(r.balanceKg || 0) > 0)
+        .map((r) => ({
+          companyName: r.companyName || "",
+          balanceKg: Number(r.balanceKg || 0),
+        }));
+      setPaddyByCompany(paddyRows);
+      const paddyTotal = paddyRows.reduce(
+        (sum, r) => sum + (Number(r.balanceKg) || 0),
+        0
+      );
       setPaddyStockKg(paddyTotal);
     } catch {
+      setPaddyByCompany([]);
       setPaddyStockKg(0);
     }
   }
@@ -178,6 +200,28 @@ export default function Production() {
       }));
     }
   }, [settings.defaultBagWeightKg]);
+
+  // Live tick for countdown display
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const durationToMinutes = (value, unit) => {
+    const v = Math.max(0, Math.floor(Number(value || 0)) || 0);
+    if (unit === "hr") return v * 60;
+    return v;
+  };
+
+  const formatCountdown = (ms) => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+    if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+    return `${s}s`;
+  };
 
   // Auto net weight = bags * perBagWeightKg (integer)
   useEffect(() => {
@@ -242,7 +286,7 @@ export default function Production() {
 
   async function loadMeta() {
     try {
-      const pRes = await api.get("/product-types");
+      const [pRes] = await Promise.all([api.get("/product-types")]);
       setProducts(pRes.data.data || []);
     } catch {
       setErrorDialog({ open: true, message: "Failed to load brand/product master data." });
@@ -283,6 +327,7 @@ export default function Production() {
     setCompletedBatchUnlocked(false);
     setLastEnteredPin("");
     setEditingOutputId(null);
+    setEditingBatchInfo(false);
     setFieldErrors({});
     try {
       const res = await api.get(`/production/batches/${id}`);
@@ -299,6 +344,7 @@ export default function Production() {
         date: b.date
           ? new Date(b.date).toISOString().slice(0, 10)
           : todayISODate(),
+        sourceCompanyName: b.sourceCompanyName || "",
         paddyWeightKg: b.paddyWeightKg != null ? String(Math.floor(b.paddyWeightKg)) : "",
         remarks: b.remarks || "",
       });
@@ -310,25 +356,29 @@ export default function Production() {
 
   async function handleCreateBatch() {
     const err = {};
-    if (paddyStockKg <= 0) {
+    if (paddyStockKg <= 0 || paddyByCompany.length === 0) {
       err.paddyStock = "No paddy in stock. Add paddy via Gate Pass Inward first.";
     }
+    if (!batchForm.sourceCompanyName) err.sourceCompanyName = "Select source company.";
     if (!batchForm.date) err.date = "Select batch date.";
     if (!batchForm.paddyWeightKg) err.paddyWeightKg = "Enter paddy weight (kg).";
     else {
       const reqKg = Math.floor(Number(batchForm.paddyWeightKg));
-      if (reqKg > paddyStockKg) err.paddyWeightKg = `Exceeds available stock (${Math.round(paddyStockKg)} kg).`;
+      if (reqKg > selectedSourcePaddyKg) {
+        err.paddyWeightKg = `Exceeds available stock for ${batchForm.sourceCompanyName} (${Math.round(selectedSourcePaddyKg)} kg).`;
+      }
     }
     if (Object.keys(err).length) {
       setFieldErrors((e) => ({ ...e, ...err }));
       return;
     }
-    setFieldErrors((e) => ({ ...e, date: "", paddyWeightKg: "", paddyStock: "" }));
+    setFieldErrors((e) => ({ ...e, sourceCompanyName: "", date: "", paddyWeightKg: "", paddyStock: "" }));
 
     setCreating(true);
     try {
       const res = await api.post("/production/batches", {
         date: batchForm.date,
+        sourceCompanyName: batchForm.sourceCompanyName,
         paddyWeightKg: Math.floor(Number(batchForm.paddyWeightKg)),
         remarks: batchForm.remarks,
       });
@@ -338,6 +388,7 @@ export default function Production() {
         toast.success("Production batch created", { position: "bottom-center", duration: 2500 });
         setBatchForm({
           date: todayISODate(),
+          sourceCompanyName: "",
           paddyWeightKg: "",
           remarks: "",
         });
@@ -364,12 +415,19 @@ export default function Production() {
   async function handleSaveBatchInfo() {
     if (!selectedBatchId || !selectedBatch) return;
     const batchPaddy = Number(selectedBatch.paddyWeightKg ?? selectedBatch.totalRawWeightKg) || 0;
-    const maxEditablePaddyKg = paddyStockKg + batchPaddy;
+    const availableForSource =
+      Number(
+        paddyByCompany.find(
+          (r) => r.companyName === selectedBatch.sourceCompanyName
+        )?.balanceKg || 0
+      ) + batchPaddy;
     const err = {};
     if (!editBatchForm.paddyWeightKg) err.editPaddyWeightKg = "Enter paddy weight (kg).";
     else {
       const reqKg = Math.floor(Number(editBatchForm.paddyWeightKg));
-      if (reqKg > maxEditablePaddyKg) err.editPaddyWeightKg = `Exceeds available stock (${Math.round(maxEditablePaddyKg)} kg).`;
+      if (reqKg > availableForSource) {
+        err.editPaddyWeightKg = `Exceeds available stock for ${selectedBatch.sourceCompanyName || "selected source"} (${Math.round(availableForSource)} kg).`;
+      }
     }
     if (Object.keys(err).length) {
       setFieldErrors((e) => ({ ...e, ...err }));
@@ -398,6 +456,7 @@ export default function Production() {
         await loadBatches();
         await loadSummary();
         await loadPaddyStock();
+        setEditingBatchInfo(false);
         toast.success("Batch updated", { position: "bottom-center", duration: 2500 });
       }
     } catch {
@@ -409,7 +468,6 @@ export default function Production() {
   async function handleAddOutput() {
     if (!selectedBatchId || !selectedBatch) return;
     const err = {};
-    if (!outputForm.brand) err.outputBrand = "Select brand.";
     if (!outputForm.productTypeId) err.outputProduct = "Select product.";
     if (!outputForm.numBags) err.outputBags = "Enter bags.";
     if (!outputForm.perBagWeightKg) err.outputPerBag = "Select product to fetch bag weight.";
@@ -435,7 +493,6 @@ export default function Production() {
     }
     setFieldErrors((e) => ({
       ...e,
-      outputBrand: "",
       outputProduct: "",
       outputBags: "",
       outputPerBag: "",
@@ -447,11 +504,9 @@ export default function Production() {
     const payload = {
       productTypeId: outputForm.productTypeId,
       productTypeName: product?.name || "",
-      companyId: null,
-      companyName: outputForm.brand || "",
       numBags: Number(outputForm.numBags),
       perBagWeightKg: Number(outputForm.perBagWeightKg),
-      shift: outputForm.shift,
+      durationMinutes: durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit),
     };
     if (selectedBatch.status === "COMPLETED" && completedBatchUnlocked) {
       payload.adminPin = lastEnteredPin || settings.adminPin || "0000";
@@ -469,13 +524,14 @@ export default function Production() {
         toast.success("Output added", { position: "bottom-center", duration: 2500 });
         setSelectedBatch(res.data.data);
         setOutputForm({
-          brand: "",
           productTypeId: "",
           numBags: "",
           perBagWeightKg: settings.defaultBagWeightKg ? String(settings.defaultBagWeightKg) : "",
           netWeightKg: "",
-          shift: "DAY",
+          durationMinutes: "0",
+          durationUnit: "min",
         });
+        // keep output form visible
         await loadSummary();
         await loadBatches();
       }
@@ -515,11 +571,9 @@ export default function Production() {
         {
           productTypeId: editOutputForm.productTypeId || o.productTypeId,
           productTypeName: product?.name || o.productTypeName,
-          companyId: null,
-          companyName: editOutputForm.brand || o.companyName || "",
           numBags,
           perBagWeightKg: perBag,
-          shift: editOutputForm.shift || o.shift,
+          durationMinutes: Number(editOutputForm.durationMinutes || 0),
         }
       );
       if (res.data?.success) {
@@ -635,9 +689,16 @@ export default function Production() {
     activeTab === "IN_PROCESS" ? inProcessBatches : completedBatches;
 
   const paddyExceedNew =
-    Number(batchForm.paddyWeightKg) > paddyStockKg && batchForm.paddyWeightKg !== "";
+    Number(batchForm.paddyWeightKg) > selectedSourcePaddyKg && batchForm.paddyWeightKg !== "";
   const batchPaddyForEdit = selectedBatch ? (Number(selectedBatch.paddyWeightKg ?? selectedBatch.totalRawWeightKg) || 0) : 0;
-  const maxEditablePaddyKg = paddyStockKg + batchPaddyForEdit;
+  const maxEditablePaddyKg =
+    (selectedBatch
+      ? Number(
+          paddyByCompany.find(
+            (r) => r.companyName === selectedBatch.sourceCompanyName
+          )?.balanceKg || 0
+        )
+      : 0) + batchPaddyForEdit;
   const paddyExceedEdit =
     editBatchForm.paddyWeightKg !== "" && Number(editBatchForm.paddyWeightKg) > maxEditablePaddyKg;
 
@@ -654,27 +715,13 @@ export default function Production() {
     <div className="space-y-6">
       <Toaster position="bottom-center" toastOptions={{ duration: 2500 }} />
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-emerald-800 flex items-center gap-2">
-            <Factory size={20} />
-            Production Management
-          </h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage paddy batches, finished outputs and day/night shift
-            performance with live stock integration.
-          </p>
-        </div>
-      </div>
-
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* 1. Paddy Stock */}
         <div className="bg-white p-4 rounded-xl shadow border-l-4 border-amber-400">
           <div className="flex justify-between">
             <div>
-              <div className="text-xs text-gray-500">Paddy Stock</div>
+              <div className="text-xs text-gray-500">Unprocessed Paddy Stock</div>
               <div className="text-xl font-bold text-amber-800">
                 {typeof paddyStockKg === "number" ? Math.round(paddyStockKg) : "0"} kg
               </div>
@@ -786,7 +833,32 @@ export default function Production() {
           </div>
 
           {/* Quick create: Date, Paddy (kg), New Batch — Enter to create */}
-          <div className="p-3 border-b bg-gray-50 grid grid-cols-3 gap-2 text-xs items-center">
+          <div className="p-3 border-b bg-gray-50 grid grid-cols-4 gap-2 text-xs items-start">
+            <div>
+              <select
+                value={batchForm.sourceCompanyName}
+                onChange={(e) =>
+                  setBatchForm((f) => ({ ...f, sourceCompanyName: e.target.value }))
+                }
+                className={`border rounded px-2 py-1 w-full ${fieldErrors.sourceCompanyName ? "border-red-500 bg-red-50" : ""}`}
+              >
+                <option value="">Select paddy source brand</option>
+                {batchForm.sourceCompanyName &&
+                  !paddyCompanyOptions.includes(batchForm.sourceCompanyName) && (
+                    <option value={batchForm.sourceCompanyName}>
+                      {batchForm.sourceCompanyName}
+                    </option>
+                  )}
+                {paddyCompanyOptions.map((name, idx) => (
+                  <option key={`${name}-${idx}`} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              {fieldErrors.sourceCompanyName && (
+                <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.sourceCompanyName}</p>
+              )}
+            </div>
             <div>
               <input
                 type="date"
@@ -812,6 +884,11 @@ export default function Production() {
                 placeholder="Paddy (kg)"
                 className={`border rounded px-2 py-1 w-full ${paddyExceedNew ? "border-red-500 bg-red-50" : ""}`}
               />
+              {batchForm.sourceCompanyName && (
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  Available unprocessed: {Math.round(selectedSourcePaddyKg)} kg
+                </p>
+              )}
             </div>
             <div>
               <button
@@ -833,6 +910,7 @@ export default function Production() {
               <thead className="bg-[#E6F9F0] text-emerald-800">
                 <tr>
                   <th className="p-2 text-left">Batch No</th>
+                  <th className="p-2 text-left">Source Company</th>
                   <th className="p-2 text-left">Date</th>
                   <th className="p-2 text-right">Paddy (kg)</th>
                   <th className="p-2 text-right">Output (kg)</th>
@@ -853,6 +931,7 @@ export default function Production() {
                     onClick={() => selectBatch(b._id, b.status)}
                   >
                     <td className="p-2">{b.batchNo}</td>
+                    <td className="p-2">{b.sourceCompanyName || "-"}</td>
                     <td className="p-2">
                       {new Date(b.date).toLocaleDateString()}
                     </td>
@@ -869,6 +948,7 @@ export default function Production() {
                           onClick={(e) => {
                             e.stopPropagation();
                             selectBatch(b._id, b.status);
+                            setEditingBatchInfo(true);
                           }}
                           className="p-1.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
                           title="Edit"
@@ -931,7 +1011,7 @@ export default function Production() {
 
                 {currentBatchList.length === 0 && (
                   <tr>
-                    <td className="p-3 text-center text-gray-500" colSpan={5}>
+                    <td className="p-3 text-center text-gray-500" colSpan={6}>
                       {loadingBatches
                         ? "Loading batches..."
                         : "No batches found."}
@@ -962,108 +1042,127 @@ export default function Production() {
             </div>
           </div>
 
-          {/* Batch info */}
-          <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-4 gap-3 text-xs items-end">
-            <div>
-              <label className="block text-[11px] text-gray-500">Batch Date</label>
-              <input
-                type="date"
-                value={editBatchForm.date}
-                onChange={(e) =>
-                  setEditBatchForm((f) => ({ ...f, date: e.target.value }))
-                }
-                onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
-                readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
-                className={`border rounded px-2 py-1 w-full ${selectedBatch.status === "COMPLETED" && !completedBatchUnlocked ? "bg-gray-100 cursor-not-allowed" : ""}`}
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] text-gray-500">Paddy Weight (kg)</label>
-              <input
-                type="number"
-                value={editBatchForm.paddyWeightKg}
-                onChange={(e) => {
-                  setEditBatchForm((f) => ({ ...f, paddyWeightKg: intClean(e.target.value) }));
-                  setFieldErrors((e) => ({ ...e, editPaddyWeightKg: "" }));
-                }}
-                onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
-                readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
-                className={`border rounded px-2 py-1 w-full ${
-                  selectedBatch.status === "COMPLETED" && !completedBatchUnlocked
-                    ? "bg-gray-100 cursor-not-allowed"
-                    : ""
-                } ${paddyExceedEdit || fieldErrors.editPaddyWeightKg ? "border-red-500 bg-red-50" : ""}`}
-              />
-              {fieldErrors.editPaddyWeightKg && (
-                <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.editPaddyWeightKg}</p>
-              )}
-            </div>
-            <div className="col-span-2">
-              <label className="block text-[11px] text-gray-500">Remaining Paddy (kg)</label>
-              <div className="border rounded px-2 py-1 w-full bg-red-50 text-red-700 font-semibold">
-                {Math.round(remainingPaddy)} kg
+          {/* Batch info (open only when user clicks Edit from the batch table) */}
+          {editingBatchInfo ? (
+            <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-5 gap-3 text-xs items-end">
+              <div>
+                <label className="block text-[11px] text-gray-500">Source Company</label>
+                <input
+                  type="text"
+                  value={editBatchForm.sourceCompanyName}
+                  readOnly
+                  className="border rounded px-2 py-1 w-full bg-gray-100 cursor-not-allowed"
+                />
               </div>
-            </div>
-            <div className="col-span-4 flex flex-wrap gap-2 items-center">
-              {selectedBatch.status === "COMPLETED" && !completedBatchUnlocked && (
+              <div>
+                <label className="block text-[11px] text-gray-500">Batch Date</label>
+                <input
+                  type="date"
+                  value={editBatchForm.date}
+                  onChange={(e) =>
+                    setEditBatchForm((f) => ({ ...f, date: e.target.value }))
+                  }
+                  onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
+                  readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
+                  className={`border rounded px-2 py-1 w-full ${selectedBatch.status === "COMPLETED" && !completedBatchUnlocked ? "bg-gray-100 cursor-not-allowed" : ""}`}
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-500">Paddy Weight (kg)</label>
+                <input
+                  type="number"
+                  value={editBatchForm.paddyWeightKg}
+                  onChange={(e) => {
+                    setEditBatchForm((f) => ({ ...f, paddyWeightKg: intClean(e.target.value) }));
+                    setFieldErrors((e) => ({ ...e, editPaddyWeightKg: "" }));
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (selectedBatch.status === "IN_PROCESS" || completedBatchUnlocked)) { e.preventDefault(); handleSaveBatchInfo(); } }}
+                  readOnly={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
+                  className={`border rounded px-2 py-1 w-full ${
+                    selectedBatch.status === "COMPLETED" && !completedBatchUnlocked
+                      ? "bg-gray-100 cursor-not-allowed"
+                      : ""
+                  } ${paddyExceedEdit || fieldErrors.editPaddyWeightKg ? "border-red-500 bg-red-50" : ""}`}
+                />
+                {fieldErrors.editPaddyWeightKg && (
+                  <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.editPaddyWeightKg}</p>
+                )}
+              </div>
+              <div className="col-span-2">
+                <label className="block text-[11px] text-gray-500">Remaining Paddy (kg)</label>
+                <div className="border rounded px-2 py-1 w-full bg-red-50 text-red-700 font-semibold">
+                  {Math.round(remainingPaddy)} kg
+                </div>
+              </div>
+              <div className="col-span-5 flex flex-wrap gap-2 items-center">
+                {selectedBatch.status === "COMPLETED" && !completedBatchUnlocked && (
+                  <button
+                    type="button"
+                    onClick={() => setPinDialog({ open: true, pin: "", purpose: "Edit completed batch", pinError: "" })}
+                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-amber-500 text-amber-700 hover:bg-amber-50"
+                  >
+                    <Lock size={14} />
+                    Unlock with PIN
+                  </button>
+                )}
+                {selectedBatch.status === "COMPLETED" && completedBatchUnlocked && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompletedBatchUnlocked(false);
+                      setLastEnteredPin("");
+                      setEditingOutputId(null);
+                    }}
+                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  >
+                    <Lock size={14} />
+                    Lock Again
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => setPinDialog({ open: true, pin: "", purpose: "Edit completed batch", pinError: "" })}
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-amber-500 text-amber-700 hover:bg-amber-50"
+                  onClick={() => setEditingBatchInfo(false)}
+                  className="px-3 py-1.5 text-xs rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
                 >
-                  <Lock size={14} />
-                  Unlock with PIN
+                  Cancel
                 </button>
-              )}
-              {selectedBatch.status === "COMPLETED" && completedBatchUnlocked && (
+                {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
+                  <button
+                    onClick={handleSaveBatchInfo}
+                    disabled={savingBatchInfo}
+                    className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    {savingBatchInfo ? "Saving..." : "Save Batch Info"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
-                    setCompletedBatchUnlocked(false);
-                    setLastEnteredPin("");
-                    setEditingOutputId(null);
+                    setPrintBatch(selectedBatch);
+                    setShowSlip(true);
                   }}
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border text-emerald-700 hover:bg-emerald-50"
                 >
-                  <Lock size={14} />
-                  Lock Again
+                  <Printer size={14} />
+                  Preview Slip
                 </button>
-              )}
-              {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
-                <button
-                  onClick={handleSaveBatchInfo}
-                  disabled={savingBatchInfo}
-                  className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                >
-                  {savingBatchInfo ? "Saving..." : "Save Batch Info"}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setPrintBatch(selectedBatch);
-                  setShowSlip(true);
-                }}
-                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border text-emerald-700 hover:bg-emerald-50"
-              >
-                <Printer size={14} />
-                Preview Slip
-              </button>
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {/* Outputs */}
           <div>
             <div className="text-sm font-semibold text-gray-700 mb-2">Outputs</div>
-            <div className="border rounded-lg overflow-hidden max-h-40">
+            <div className="border rounded-lg overflow-y-auto max-h-60">
               <table className="w-full text-[11px]">
                 <thead className="bg-gray-100">
                   <tr>
                     <th className="p-2 text-left">Brand/Trademark</th>
                     <th className="p-2 text-left">Product</th>
+                    <th className="p-2 text-left">Status</th>
+                    <th className="p-2 text-left">Complete At</th>
                     <th className="p-2 text-right">Bags</th>
                     <th className="p-2 text-right">Net Wt</th>
-                    <th className="p-2 text-left">Shift</th>
                     {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
                       <th className="p-2 w-16" />
                     )}
@@ -1075,35 +1174,12 @@ export default function Production() {
                       {editingOutputId === o._id ? (
                         <>
                           <td className="p-2">
-                            <select
-                              value={editOutputForm.brand || ""}
-                              onChange={(e) =>
-                                setEditOutputForm((f) => ({
-                                  ...f,
-                                  brand: e.target.value,
-                                  productTypeId: "",
-                                  perBagWeightKg: "",
-                                }))
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  handleSaveOutput(o._id);
-                                }
-                                if (e.key === "Escape") {
-                                  setEditingOutputId(null);
-                                  setFieldErrors((f) => ({ ...f, editOutputTotal: "" }));
-                                }
-                              }}
-                              className="border rounded px-1 py-0.5 text-[11px] w-full"
-                            >
-                              <option value="">Select brand</option>
-                              {[...brandOptions, editOutputForm.brand]
-                                .filter((b, i, arr) => b && arr.indexOf(b) === i)
-                                .map((b, i) => (
-                                  <option key={`${b}-${i}`} value={b}>{b}</option>
-                                ))}
-                            </select>
+                            <input
+                              type="text"
+                              value={selectedBatch.sourceCompanyName || o.companyName || "-"}
+                              readOnly
+                              className="border rounded px-1 py-0.5 text-[11px] w-full bg-gray-100 cursor-not-allowed"
+                            />
                           </td>
                           <td className="p-2">
                             <select
@@ -1132,13 +1208,41 @@ export default function Production() {
                               className="border rounded px-1 py-0.5 text-[11px] w-full"
                             >
                               <option value="">Select product</option>
-                              {(editOutputForm.brand
-                                ? products.filter((p) => p.brand === editOutputForm.brand)
-                                : products
-                              ).map((p) => (
+                              {products
+                                .filter((p) =>
+                                  selectedBatch.sourceCompanyName
+                                    ? p.brand === selectedBatch.sourceCompanyName
+                                    : true
+                                )
+                                .map((p) => (
                                 <option key={p._id} value={p._id}>{p.name}</option>
                               ))}
                             </select>
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="text"
+                              value={(o.status || "COMPLETED") === "COMPLETED" ? "Completed" : "In process"}
+                              readOnly
+                              className="border rounded px-1 py-0.5 text-[11px] w-full bg-gray-100 cursor-not-allowed"
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              type="text"
+                              value={
+                                o.plannedCompleteAt
+                                  ? new Date(o.plannedCompleteAt).toLocaleString()
+                                  : "-"
+                              }
+                              readOnly
+                              className="border rounded px-1 py-0.5 text-[11px] w-full bg-gray-100 cursor-not-allowed"
+                            />
+                            {(o.status || "COMPLETED") !== "COMPLETED" && o.plannedCompleteAt && (
+                              <div className="text-[10px] text-gray-500">
+                                {formatCountdown(new Date(o.plannedCompleteAt).getTime() - nowTick)} left
+                              </div>
+                            )}
                           </td>
                           <td className="p-2">
                             <input
@@ -1157,16 +1261,31 @@ export default function Production() {
                               className="border rounded px-1 py-0.5 text-[11px] w-14 text-right bg-gray-100 cursor-not-allowed"
                             />
                           </td>
-                          <td className="p-2">
-                            <select
-                              value={editOutputForm.shift || o.shift}
-                              onChange={(e) => setEditOutputForm((f) => ({ ...f, shift: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSaveOutput(o._id); } if (e.key === "Escape") { setEditingOutputId(null); setFieldErrors((f) => ({ ...f, editOutputTotal: "" })); } }}
-                              className="border rounded px-1 py-0.5 text-[11px]"
-                            >
-                              <option value="DAY">Day</option>
-                              <option value="NIGHT">Night</option>
-                            </select>
+                          <td className="p-2" colSpan={1}>
+                            <input
+                              type="number"
+                              value={editOutputForm.durationMinutes}
+                              onChange={(e) =>
+                                setEditOutputForm((f) => ({
+                                  ...f,
+                                  durationMinutes: intClean(e.target.value),
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleSaveOutput(o._id);
+                                }
+                                if (e.key === "Escape") {
+                                  setEditingOutputId(null);
+                                  setFieldErrors((f) => ({ ...f, editOutputTotal: "" }));
+                                }
+                              }}
+                              className="border rounded px-1 py-0.5 text-[11px] w-20 text-right"
+                              placeholder="Minutes"
+                              disabled={(o.status || "COMPLETED") === "COMPLETED"}
+                              title="Timer in minutes (only for in-process outputs)"
+                            />
                           </td>
                           <td className="p-2">
                             <button
@@ -1190,14 +1309,27 @@ export default function Production() {
                         <>
                           <td className="p-2">{o.companyName || "-"}</td>
                           <td className="p-2">{o.productTypeName}</td>
+                          <td className="p-2">
+                            {(o.status || "COMPLETED") === "COMPLETED" ? "Completed" : "In process"}
+                          </td>
+                          <td className="p-2">
+                            {(o.status || "COMPLETED") === "COMPLETED"
+                              ? (o.completedAt ? new Date(o.completedAt).toLocaleString() : "-")
+                              : (o.plannedCompleteAt ? new Date(o.plannedCompleteAt).toLocaleString() : "-")}
+                            {(o.status || "COMPLETED") !== "COMPLETED" && o.plannedCompleteAt && (
+                              <div className="text-[10px] text-gray-500">
+                                {formatCountdown(new Date(o.plannedCompleteAt).getTime() - nowTick)} left
+                              </div>
+                            )}
+                          </td>
                           <td className="p-2 text-right">{o.numBags}</td>
                           <td className="p-2 text-right">{Math.round(Number(o.netWeightKg) || 0)}</td>
-                          <td className="p-2">{o.shift === "DAY" ? "Day" : "Night"}</td>
                           {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
                             <td className="p-2">
                               <button
                                 type="button"
                                 onClick={() => {
+                                  // keep output form visible
                                   setEditingOutputId(o._id);
                                   const product = products.find((p) => p._id === o.productTypeId);
                                   setEditOutputForm({
@@ -1207,8 +1339,7 @@ export default function Production() {
                                       : (o.numBags && o.netWeightKg
                                         ? String(Math.floor(Number(o.netWeightKg) / o.numBags))
                                         : ""),
-                                    shift: o.shift || "DAY",
-                                    brand: product?.brand || o.companyName || "",
+                                    durationMinutes: String(o.durationMinutes || "0"),
                                     productTypeId: o.productTypeId || "",
                                   });
                                   setFieldErrors((e) => ({ ...e, editOutputTotal: "" }));
@@ -1226,7 +1357,7 @@ export default function Production() {
                   ))}
                       {(!selectedBatch.outputs || selectedBatch.outputs.length === 0) && (
                         <tr>
-                          <td className="p-2 text-center text-gray-400" colSpan={6}>No outputs yet.</td>
+                          <td className="p-2 text-center text-gray-400" colSpan={7}>No outputs yet.</td>
                         </tr>
                       )}
                 </tbody>
@@ -1238,105 +1369,124 @@ export default function Production() {
 
                 {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
                   <div className="mt-3 space-y-2">
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                  <select
-                    value={outputForm.brand}
-                    onChange={(e) => {
-                      setOutputForm((f) => ({ ...f, brand: e.target.value, productTypeId: "" }));
-                      setFieldErrors((e) => ({ ...e, outputBrand: "" }));
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                    className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputBrand ? "border-red-500 bg-red-50" : ""}`}
-                  >
-                    <option value="">Brand / Trademark</option>
-                    {brandOptions.map((b, i) => (
-                      <option key={`${b}-${i}`} value={b}>{b}</option>
-                    ))}
-                  </select>
-                  {fieldErrors.outputBrand && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputBrand}</p>}
-                  <select
-                    value={outputForm.productTypeId}
-                    onChange={(e) => {
-                      setOutputForm((f) => ({ ...f, productTypeId: e.target.value }));
-                      setFieldErrors((e) => ({ ...e, outputProduct: "" }));
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                    className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputProduct ? "border-red-500 bg-red-50" : ""}`}
-                  >
-                    <option value="">Finished Product</option>
-                    {(outputForm.brand
-                      ? products.filter((p) => p.brand === outputForm.brand)
-                      : products
-                    ).map((p) => (
-                      <option key={p._id} value={p._id}>{p.name}</option>
-                    ))}
-                  </select>
-                  {fieldErrors.outputProduct && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputProduct}</p>}
-                  <input
-                    type="number"
-                    value={outputForm.numBags}
-                    onChange={(e) => {
-                      setOutputForm((f) => ({ ...f, numBags: intClean(e.target.value) }));
-                      setFieldErrors((e) => ({ ...e, outputBags: "", outputTotal: "" }));
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                    placeholder="Bags"
-                    className={`border rounded px-2 py-1 ${fieldErrors.outputBags ? "border-red-500 bg-red-50" : ""}`}
-                  />
-                  <input
-                    type="number"
-                    value={outputForm.perBagWeightKg}
-                    readOnly
-                    placeholder="Wt/bag (kg)"
-                    className="border rounded px-2 py-1 bg-gray-100 cursor-not-allowed"
-                  />
-                  <input
-                    type="number"
-                    value={outputForm.netWeightKg}
-                    readOnly
-                    placeholder="Net (kg)"
-                    className="border rounded px-2 py-1 bg-gray-50"
-                  />
-                  {fieldErrors.outputTotal && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputTotal}</p>}
-                  <select
-                    value={outputForm.shift}
-                    onChange={(e) =>
-                      setOutputForm((f) => ({ ...f, shift: e.target.value }))
-                    }
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                    className="border rounded px-2 py-1 col-span-3"
-                  >
-                    <option value="DAY">Day Shift</option>
-                    <option value="NIGHT">Night Shift</option>
-                  </select>
-                </div>
-                {(selectedBatch.status === "IN_PROCESS" || (selectedBatch.status === "COMPLETED" && completedBatchUnlocked)) && (
-                  <button
-                    onClick={handleAddOutput}
-                    disabled={working}
-                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                  >
-                    <Plus size={14} />
-                    Add Output
-                  </button>
-                )}
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-gray-600">
+                        {selectedBatch.status === "IN_PROCESS"
+                          ? "Schedule outputs (they will auto-complete)."
+                          : "Add output to a completed batch (admin unlock)."}{" "}
+                      </div>
+                      {selectedBatch.status === "IN_PROCESS" && null}
+                    </div>
+
+                    {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
+                      <>
+                        <div className="grid grid-cols-3 gap-2 text-xs">
+                          <input
+                            type="text"
+                            value={selectedBatch.sourceCompanyName || "-"}
+                            readOnly
+                            className="border rounded px-2 py-1 col-span-3 bg-gray-100 cursor-not-allowed"
+                            placeholder="Source company"
+                          />
+                          <select
+                            value={outputForm.productTypeId}
+                            onChange={(e) => {
+                              setOutputForm((f) => ({ ...f, productTypeId: e.target.value }));
+                              setFieldErrors((e) => ({ ...e, outputProduct: "" }));
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                            className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputProduct ? "border-red-500 bg-red-50" : ""}`}
+                          >
+                            <option value="">Finished Product</option>
+                            {products
+                              .filter((p) =>
+                                selectedBatch.sourceCompanyName
+                                  ? p.brand === selectedBatch.sourceCompanyName
+                                  : true
+                              )
+                              .map((p) => (
+                                <option key={p._id} value={p._id}>{p.name}</option>
+                              ))}
+                          </select>
+                          {fieldErrors.outputProduct && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputProduct}</p>}
+                          <input
+                            type="number"
+                            value={outputForm.numBags}
+                            onChange={(e) => {
+                              setOutputForm((f) => ({ ...f, numBags: intClean(e.target.value) }));
+                              setFieldErrors((e) => ({ ...e, outputBags: "", outputTotal: "" }));
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                            placeholder="Bags"
+                            className={`border rounded px-2 py-1 ${fieldErrors.outputBags ? "border-red-500 bg-red-50" : ""}`}
+                          />
+                          <input
+                            type="number"
+                            value={outputForm.perBagWeightKg}
+                            readOnly
+                            placeholder="Wt/bag (kg)"
+                            className="border rounded px-2 py-1 bg-gray-100 cursor-not-allowed"
+                          />
+                          <input
+                            type="number"
+                            value={outputForm.netWeightKg}
+                            readOnly
+                            placeholder="Net (kg)"
+                            className="border rounded px-2 py-1 bg-gray-50"
+                          />
+                          {fieldErrors.outputTotal && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputTotal}</p>}
+                          <div className="col-span-3">
+                            <label className="block text-[11px] text-gray-500 mb-1">Timer</label>
+                            <div className="flex gap-2">
+                              <input
+                                type="number"
+                                value={outputForm.durationMinutes}
+                                onChange={(e) =>
+                                  setOutputForm((f) => ({ ...f, durationMinutes: intClean(e.target.value) }))
+                                }
+                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                                placeholder="0"
+                                className="border rounded px-2 py-1 w-28"
+                                title="0 means complete now; otherwise it will be scheduled and auto-completed."
+                              />
+                              <select
+                                value={outputForm.durationUnit}
+                                onChange={(e) =>
+                                  setOutputForm((f) => ({ ...f, durationUnit: e.target.value }))
+                                }
+                                className="border rounded px-2 py-1"
+                                title="Timer unit"
+                              >
+                                <option value="min">Minutes</option>
+                                <option value="hr">Hours</option>
+                              </select>
+                              <div className="text-[11px] text-gray-500 self-center">
+                                {durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit) === 0
+                                  ? "Completes now"
+                                  : `Complete at ${new Date(Date.now() + durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit) * 60 * 1000).toLocaleString()}`}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleAddOutput}
+                          disabled={working}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <Plus size={14} />
+                          Add Output
+                        </button>
+                      </>
+                    )}
               </div>
             )}
           </div>
 
           {selectedBatch.status === "IN_PROCESS" && (
             <div className="flex justify-end pt-2 border-t">
-              {fieldErrors.completeBatch && (
-                <p className="text-xs text-red-600 mr-2 self-center">{fieldErrors.completeBatch}</p>
-              )}
-              <button
-                onClick={openCompleteConfirm}
-                disabled={working}
-                className="flex items-center gap-2 px-4 py-2 rounded bg-emerald-700 text-white text-sm hover:bg-emerald-800 disabled:opacity-60"
-              >
-                <CheckCircle2 size={16} />
-                Mark Batch Completed
-              </button>
+              <p className="text-xs text-gray-500 self-center">
+                Batch will auto-complete when all scheduled outputs are completed.
+              </p>
             </div>
           )}
         </div>

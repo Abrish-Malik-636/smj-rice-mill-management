@@ -286,6 +286,15 @@ export default function ExpenseCategoryManager() {
         idKey="_id"
         searchPlaceholder="Search categories..."
         emptyMessage="No expense categories found"
+        deleteAll={{
+          description: "This will permanently delete ALL expense categories from the database.",
+          onConfirm: async (adminPin) => {
+            const res = await api.post("/admin/purge", { adminPin, key: "expenseCategories" });
+            const deleted = res?.data?.data?.deletedCount ?? 0;
+            toast.success(`Deleted ${deleted} expense categories`);
+            fetchCategories();
+          },
+        }}
       />
 
       <ConfirmDialog

@@ -1,15 +1,16 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useState } from "react";
 import api from "../../services/api";
 import { Plus, Trash2, Edit2, Save, X, AlertCircle } from "lucide-react";
 import { toast } from "react-hot-toast";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
+import AddOptionModal from "../ui/AddOptionModal";
 import { sanitizeName, toTitleCase } from "../../utils/inputUtils";
 
 const CONVERSION_UNIT_OPTIONS = ["Bag", "Ton"];
 const DEFAULT_CONVERSION = { Bag: 65, Ton: 1000 };
 
-export default function ProductManager() {
+export default function ProductManager({ tableOnly = false, editInModal = false }) {
   const [products, setProducts] = useState([]);
   const [formData, setFormData] = useState({
     nameSelect: "",
@@ -33,6 +34,11 @@ export default function ProductManager() {
   const [deleting, setDeleting] = useState(false);
   const [nameSuggestion, setNameSuggestion] = useState("");
   const [brandSuggestion, setBrandSuggestion] = useState("");
+  const [purchaseItemOptions, setPurchaseItemOptions] = useState([]);
+  const [purchaseCategoryOptions, setPurchaseCategoryOptions] = useState([]);
+  const [transporterOptions, setTransporterOptions] = useState([]);
+  const [settingsBrandOptions, setSettingsBrandOptions] = useState([]);
+  const [editModalOpen, setEditModalOpen] = useState(false);
 
   const fetchProducts = async () => {
     try {
@@ -43,8 +49,24 @@ export default function ProductManager() {
     }
   };
 
+  const fetchSettings = async () => {
+    try {
+      const res = await api.get("/settings");
+      const s = res.data?.data || {};
+      setPurchaseItemOptions(Array.isArray(s.purchaseItemOptions) ? s.purchaseItemOptions : []);
+      setPurchaseCategoryOptions(
+        Array.isArray(s.purchaseCategoryOptions) ? s.purchaseCategoryOptions : []
+      );
+      setTransporterOptions(Array.isArray(s.transporterOptions) ? s.transporterOptions : []);
+      setSettingsBrandOptions(Array.isArray(s.brandOptions) ? s.brandOptions : []);
+    } catch {
+      toast.error("Failed to load purchase dropdowns");
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
+    fetchSettings();
   }, []);
 
   const productNameOptions = Array.from(
@@ -52,6 +74,9 @@ export default function ProductManager() {
   ).sort();
   const brandOptions = Array.from(
     new Set((products || []).map((p) => p.brand).filter(Boolean))
+  ).sort();
+  const allBrandOptions = Array.from(
+    new Set([...(brandOptions || []), ...(settingsBrandOptions || [])].filter(Boolean))
   ).sort();
   const OTHER_OPTION = "__OTHER__";
   const isOtherName = formData.nameSelect === OTHER_OPTION;
@@ -308,6 +333,7 @@ export default function ProductManager() {
         pricePerKg: "",
       });
       setEditingId(null);
+      setEditModalOpen(false);
       setErrors({});
       setTouched({});
       fetchProducts();
@@ -343,20 +369,49 @@ export default function ProductManager() {
       toast.error("Select a value to delete.");
       return;
     }
-    const isProduct = deleteType === "product";
-    const affected = products.filter((p) =>
-      isProduct ? p.name === deleteValue : (p.brand || "") === deleteValue
-    );
-    if (affected.length === 0) {
-      toast.error("No matching records to delete.");
-      return;
-    }
     setDeleting(true);
     try {
-      await Promise.all(affected.map((p) => api.delete(`/product-types/${p._id}`)));
-      toast.success(`Deleted ${affected.length} items.`);
-      setDeleteValue("");
-      fetchProducts();
+      if (
+        deleteType === "purchase_item" ||
+        deleteType === "purchase_category" ||
+        deleteType === "transporter"
+      ) {
+        const nextItems =
+          deleteType === "purchase_item"
+            ? purchaseItemOptions.filter((v) => v !== deleteValue)
+            : purchaseItemOptions;
+        const nextCategories =
+          deleteType === "purchase_category"
+            ? purchaseCategoryOptions.filter((v) => v !== deleteValue)
+            : purchaseCategoryOptions;
+        const nextTransporters =
+          deleteType === "transporter"
+            ? transporterOptions.filter((v) => v !== deleteValue)
+            : transporterOptions;
+        await api.put("/settings", {
+          purchaseItemOptions: nextItems,
+          purchaseCategoryOptions: nextCategories,
+          transporterOptions: nextTransporters,
+        });
+        setPurchaseItemOptions(nextItems);
+        setPurchaseCategoryOptions(nextCategories);
+        setTransporterOptions(nextTransporters);
+        toast.success("Deleted dropdown value.");
+        setDeleteValue("");
+      } else {
+        const isProduct = deleteType === "product";
+        const affected = products.filter((p) =>
+          isProduct ? p.name === deleteValue : (p.brand || "") === deleteValue
+        );
+        if (affected.length === 0) {
+          toast.error("No matching records to delete.");
+          return;
+        }
+        await Promise.all(affected.map((p) => api.delete(`/product-types/${p._id}`)));
+        toast.success(`Deleted ${affected.length} items.`);
+        setDeleteValue("");
+        fetchProducts();
+      }
     } catch (err) {
       toast.error("Failed to delete.");
     } finally {
@@ -368,7 +423,7 @@ export default function ProductManager() {
     setEditingId(row._id);
     const factors = row.conversionFactors && typeof row.conversionFactors === "object" ? { ...DEFAULT_CONVERSION, ...row.conversionFactors } : { ...DEFAULT_CONVERSION };
     const existsInOptions = productNameOptions.includes(row.name || "");
-    const brandExistsInOptions = brandOptions.includes(row.brand || "");
+    const brandExistsInOptions = allBrandOptions.includes(row.brand || "");
     setFormData({
       nameSelect: existsInOptions ? row.name || "" : OTHER_OPTION,
       nameOther: existsInOptions ? "" : row.name || "",
@@ -381,6 +436,7 @@ export default function ProductManager() {
     });
     setErrors({});
     setTouched({});
+    if (tableOnly && editInModal) setEditModalOpen(true);
   };
 
   const cancelEdit = () => {
@@ -397,6 +453,7 @@ export default function ProductManager() {
     });
     setErrors({});
     setTouched({});
+    setEditModalOpen(false);
   };
 
   const brandGroups = React.useMemo(() => {
@@ -447,6 +504,7 @@ export default function ProductManager() {
 
   return (
     <div className="space-y-4">
+      {!tableOnly && (
       <form onSubmit={handleSubmit} className="grid grid-cols-6 gap-4 bg-emerald-50 p-4 rounded-lg">
         <div className="col-span-2">
           <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
@@ -464,8 +522,8 @@ export default function ProductManager() {
               className={`border p-2 rounded text-sm w-full ${errors.brand && touched.brand ? "border-red-500 bg-red-50" : "border-gray-300"}`}
             >
               <option value="">Select brand</option>
-              {brandOptions.map((b) => (
-                <option key={b} value={b}>
+              {allBrandOptions.map((b, idx) => (
+                <option key={`${b}-${idx}`} value={b}>
                   {b}
                 </option>
               ))}
@@ -479,7 +537,7 @@ export default function ProductManager() {
                 value={formData.brandOther}
                 onChange={(e) => {
                   handleChange(e);
-                  const suggestion = findSuggestion(e.target.value, brandOptions);
+                  const suggestion = findSuggestion(e.target.value, allBrandOptions);
                   setBrandSuggestion(suggestion);
                 }}
                 onBlur={handleBlur}
@@ -525,8 +583,8 @@ export default function ProductManager() {
               className={`border p-2 rounded text-sm w-full ${errors.name && touched.name ? "border-red-500 bg-red-50" : "border-gray-300"}`}
             >
               <option value="">Select product</option>
-              {productNameOptions.map((p) => (
-                <option key={p} value={p}>
+              {productNameOptions.map((p, idx) => (
+                <option key={`${p}-${idx}`} value={p}>
                   {p}
                 </option>
               ))}
@@ -669,6 +727,53 @@ export default function ProductManager() {
           )}
         </div>
       </form>
+      )}
+
+      {tableOnly && editInModal && (
+        <AddOptionModal
+          open={editModalOpen}
+          title="Edit Brand Product"
+          subtitle="Only pricing can be updated here."
+          onClose={cancelEdit}
+          onSubmit={() => saveProduct(false)}
+          submitLabel="Save Changes"
+          loading={loading || checkingDuplicate}
+          maxWidthClass="max-w-2xl"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+              <input
+                type="text"
+                value={isOtherBrand ? formData.brandOther : formData.brandSelect}
+                readOnly
+                className="border p-2 rounded text-sm w-full bg-gray-100 text-gray-700 border-gray-300"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Product Name *</label>
+              <input
+                type="text"
+                value={isOtherName ? formData.nameOther : formData.nameSelect}
+                readOnly
+                className="border p-2 rounded text-sm w-full bg-gray-100 text-gray-700 border-gray-300"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Pricing per KG (PKR)</label>
+              <input type="number" name="pricePerKg" value={formData.pricePerKg} onChange={(e) => handlePriceKgChange(e.target.value)} className="border p-2 rounded text-sm w-full border-gray-300" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Pricing per Bag (PKR)</label>
+              <input type="number" name="pricePerBag" value={formData.pricePerBag} onChange={handleChange} className="border p-2 rounded text-sm w-full border-gray-300" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Pricing per Ton (PKR)</label>
+              <input type="number" name="pricePerTon" value={formData.pricePerTon} onChange={handleChange} className="border p-2 rounded text-sm w-full border-gray-300" />
+            </div>
+          </div>
+        </AddOptionModal>
+      )}
 
       <div className="bg-white rounded-lg shadow-sm p-4">
         <div className="text-sm font-semibold text-emerald-800 mb-3">
@@ -682,6 +787,16 @@ export default function ProductManager() {
           emptyMessage="No product types found."
           exportColumns={exportColumns}
           exportData={exportData}
+          deleteAll={{
+            description: "This will permanently delete ALL products (product types) from the database.",
+            onConfirm: async (adminPin) => {
+              const res = await api.post("/admin/purge", { adminPin, key: "productTypes" });
+              const deleted = res?.data?.data?.deletedCount ?? 0;
+              toast.success(`Deleted ${deleted} products`);
+              setExpandedBrands(new Set());
+              fetchProducts();
+            },
+          }}
           columns={[
             {
               key: "brand",
@@ -803,6 +918,7 @@ export default function ProductManager() {
         variant="danger"
       />
 
+      {!tableOnly && (
       <div className="bg-white rounded-lg shadow-sm p-4">
         <div className="text-sm font-semibold text-emerald-800 mb-2">
           Delete Dropdown Value
@@ -819,7 +935,9 @@ export default function ProductManager() {
               }}
             >
               <option value="product">Product Name</option>
-              <option value="brand">Brand / Trademark</option>
+              <option value="purchase_item">Purchase Item</option>
+              <option value="purchase_category">Purchase Category</option>
+              <option value="transporter">Transporter</option>
             </select>
           </div>
           <div className="md:col-span-2">
@@ -830,8 +948,17 @@ export default function ProductManager() {
               onChange={(e) => setDeleteValue(e.target.value)}
             >
               <option value="">Select</option>
-              {(deleteType === "product" ? productNameOptions : brandOptions).map((opt) => (
-                <option key={opt} value={opt}>
+              {(deleteType === "product"
+                ? productNameOptions
+                : deleteType === "purchase_item"
+                ? purchaseItemOptions
+                : deleteType === "purchase_category"
+                ? purchaseCategoryOptions
+                : deleteType === "transporter"
+                ? transporterOptions
+                : []
+              ).map((opt, idx) => (
+                <option key={`${opt}-${idx}`} value={opt}>
                   {opt}
                 </option>
               ))}
@@ -849,8 +976,9 @@ export default function ProductManager() {
           </div>
         </div>
       </div>
-
+      )}
     </div>
   );
 }
+
 

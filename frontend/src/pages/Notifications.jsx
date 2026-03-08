@@ -8,6 +8,9 @@ import {
   Languages,
   AlertCircle,
   CheckCircle2,
+  Activity,
+  Settings2,
+  RefreshCw,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import api from "../services/api";
@@ -28,6 +31,13 @@ const formatDate = (dateString) => {
   const d = new Date(dateString);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString();
+};
+
+const formatDateTime = (dateString) => {
+  if (!dateString) return "-";
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString();
 };
 
 const isPendingInvoice = (t) =>
@@ -158,9 +168,28 @@ function buildMessage({
 
 export default function Notifications() {
   const [loading, setLoading] = useState(false);
+  const [alertsLoading, setAlertsLoading] = useState(false);
   const [transactions, setTransactions] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [activeTab, setActiveTab] = useState("reminders");
+  const [alertsData, setAlertsData] = useState({
+    alerts: [],
+    recentActivities: [],
+    alertSchedule: {
+      enabled: true,
+      workStart: "09:00",
+      workEnd: "18:00",
+      intervalMinutes: 60,
+      inWorkingHours: false,
+    },
+  });
+  const [alertScheduleDraft, setAlertScheduleDraft] = useState({
+    enabled: true,
+    workStart: "09:00",
+    workEnd: "18:00",
+    intervalMinutes: 1440,
+  });
 
   const [selectedId, setSelectedId] = useState(null);
   const [language, setLanguage] = useState("en");
@@ -176,6 +205,37 @@ export default function Notifications() {
 
   // --------- Load data ---------
   useEffect(() => {
+    const loadAlerts = async () => {
+      try {
+        setAlertsLoading(true);
+        const res = await api.get("/notifications/alerts");
+        const data = res.data?.data || {};
+        const schedule = data.alertSchedule || {};
+        setAlertsData({
+          alerts: data.alerts || [],
+          recentActivities: data.recentActivities || [],
+          alertSchedule: {
+            enabled: schedule.enabled !== false,
+            workStart: schedule.workStart || "09:00",
+            workEnd: schedule.workEnd || "18:00",
+            intervalMinutes: Number(schedule.intervalMinutes || 1440),
+            inWorkingHours: !!schedule.inWorkingHours,
+          },
+        });
+        setAlertScheduleDraft({
+          enabled: schedule.enabled !== false,
+          workStart: schedule.workStart || "09:00",
+          workEnd: schedule.workEnd || "18:00",
+          intervalMinutes: Number(schedule.intervalMinutes || 1440),
+        });
+      } catch (error) {
+        console.error(error);
+        toast.error("Failed to load alerts.");
+      } finally {
+        setAlertsLoading(false);
+      }
+    };
+
     const loadAll = async () => {
       try {
         setLoading(true);
@@ -203,6 +263,7 @@ export default function Notifications() {
     };
 
     loadAll();
+    loadAlerts();
   }, []);
 
   const selectedTx = useMemo(
@@ -292,6 +353,8 @@ export default function Notifications() {
       const payload = {
         ...selectedTx,
         paymentStatus: "PAID",
+        partialPaid: Number(selectedTx.totalAmount || 0),
+        dueDate: null,
         // keep invoiceNo and other fields unchanged
       };
       delete payload._id;
@@ -309,30 +372,100 @@ export default function Notifications() {
     }
   };
 
+  const handleSaveAlertSchedule = async () => {
+    try {
+      const intervalRaw = Number(alertScheduleDraft.intervalMinutes);
+      const interval = Math.max(
+        1,
+        Math.min(1440, Number.isFinite(intervalRaw) ? intervalRaw : 1440)
+      );
+      const res = await api.put("/settings", {
+        alertsEnabled: !!alertScheduleDraft.enabled,
+        alertsWorkStart: alertScheduleDraft.workStart || "09:00",
+        alertsWorkEnd: alertScheduleDraft.workEnd || "18:00",
+        alertsIntervalMinutes: interval,
+      });
+      const updated = res.data?.data || null;
+      toast.success("Alert schedule updated.");
+      if (updated) {
+        setAlertScheduleDraft({
+          enabled: updated.alertsEnabled !== false,
+          workStart: updated.alertsWorkStart || "09:00",
+          workEnd: updated.alertsWorkEnd || "18:00",
+          intervalMinutes: Number(updated.alertsIntervalMinutes || 1440),
+        });
+      }
+      // Refresh from backend so "Status now" (inWorkingHours) and persisted values stay consistent.
+      await handleReloadAlerts();
+    } catch (error) {
+      console.error(error);
+      toast.error(error?.response?.data?.message || "Failed to save alert schedule.");
+    }
+  };
+
+  const handleReloadAlerts = async () => {
+    try {
+      setAlertsLoading(true);
+      const res = await api.get("/notifications/alerts");
+      const data = res.data?.data || {};
+      const schedule = data.alertSchedule || {};
+        setAlertsData({
+          alerts: data.alerts || [],
+          recentActivities: data.recentActivities || [],
+          alertSchedule: {
+            enabled: schedule.enabled !== false,
+            workStart: schedule.workStart || "09:00",
+            workEnd: schedule.workEnd || "18:00",
+            intervalMinutes: Number(schedule.intervalMinutes || 1440),
+            inWorkingHours: !!schedule.inWorkingHours,
+          },
+        });
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to refresh alerts.");
+    } finally {
+      setAlertsLoading(false);
+    }
+  };
+
+  const getAlertPill = (level) => {
+    if (level === "high") return "bg-rose-100 text-rose-700";
+    if (level === "medium") return "bg-amber-100 text-amber-700";
+    if (level === "low") return "bg-sky-100 text-sky-700";
+    return "bg-emerald-100 text-emerald-700";
+  };
+
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-emerald-50">
-            <Bell className="w-5 h-5 text-emerald-700" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold text-emerald-900">
-              Payment Notifications
-            </h1>
-            <p className="text-sm text-gray-500">
-              Send and schedule payment reminders for unpaid and partial
-              invoices.
-            </p>
-          </div>
-        </div>
-        {loading && (
-          <span className="text-xs text-gray-400">Loading data…</span>
-        )}
+      {loading && <span className="text-xs text-gray-400">Loading data...</span>}
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab("reminders")}
+          className={`px-3 py-2 rounded-lg text-sm border ${
+            activeTab === "reminders"
+              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+              : "border-gray-200 bg-white text-gray-600"
+          }`}
+        >
+          Notifications
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("alerts")}
+          className={`px-3 py-2 rounded-lg text-sm border ${
+            activeTab === "alerts"
+              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+              : "border-gray-200 bg-white text-gray-600"
+          }`}
+        >
+          Alerts
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+      {activeTab === "reminders" ? (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         {/* LEFT: pending invoices list */}
         <div className="xl:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -666,7 +799,202 @@ export default function Notifications() {
             )}
           </div>
         </div>
-      </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <div className="xl:col-span-2 space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                  <h2 className="text-sm font-semibold text-gray-700">
+                    Pending tasks and alerts
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleReloadAlerts}
+                  className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Refresh
+                </button>
+              </div>
+
+              {alertsLoading ? (
+                <p className="text-sm text-gray-500">Loading alerts...</p>
+              ) : alertsData.alerts.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No alerts found right now.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {alertsData.alerts.map((a) => (
+                    <div
+                      key={a.id}
+                      className="border border-gray-100 rounded-xl p-3 bg-gray-50"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-sm font-medium text-gray-700">
+                          {a.title}
+                        </div>
+                        <span
+                          className={`text-[10px] uppercase px-2 py-0.5 rounded-full ${getAlertPill(
+                            a.level
+                          )}`}
+                        >
+                          {a.level}
+                        </span>
+                      </div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {Number(a.count || 0)}
+                      </div>
+                      {Number(a.amount || 0) > 0 && (
+                        <div className="text-xs text-gray-500">
+                          Pending amount: Rs {Number(a.amount || 0).toFixed(0)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Activity className="w-4 h-4 text-emerald-600" />
+                <h2 className="text-sm font-semibold text-gray-700">
+                  Recent activities
+                </h2>
+              </div>
+
+              <div className="space-y-2 max-h-[380px] overflow-y-auto">
+                {alertsData.recentActivities.length === 0 ? (
+                  <p className="text-sm text-gray-500">
+                    No recent activities found.
+                  </p>
+                ) : (
+                  alertsData.recentActivities.map((item, idx) => (
+                    <div
+                      key={`${item.type || "ACT"}-${item.at || idx}-${idx}`}
+                      className="border border-gray-100 rounded-xl p-3"
+                    >
+                      <div className="text-sm font-medium text-gray-800">
+                        {item.title}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {item.detail}
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-1">
+                        {formatDateTime(item.at)}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Settings2 className="w-4 h-4 text-emerald-600" />
+                <h2 className="text-sm font-semibold text-gray-700">
+                  Alert schedule
+                </h2>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={!!alertScheduleDraft.enabled}
+                  onChange={(e) =>
+                    setAlertScheduleDraft((prev) => ({
+                      ...prev,
+                      enabled: e.target.checked,
+                    }))
+                  }
+                  className="text-emerald-600 focus:ring-emerald-500"
+                />
+                Enable alerts
+              </label>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    Work start
+                  </label>
+                  <input
+                    type="time"
+                    value={alertScheduleDraft.workStart}
+                    onChange={(e) =>
+                      setAlertScheduleDraft((prev) => ({
+                        ...prev,
+                        workStart: e.target.value,
+                      }))
+                    }
+                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">
+                    Work end
+                  </label>
+                  <input
+                    type="time"
+                    value={alertScheduleDraft.workEnd}
+                    onChange={(e) =>
+                      setAlertScheduleDraft((prev) => ({
+                        ...prev,
+                        workEnd: e.target.value,
+                      }))
+                    }
+                    className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Alert interval (minutes)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="1440"
+                  step="1"
+                  value={alertScheduleDraft.intervalMinutes}
+                  onChange={(e) =>
+                    setAlertScheduleDraft((prev) => ({
+                      ...prev,
+                      intervalMinutes: e.target.value,
+                    }))
+                  }
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm"
+                />
+              </div>
+
+              <div className="text-xs text-gray-500">
+                Status now:{" "}
+                <span className="font-medium text-gray-700">
+                  {alertsData.alertSchedule.inWorkingHours
+                    ? "Inside working hours"
+                    : "Outside working hours"}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveAlertSchedule}
+                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                Save alert timing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

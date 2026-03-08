@@ -2,11 +2,24 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import api from "../services/api";
-import { Filter, X, Info, Trash2, Lock, Settings } from "lucide-react";
+import {
+  Filter,
+  X,
+  Info,
+  Trash2,
+  Lock,
+  Settings,
+  Download,
+  FileText,
+  Printer,
+} from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 import Pin4Input from "../components/Pin4Input";
 import { ManagerialStockView } from "./ManagerialStock";
 import DataTable from "../components/ui/DataTable";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 import {
   PieChart,
@@ -220,6 +233,10 @@ export default function Stock({ initialTab = "production" }) {
   }, [products]);
 
   const getBrand = (row) => {
+    const explicitBrand = String(row.brandName || row.companyName || "").trim();
+    if (explicitBrand && explicitBrand.toLowerCase() !== "mill own stock") {
+      return explicitBrand;
+    }
     const byId =
       row.productTypeId != null
         ? brandById.get(String(row.productTypeId))
@@ -321,7 +338,6 @@ export default function Stock({ initialTab = "production" }) {
   // --------------------------------------------------------------------
   const filteredRows = useMemo(() => {
     return stockRows.filter((r) => {
-      if ((r.productTypeName || "").toLowerCase() === "paddy") return false;
       const matchCompany =
         companyFilter === "ALL" || getBrand(r) === companyFilter;
       const matchProduct =
@@ -337,20 +353,24 @@ export default function Stock({ initialTab = "production" }) {
   // DONUT LOGIC (auto adapt by filter)
   // --------------------------------------------------------------------
   const donutData = useMemo(() => {
+    const donutRows = filteredRows.filter((r) => {
+      const name = String(r.productTypeName || "").toLowerCase();
+      return !name.includes("paddy") && !name.includes("unprocess");
+    });
     const map = new Map();
 
     if (companyFilter !== "ALL") {
-      filteredRows.forEach((r) => {
+      donutRows.forEach((r) => {
         const key = r.productTypeName;
         map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
       });
     } else if (productFilter !== "ALL") {
-      filteredRows.forEach((r) => {
+      donutRows.forEach((r) => {
         const key = getBrand(r);
         map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
       });
     } else {
-      filteredRows.forEach((r) => {
+      donutRows.forEach((r) => {
         const key = r.productTypeName;
         map.set(key, (map.get(key) || 0) + (r.balanceKg || 0));
       });
@@ -358,7 +378,7 @@ export default function Stock({ initialTab = "production" }) {
 
     return Array.from(map.entries()).map(([name, value]) => ({
       name,
-      value: +value.toFixed(2),
+      value: Math.round(Number(value || 0)),
     }));
   }, [filteredRows, companyFilter, productFilter]);
 
@@ -395,17 +415,41 @@ export default function Stock({ initialTab = "production" }) {
     return <span className="text-green-600 font-semibold">Available</span>;
   }
 
-  const stockTableData = useMemo(
-    () =>
-      filteredRows.map((row, idx) => ({
-        ...row,
-        __rowId:
-          row._id ||
-          row.id ||
-          `${row.productTypeName || "product"}-${row.companyName || "company"}-${idx}`,
-      })),
-    [filteredRows],
-  );
+  const stockTableData = useMemo(() => {
+    const grouped = new Map();
+    filteredRows.forEach((row) => {
+      const brand = getBrand(row);
+      const key = brand || "Unbranded";
+      const existing = grouped.get(key) || {
+        __rowId: key,
+        companyName: key,
+        balanceKg: 0,
+        lastUpdated: null,
+        products: [],
+        sources: [],
+      };
+      const kg = Number(row.balanceKg || 0);
+      existing.balanceKg += kg;
+      existing.products.push({
+        name: row.productTypeName || "Product",
+        kg,
+      });
+      if (Array.isArray(row.sources)) {
+        existing.sources.push(...row.sources);
+      }
+      const updated = row.lastUpdated ? new Date(row.lastUpdated) : null;
+      if (updated && (!existing.lastUpdated || updated > new Date(existing.lastUpdated))) {
+        existing.lastUpdated = updated.toISOString();
+      }
+      grouped.set(key, existing);
+    });
+    return Array.from(grouped.values()).map((r) => ({
+      ...r,
+      productsText: r.products
+        .map((p) => `${p.name} (${Math.round(Number(p.kg || 0))} kg)`)
+        .join(", "),
+    }));
+  }, [filteredRows, brandById, brandByName]);
 
   const stockColumns = useMemo(
     () => [
@@ -429,7 +473,11 @@ export default function Stock({ initialTab = "production" }) {
         label: "Brand",
         render: (_value, row) => getBrand(row),
       },
-      { key: "productTypeName", label: "Product" },
+      {
+        key: "productsText",
+        label: "Products",
+        render: (_value, row) => row.productsText || "-",
+      },
       {
         key: "balanceKg",
         label: "Stock (kg)",
@@ -454,21 +502,62 @@ export default function Stock({ initialTab = "production" }) {
     [statusBadge, statusOf, brandById, brandByName],
   );
 
+  const exportRows = useMemo(
+    () =>
+      stockTableData.map((r) => ({
+        Brand: getBrand(r) || "-",
+        Products: r.productsText || "-",
+        "Stock (kg)": Math.round(Number(r.balanceKg || 0)),
+        Status:
+          statusOf(r) === "OUT"
+            ? "Out of Stock"
+            : statusOf(r) === "EXTREME_LOW"
+              ? "Extreme Low"
+              : statusOf(r) === "LOW"
+                ? "Low Stock"
+                : "Available",
+        Updated: r.lastUpdated ? new Date(r.lastUpdated).toLocaleString() : "-",
+      })),
+    [stockTableData, statusOf, brandById, brandByName],
+  );
+
+  const handleExportExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "ProductionStock");
+    XLSX.writeFile(
+      wb,
+      `production_stock_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
+  };
+
+  const handleExportPdf = () => {
+    const doc = new jsPDF();
+    const body = exportRows.map((r) => [
+      r.Brand,
+      r.Products,
+      r["Stock (kg)"],
+      r.Status,
+      r.Updated,
+    ]);
+    doc.text("Production Stock", 14, 12);
+    autoTable(doc, {
+      startY: 18,
+      head: [["Brand", "Products", "Stock (kg)", "Status", "Updated"]],
+      body,
+      styles: { fontSize: 8 },
+    });
+    doc.save(`production_stock_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
+
+  const handlePrint = () => window.print();
+
   // --------------------------------------------------------------------
   // RENDER
   // --------------------------------------------------------------------
   return (
     <div className="space-y-6 w-full">
       <Toaster />
-
-      <div className="mb-4">
-        <h1 className="text-2xl font-semibold text-emerald-800">
-          Stock Management
-        </h1>
-        <p className="text-sm text-gray-500">
-          Production and managerial stock overview.
-        </p>
-      </div>
 
       <div className="border-b border-emerald-200">
         <div className="flex gap-4">
@@ -510,20 +599,46 @@ export default function Stock({ initialTab = "production" }) {
               </h2>
             </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {settings.additionalStockSettingsEnabled && (
-                  <button
-                    className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg border border-red-200 text-red-700 hover:bg-red-50"
-                    onClick={() => setShowClearConfirm(true)}
-                  >
-                    <Trash2 size={16} />
-                    Remove all previous stock
-                  </button>
-                )}
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="p-2 rounded-lg hover:bg-gray-100"
+                onClick={() => setShowFilters(true)}
+                title="Filters"
+              >
+                <Filter size={16} />
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={handleExportExcel}
+              >
+                <Download size={15} /> Export Excel
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={handleExportPdf}
+              >
+                <FileText size={15} /> Export PDF
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={handlePrint}
+              >
+                <Printer size={15} /> Print
+              </button>
+              {settings.additionalStockSettingsEnabled && (
+                <button
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg border border-red-200 text-red-700 hover:bg-red-50"
+                  onClick={() => setShowClearConfirm(true)}
+                >
+                  <Trash2 size={16} />
+                  Remove all previous stock
+                </button>
+              )}
+            </div>
             </div>
 
-          {/* Stock status thresholds placeholder (PIN required to show options) */}
+          {/* Stock status thresholds placeholder (visible only when enabled in settings) */}
+          {settings.additionalStockSettingsEnabled && (
           <div className="bg-white rounded-lg shadow p-4 mb-4 border border-gray-100">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
@@ -619,9 +734,10 @@ export default function Stock({ initialTab = "production" }) {
               </div>
             )}
           </div>
+          )}
 
           {/* Unlock stock thresholds PIN dialog */}
-          {stockThresholdPinDialog.open && (
+          {settings.additionalStockSettingsEnabled && stockThresholdPinDialog.open && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
               <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">
@@ -717,7 +833,7 @@ export default function Stock({ initialTab = "production" }) {
           )}
 
           {/* Save thresholds PIN dialog (confirm with PIN to save) */}
-          {saveThresholdPinDialog.open && (
+          {settings.additionalStockSettingsEnabled && saveThresholdPinDialog.open && (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
               <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">
@@ -842,7 +958,7 @@ export default function Stock({ initialTab = "production" }) {
               <div className="bg-white rounded-lg p-4 w-full max-w-lg shadow-xl max-h-[80vh] overflow-hidden flex flex-col">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-emerald-800">
-                    Stock source details — {sourceModalRow.productTypeName}
+                    Stock source details — {sourceModalRow.productsText || "Products"}
                     {sourceModalRow.companyName
                       ? ` (${sourceModalRow.companyName})`
                       : ""}
@@ -881,7 +997,7 @@ export default function Stock({ initialTab = "production" }) {
                                 : "-"}
                             </td>
                             <td className="p-2 text-right">
-                              {Number(s.qtyKg ?? 0).toFixed(2)}
+                              {Math.round(Number(s.qtyKg ?? 0))}
                             </td>
                             <td className="p-2">{s.direction || "-"}</td>
                           </tr>
@@ -917,8 +1033,8 @@ export default function Stock({ initialTab = "production" }) {
                   onChange={(e) => setCompanyFilter(e.target.value)}
                 >
                   <option value="ALL">All Brands</option>
-                  {filteredCompanies.map((c) => (
-                    <option key={c} value={c}>
+                  {filteredCompanies.map((c, idx) => (
+                    <option key={`${c}-${idx}`} value={c}>
                       {c}
                     </option>
                   ))}
@@ -932,8 +1048,8 @@ export default function Stock({ initialTab = "production" }) {
                   onChange={(e) => setProductFilter(e.target.value)}
                 >
                   <option value="ALL">All Products</option>
-                  {filteredProducts.map((p) => (
-                    <option key={p} value={p}>
+                  {filteredProducts.map((p, idx) => (
+                    <option key={`${p}-${idx}`} value={p}>
                       {p}
                     </option>
                   ))}
@@ -1013,14 +1129,8 @@ export default function Stock({ initialTab = "production" }) {
                 showSearch={false}
                 showFilters={false}
                 showClearFilters={false}
-                toolbarActions={
-                  <button
-                    className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
-                    onClick={() => setShowFilters(true)}
-                  >
-                    <Filter size={16} /> Filters
-                  </button>
-                }
+                showExport={false}
+                showPrint={false}
               />
             </div>
 

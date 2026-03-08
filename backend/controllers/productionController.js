@@ -3,6 +3,10 @@ const mongoose = require("mongoose");
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const SystemSettings = require("../models/systemSettingsModel");
+const {
+  postProductionOutputEntry,
+  reverseBySource,
+} = require("../services/accountingJournalService");
 
 // PB-YYYYMMDD-HHMMSS
 function generateBatchNo() {
@@ -20,14 +24,16 @@ function generateBatchNo() {
 function recomputeAggregates(batch) {
   const totalRaw = Number(batch.paddyWeightKg) || 0;
 
-  const totalOutput = (batch.outputs || []).reduce(
+  // Count only completed outputs for totals (in-process outputs should not hit stock yet).
+  const completed = (batch.outputs || []).filter((o) => (o.status || "COMPLETED") === "COMPLETED");
+  const totalOutput = completed.reduce(
     (sum, o) => sum + (Number(o.netWeightKg) || 0),
     0
   );
-  const dayOut = (batch.outputs || [])
+  const dayOut = completed
     .filter((o) => o.shift === "DAY")
     .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0);
-  const nightOut = (batch.outputs || [])
+  const nightOut = completed
     .filter((o) => o.shift === "NIGHT")
     .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0);
 
@@ -37,13 +43,22 @@ function recomputeAggregates(batch) {
   batch.nightShiftOutputWeightKg = +nightOut.toFixed(3);
 }
 
+function ensureBatchSourceCompany(batch) {
+  if (!batch) return;
+  const existing = String(batch.sourceCompanyName || "").trim();
+  if (existing) return;
+  const fromOutput = String(batch.outputs?.[0]?.companyName || "").trim();
+  batch.sourceCompanyName = fromOutput || "SMJ Own";
+}
+
 /**
  * Get current paddy balance (kg) from stock ledger (Paddy only).
  */
-async function getPaddyBalanceKg() {
+async function getPaddyBalanceKg(companyName = "") {
   const rows = await StockLedger.find({
     productTypeId: null,
-    productTypeName: "Paddy",
+    productTypeName: { $in: ["Paddy", "Unprocessed Paddy"] },
+    companyName: String(companyName || "").trim(),
   }).lean();
   let balance = 0;
   rows.forEach((r) => {
@@ -60,7 +75,8 @@ async function getPaddyBalanceKg() {
  */
 exports.createBatch = async (req, res) => {
   try {
-    const { date, paddyWeightKg, remarks } = req.body;
+    const { date, paddyWeightKg, remarks, sourceCompanyId, sourceCompanyName } =
+      req.body;
     if (!date)
       return res
         .status(400)
@@ -79,11 +95,19 @@ exports.createBatch = async (req, res) => {
         .json({ success: false, message: "Paddy weight must be greater than 0" });
     }
 
-    const paddyBalance = await getPaddyBalanceKg();
+    const sourceName = String(sourceCompanyName || "").trim();
+    if (!sourceName) {
+      return res.status(400).json({
+        success: false,
+        message: "Field 'sourceCompanyName' is required",
+      });
+    }
+
+    const paddyBalance = await getPaddyBalanceKg(sourceName);
     if (paddyBalance < requestedKg) {
       return res.status(400).json({
         success: false,
-        message: `Insufficient paddy stock. Available: ${paddyBalance.toFixed(3)} kg. Add paddy via Gate Pass Inward.`,
+        message: `Insufficient paddy stock for ${sourceName}. Available: ${paddyBalance.toFixed(3)} kg. Add paddy via Gate Pass Inward.`,
       });
     }
 
@@ -101,6 +125,8 @@ exports.createBatch = async (req, res) => {
       date,
       status: "IN_PROCESS",
       paddyWeightKg: requestedKg,
+      sourceCompanyId: sourceCompanyId || null,
+      sourceCompanyName: sourceName,
       outputs: [],
       remarks: remarks || "",
     });
@@ -113,15 +139,15 @@ exports.createBatch = async (req, res) => {
       const ledger = new StockLedger({
         date: saved.date,
         type: "OUT",
-        companyId: null,
-        companyName: "",
+        companyId: sourceCompanyId || null,
+        companyName: sourceName,
         productTypeId: null,
-        productTypeName: "Paddy",
+        productTypeName: "Unprocessed Paddy",
         numBags: 0,
         netWeightKg: saved.paddyWeightKg,
         gatePassId: null,
         gatePassNo: "",
-        remarks: `Paddy assigned to production batch ${saved.batchNo}`,
+        remarks: `Paddy assigned to production batch ${saved.batchNo} (${sourceName})`,
       });
       await ledger.save();
     } catch (e) {
@@ -155,6 +181,8 @@ exports.updateBatch = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Batch not found" });
 
+    ensureBatchSourceCompany(batch);
+
     const { date, paddyWeightKg, remarks, adminPin } = req.body;
 
     if (batch.status === "COMPLETED") {
@@ -174,6 +202,16 @@ exports.updateBatch = async (req, res) => {
     if (paddyWeightKg != null && !isNaN(Number(paddyWeightKg))) {
       const newWeight = Number(paddyWeightKg);
       delta = newWeight - batch.paddyWeightKg;
+      if (delta > 0 && batch.status === "IN_PROCESS") {
+        const sourceName = String(batch.sourceCompanyName || "").trim();
+        const available = await getPaddyBalanceKg(sourceName);
+        if (available < delta) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient paddy stock for ${sourceName}. Available extra: ${available.toFixed(3)} kg.`,
+          });
+        }
+      }
       batch.paddyWeightKg = newWeight;
     }
 
@@ -187,21 +225,22 @@ exports.updateBatch = async (req, res) => {
     // Adjust raw paddy stock for delta (only for IN_PROCESS; completed batch edit does not change stock)
     if (delta !== 0 && batch.status === "IN_PROCESS") {
       try {
+        const sourceName = String(batch.sourceCompanyName || "").trim();
         const isIncrease = delta > 0; // more paddy consumed
         const ledger = new StockLedger({
           date: saved.date,
           type: isIncrease ? "OUT" : "IN",
-          companyId: null,
-          companyName: "",
+          companyId: batch.sourceCompanyId || null,
+          companyName: sourceName,
           productTypeId: null,
-          productTypeName: "Paddy",
+          productTypeName: "Unprocessed Paddy",
           numBags: 0,
           netWeightKg: Math.abs(delta),
           gatePassId: null,
           gatePassNo: "",
           remarks: isIncrease
-            ? `Paddy adjustment (extra) - ${saved.batchNo}`
-            : `Paddy adjustment (return) - ${saved.batchNo}`,
+            ? `Paddy adjustment (extra) - ${saved.batchNo} (${sourceName})`
+            : `Paddy adjustment (return) - ${saved.batchNo} (${sourceName})`,
         });
         await ledger.save();
       } catch (e) {
@@ -235,6 +274,8 @@ exports.deleteBatch = async (req, res) => {
         .status(404)
         .json({ success: false, message: "Batch not found" });
 
+    ensureBatchSourceCompany(batch);
+
     const wasCompleted = batch.status === "COMPLETED";
 
     // Keep data for stock reverse before deleting
@@ -249,27 +290,36 @@ exports.deleteBatch = async (req, res) => {
 
       // 1) Return paddy to stock (IN)
       if (paddyWeight > 0) {
+        const sourceName = String(batch.sourceCompanyName || "").trim();
         ledgerOps.push({
           date: batch.date,
           type: "IN",
-          companyId: null,
-          companyName: "",
+          companyId: batch.sourceCompanyId || null,
+          companyName: sourceName,
           productTypeId: null,
-          productTypeName: "Paddy",
+          productTypeName: "Unprocessed Paddy",
           numBags: 0,
           netWeightKg: paddyWeight,
           gatePassId: null,
           gatePassNo: "",
-          remarks: `Batch deleted, paddy returned - ${batch.batchNo}`,
+          remarks: `Batch deleted, paddy returned - ${batch.batchNo} (${sourceName})`,
         });
       }
 
-      // 2) If it was COMPLETED, also remove finished stock (OUT for each output)
-      if (wasCompleted && outputs.length > 0) {
+      // 2) Remove finished stock (OUT for each output)
+      if (outputs.length > 0) {
         outputs.forEach((o) => {
           if (!o.productTypeId || !o.netWeightKg) return;
+          reverseBySource({
+            sourceModule: "PRODUCTION",
+            sourceRefType: "OUTPUT",
+            sourceRefId: `${batch._id}:${o.productTypeId}:${new Date(
+              o.outputDate || batch.date
+            ).getTime()}`,
+            reason: "Batch deleted",
+          }).catch(() => {});
           ledgerOps.push({
-            date: batch.date,
+            date: o.outputDate || batch.date,
             type: "OUT",
             companyId: o.companyId || null,
             companyName: o.companyName || "",
@@ -373,38 +423,27 @@ exports.addOutput = async (req, res) => {
       companyName,
       numBags,
       perBagWeightKg,
-      shift,
+      outputDate,
+      durationMinutes,
       adminPin,
     } = req.body;
 
     if (
       !productTypeId ||
       !productTypeName ||
-      !shift ||
       numBags == null ||
       perBagWeightKg == null
     ) {
       return res.status(400).json({
         success: false,
         message:
-          "Fields productTypeId, productTypeName, shift, numBags, perBagWeightKg are required.",
+          "Fields productTypeId, productTypeName, numBags, perBagWeightKg are required.",
       });
-    }
-
-    if (!companyId && !companyName) {
-      return res.status(400).json({
-        success: false,
-        message: "Brand/Company is required for each finished output.",
-      });
-    }
-
-    if (!["DAY", "NIGHT"].includes(shift)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "shift must be DAY or NIGHT" });
     }
 
     const batch = await ProductionBatch.findById(id);
+    ensureBatchSourceCompany(batch);
+
     if (!batch)
       return res
         .status(404)
@@ -426,28 +465,52 @@ exports.addOutput = async (req, res) => {
       });
     }
 
+    const sourceName = String(batch.sourceCompanyName || "").trim();
+    if (!sourceName) {
+      return res.status(400).json({
+        success: false,
+        message: "Batch source company is missing.",
+      });
+    }
+
     const bags = Number(numBags);
     const perBag = Number(perBagWeightKg);
     const netWeight = +(bags * perBag).toFixed(3);
 
+    const now = new Date();
+    const outDate = outputDate ? new Date(outputDate) : now;
+    const durMin = Math.max(0, Number(durationMinutes || 0) || 0);
+    const planned = durMin > 0 ? new Date(outDate.getTime() + durMin * 60 * 1000) : null;
+    const isCompletedNow = batch.status === "COMPLETED" || durMin === 0;
+
+    const completedAt = isCompletedNow ? now : null;
+    const hour = (completedAt || outDate).getHours();
+    const shift = hour >= 6 && hour < 18 ? "DAY" : "NIGHT";
+
     const output = {
       productTypeId,
       productTypeName,
-      companyId: companyId || null,
-      companyName: companyName || "",
+      companyId: batch.sourceCompanyId || null,
+      companyName: sourceName,
       numBags: bags,
       netWeightKg: netWeight,
       shift,
+      outputDate: outDate,
+      status: isCompletedNow ? "COMPLETED" : "IN_PROCESS",
+      durationMinutes: durMin,
+      plannedCompleteAt: planned,
+      completedAt,
     };
 
     batch.outputs.push(output);
     recomputeAggregates(batch);
     const saved = await batch.save();
 
-    if (batch.status === "COMPLETED") {
+    // Only post stock/journal when output is completed (immediately or via scheduler later).
+    if (output.status === "COMPLETED") {
       try {
         await StockLedger.create({
-          date: saved.date,
+          date: output.completedAt || output.outputDate || new Date(),
           type: "IN",
           companyId: output.companyId || null,
           companyName: output.companyName || "",
@@ -462,6 +525,26 @@ exports.addOutput = async (req, res) => {
       } catch {
         // don't crash if ledger fails
       }
+      try {
+        await reverseBySource({
+          sourceModule: "PRODUCTION",
+          sourceRefType: "OUTPUT",
+          sourceRefId: `${saved._id}:${output.productTypeId}:${new Date(
+            output.outputDate || saved.date
+          ).getTime()}`,
+          reason: "Repost output",
+        });
+        await postProductionOutputEntry({
+          batchId: saved._id,
+          batchNo: saved.batchNo,
+          outputDate: output.completedAt || output.outputDate || saved.date,
+          companyId: output.companyId || null,
+          companyName: output.companyName || "",
+          productTypeId: output.productTypeId,
+          productTypeName: output.productTypeName,
+          netWeightKg: output.netWeightKg,
+        });
+      } catch {}
     }
 
     return res.json({ success: true, data: saved });
@@ -484,11 +567,10 @@ exports.updateOutput = async (req, res) => {
     const {
       numBags,
       perBagWeightKg,
-      shift,
-      companyId,
-      companyName,
+      outputDate,
       productTypeId,
       productTypeName,
+      durationMinutes,
     } = req.body;
 
     if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(outputId)) {
@@ -496,6 +578,8 @@ exports.updateOutput = async (req, res) => {
     }
 
     const batch = await ProductionBatch.findById(id);
+    ensureBatchSourceCompany(batch);
+
     if (!batch)
       return res.status(404).json({ success: false, message: "Batch not found" });
 
@@ -511,6 +595,7 @@ exports.updateOutput = async (req, res) => {
     const oldCompanyName = output.companyName;
     const oldNumBags = output.numBags;
     const oldShift = output.shift;
+    const oldOutputDate = output.outputDate || batch.date;
 
     if (numBags != null) output.numBags = Number(numBags);
     if (perBagWeightKg != null) {
@@ -520,9 +605,18 @@ exports.updateOutput = async (req, res) => {
       const perBag = oldNet / output.numBags;
       output.netWeightKg = +(Number(numBags) * perBag).toFixed(3);
     }
-    if (shift && ["DAY", "NIGHT"].includes(shift)) output.shift = shift;
-    if (companyId !== undefined) output.companyId = companyId || null;
-    if (companyName !== undefined) output.companyName = companyName || "";
+    if (outputDate) output.outputDate = new Date(outputDate);
+    output.companyId = batch.sourceCompanyId || null;
+    output.companyName = String(batch.sourceCompanyName || "").trim();
+
+    // Allow rescheduling only if output is not completed yet.
+    if ((output.status || "COMPLETED") !== "COMPLETED" && durationMinutes != null) {
+      const durMin = Math.max(0, Number(durationMinutes || 0) || 0);
+      output.durationMinutes = durMin;
+      output.plannedCompleteAt = durMin > 0
+        ? new Date((output.outputDate || new Date()).getTime() + durMin * 60 * 1000)
+        : null;
+    }
     if (productTypeId !== undefined) output.productTypeId = productTypeId;
     if (productTypeName !== undefined) output.productTypeName = productTypeName || "";
 
@@ -530,10 +624,24 @@ exports.updateOutput = async (req, res) => {
     recomputeAggregates(batch);
     const saved = await batch.save();
 
-    if (batch.status === "COMPLETED" && (oldNet !== newNet || oldProductTypeId !== output.productTypeId)) {
+    if (
+      (output.status || "COMPLETED") === "COMPLETED" && (
+      oldNet !== newNet ||
+      oldProductTypeId?.toString() !== output.productTypeId?.toString() ||
+      new Date(oldOutputDate).getTime() !==
+        new Date(output.outputDate || batch.date).getTime()
+    )) {
       try {
+        await reverseBySource({
+          sourceModule: "PRODUCTION",
+          sourceRefType: "OUTPUT",
+          sourceRefId: `${saved._id}:${oldProductTypeId}:${new Date(
+            oldOutputDate || batch.date
+          ).getTime()}`,
+          reason: "Output updated",
+        });
         await StockLedger.create({
-          date: batch.date,
+          date: oldOutputDate || batch.date,
           type: "OUT",
           companyId: oldCompanyId || null,
           companyName: oldCompanyName || "",
@@ -546,7 +654,7 @@ exports.updateOutput = async (req, res) => {
           remarks: `Production output edit reverse - ${batch.batchNo}`,
         });
         await StockLedger.create({
-          date: batch.date,
+          date: output.outputDate || batch.date,
           type: "IN",
           companyId: output.companyId || null,
           companyName: output.companyName || "",
@@ -556,7 +664,25 @@ exports.updateOutput = async (req, res) => {
           netWeightKg: newNet,
           gatePassId: null,
           gatePassNo: "",
-          remarks: `Production output (${output.shift}) - ${batch.batchNo}`,
+          remarks: `Production output (${output.shift || "DAY"}) - ${batch.batchNo}`,
+        });
+        await reverseBySource({
+          sourceModule: "PRODUCTION",
+          sourceRefType: "OUTPUT",
+          sourceRefId: `${saved._id}:${output.productTypeId}:${new Date(
+            output.outputDate || batch.date
+          ).getTime()}`,
+          reason: "Repost updated output",
+        });
+        await postProductionOutputEntry({
+          batchId: saved._id,
+          batchNo: saved.batchNo,
+          outputDate: output.completedAt || output.outputDate || batch.date,
+          companyId: output.companyId || null,
+          companyName: output.companyName || "",
+          productTypeId: output.productTypeId,
+          productTypeName: output.productTypeName,
+          netWeightKg: newNet,
         });
       } catch {
         // don't crash if ledger fails
@@ -581,6 +707,8 @@ exports.completeBatch = async (req, res) => {
     const { id } = req.params;
 
     const batch = await ProductionBatch.findById(id);
+    ensureBatchSourceCompany(batch);
+
     if (!batch)
       return res
         .status(404)
@@ -603,28 +731,31 @@ exports.completeBatch = async (req, res) => {
     batch.status = "COMPLETED";
     const saved = await batch.save();
 
-    // Finished stock IN
+    // Backward compatibility: if no output ledger exists for this batch, create once.
     try {
-      const ops = (batch.outputs || []).map((o) => ({
-        date: saved.date,
+      const existing = await StockLedger.findOne({
         type: "IN",
-        companyId: o.companyId || null,
-        companyName: o.companyName || "",
-        productTypeId: o.productTypeId,
-        productTypeName: o.productTypeName,
-        numBags: o.numBags,
-        netWeightKg: o.netWeightKg,
-        gatePassId: null,
-        gatePassNo: "",
-        remarks: `Production output (${o.shift}) - ${saved.batchNo}`,
-      }));
-
-      if (ops.length > 0) {
-        await StockLedger.insertMany(ops);
+        remarks: { $regex: `${saved.batchNo}$` },
+      }).lean();
+      if (!existing) {
+        const ops = (batch.outputs || []).map((o) => ({
+          date: o.outputDate || saved.date,
+          type: "IN",
+          companyId: o.companyId || null,
+          companyName: o.companyName || "",
+          productTypeId: o.productTypeId,
+          productTypeName: o.productTypeName,
+          numBags: o.numBags,
+          netWeightKg: o.netWeightKg,
+          gatePassId: null,
+          gatePassNo: "",
+          remarks: `Production output (${o.shift}) - ${saved.batchNo}`,
+        }));
+        if (ops.length > 0) {
+          await StockLedger.insertMany(ops);
+        }
       }
-    } catch {
-      // Stock ledger update failed. Do not log to console.
-    }
+    } catch {}
 
     return res.json({ success: true, data: saved });
   } catch (err) {
@@ -659,9 +790,7 @@ exports.getTodaySummary = async (req, res) => {
       999
     );
 
-    const batches = await ProductionBatch.find({
-      date: { $gte: start, $lte: end },
-    }).lean();
+    const batches = await ProductionBatch.find({}).lean();
 
     let day = 0;
     let night = 0;
@@ -669,12 +798,15 @@ exports.getTodaySummary = async (req, res) => {
     const productWise = {};
 
     batches.forEach((b) => {
-      day += b.dayShiftOutputWeightKg || 0;
-      night += b.nightShiftOutputWeightKg || 0;
-      totalOutput += b.totalOutputWeightKg || 0;
       (b.outputs || []).forEach((o) => {
+        const outDate = new Date(o.outputDate || b.date);
+        if (outDate < start || outDate > end) return;
+        const net = Number(o.netWeightKg) || 0;
+        if (o.shift === "DAY") day += net;
+        if (o.shift === "NIGHT") night += net;
+        totalOutput += net;
         const name = o.productTypeName || "Other";
-        productWise[name] = (productWise[name] || 0) + (Number(o.netWeightKg) || 0);
+        productWise[name] = (productWise[name] || 0) + net;
       });
     });
 
@@ -689,7 +821,12 @@ exports.getTodaySummary = async (req, res) => {
         dayShiftOutputWeightKg: +day.toFixed(3),
         nightShiftOutputWeightKg: +night.toFixed(3),
         totalOutputWeightKg: +totalOutput.toFixed(3),
-        batchCount: batches.length,
+        batchCount: batches.filter((b) =>
+          (b.outputs || []).some((o) => {
+            const outDate = new Date(o.outputDate || b.date);
+            return outDate >= start && outDate <= end;
+          })
+        ).length,
         productWiseOutput,
       },
     });

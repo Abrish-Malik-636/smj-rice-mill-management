@@ -23,6 +23,17 @@ const ProductionOutputSchema = new mongoose.Schema(
     netWeightKg: { type: Number, required: true, min: 0 },
 
     shift: { type: String, enum: ["DAY", "NIGHT"], required: true },
+    outputDate: { type: Date, default: Date.now },
+
+    // Scheduling / completion
+    status: {
+      type: String,
+      enum: ["IN_PROCESS", "COMPLETED"],
+      default: "COMPLETED",
+    },
+    durationMinutes: { type: Number, default: 0, min: 0 },
+    plannedCompleteAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
   },
   { _id: true }
 );
@@ -40,6 +51,12 @@ const ProductionBatchSchema = new mongoose.Schema(
 
     // Raw paddy (kg) for this batch
     paddyWeightKg: { type: Number, required: true, min: 0 },
+    sourceCompanyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+    },
+    sourceCompanyName: { type: String, required: true, trim: true },
 
     // Aggregates for reporting
     totalRawWeightKg: { type: Number, default: 0 },

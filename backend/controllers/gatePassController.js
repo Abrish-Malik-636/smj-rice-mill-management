@@ -1,8 +1,47 @@
 // backend/controllers/gatePassController.js
 const GatePass = require("../models/gatePassModel");
+const Transaction = require("../models/transactionModel");
 const StockLedger = require("../models/stockLedgerModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const SystemSettings = require("../models/systemSettingsModel");
+
+const TX_GP_SET = { gatePassUsed: true };
+const TX_GP_UNSET = { gatePassUsed: false, gatePassId: null };
+
+async function markInvoiceUsedForGatePass({ invoiceId, gatePassId, gatePassType }) {
+  if (!invoiceId) return;
+  const inv = await Transaction.findById(invoiceId).select("type gatePassUsed gatePassId").lean();
+  if (!inv) return;
+
+  // Direction sanity checks (avoid linking sale invoice to IN etc.)
+  if (gatePassType === "IN" && inv.type !== "PURCHASE") return;
+  if (gatePassType === "OUT" && inv.type !== "SALE") return;
+
+  // If already linked elsewhere, don't stomp it.
+  if (inv.gatePassUsed && inv.gatePassId && String(inv.gatePassId) !== String(gatePassId)) return;
+
+  await Transaction.updateOne(
+    { _id: invoiceId },
+    { $set: { ...TX_GP_SET, gatePassId } }
+  );
+}
+
+async function unmarkInvoiceUsedForGatePass({ invoiceId, gatePassId }) {
+  if (!invoiceId) return;
+  await Transaction.updateOne(
+    { _id: invoiceId, gatePassId },
+    { $set: TX_GP_UNSET }
+  );
+}
+
+function normalizeInvoiceIds(body) {
+  const ids = Array.isArray(body?.invoiceIds) ? body.invoiceIds : [];
+  const single = body?.invoiceId ? [body.invoiceId] : [];
+  const merged = [...ids, ...single].filter(Boolean).map((x) => String(x));
+  // Preserve order but unique
+  const unique = Array.from(new Set(merged));
+  return unique;
+}
 
 const toKg = (quantity, unit, bagWeightKg = 65) => {
   const qty = Number(quantity || 0);
@@ -23,6 +62,12 @@ const getItemName = (item) => {
   return item.itemType || "";
 };
 
+const normalizeRawPaddyName = (name) => {
+  const n = String(name || "").trim().toLowerCase();
+  if (n === "paddy" || n === "unprocessed paddy") return "Unprocessed Paddy";
+  return name;
+};
+
 /** Build production ledger ops from items array (e.g. req.body.items or gp.items). Use gp for type, id, gatePassNo, createdAt. */
 const buildProductionOpsFromItems = (items, gp, bagWeightKg = 65) => {
   const ops = [];
@@ -38,19 +83,20 @@ const buildProductionOpsFromItems = (items, gp, bagWeightKg = 65) => {
     if (!qty || qty <= 0) return;
     const kg = toKg(qty, (item && item.unit) || "kg", bagWeightKg);
     if (!kg) return;
-    const name = getItemName(item) || "Paddy";
+    const name = normalizeRawPaddyName(getItemName(item) || "Paddy");
+    const paddyCompanyName = String(gp.supplier || "SMJ Own").trim() || "SMJ Own";
     ops.push({
       date,
       type: "IN",
       companyId: null,
-      companyName: "",
+      companyName: paddyCompanyName,
       productTypeId: null,
       productTypeName: name,
       numBags: 0,
       netWeightKg: kg,
       gatePassId,
       gatePassNo,
-      remarks: "Gate pass IN (Production)",
+      remarks: `Gate pass IN (Production) - ${paddyCompanyName}`,
     });
   });
   return ops;
@@ -76,6 +122,7 @@ const buildManagerialOps = (gp) => {
       unit: item.unit || "pcs",
       gatePassId: gp._id,
       gatePassNo: gp.gatePassNo || "",
+      transactionId: gp.invoiceId || null,
       remarks: "Gate pass IN (Managerial)",
     });
   });
@@ -100,9 +147,20 @@ const buildSearchQuery = (search, type) => {
 exports.createGatePass = async (req, res) => {
   try {
     const body = req.body || {};
+    const invoiceIds = normalizeInvoiceIds(body);
+    body.invoiceIds = invoiceIds;
+    body.invoiceId = invoiceIds[0] || null; // backward compatibility
 
     if (body.type === "IN") {
-      // Supplier/source is optional for IN gate pass
+      const hasProductionItem = Array.isArray(body.items)
+        ? body.items.some((it) => String(it?.stockType || "Production") !== "Managerial")
+        : false;
+      if (hasProductionItem && (!body.supplier || String(body.supplier).trim() === "")) {
+        return res.status(400).json({
+          success: false,
+          message: "Brand / trademark is required when receiving Production/Paddy stock.",
+        });
+      }
     }
 
     if (body.type === "OUT") {
@@ -112,7 +170,7 @@ exports.createGatePass = async (req, res) => {
           message: "Customer is required for OUT gate pass.",
         });
       }
-      if (!body.invoiceId) {
+      if (!invoiceIds.length) {
         return res.status(400).json({
           success: false,
           message: "Invoice is required for OUT gate pass.",
@@ -129,6 +187,22 @@ exports.createGatePass = async (req, res) => {
     }
 
     const gp = await GatePass.create(body);
+
+    // Mark invoice as used (for dropdown filtering)
+    try {
+      const ids = Array.isArray(gp.invoiceIds) && gp.invoiceIds.length
+        ? gp.invoiceIds
+        : (gp.invoiceId ? [gp.invoiceId] : []);
+      for (const id of ids) {
+        await markInvoiceUsedForGatePass({
+          invoiceId: id,
+          gatePassId: gp._id,
+          gatePassType: gp.type,
+        });
+      }
+    } catch (e) {
+      console.error("Gate pass invoice mark error:", e);
+    }
     try {
       const settings = await SystemSettings.findOne({}).select("defaultBagWeightKg").lean();
       const bagWeightKg = settings && settings.defaultBagWeightKg != null ? settings.defaultBagWeightKg : 65;
@@ -139,6 +213,17 @@ exports.createGatePass = async (req, res) => {
       }
       const managerialOps = buildManagerialOps(gp);
       if (managerialOps.length > 0) {
+        // If this gate pass is linked to a purchase invoice, the purchase created ORDER rows.
+        // Receiving via gate pass should convert ORDER -> IN by removing ORDER entries for that invoice.
+        const ids = Array.isArray(gp.invoiceIds) && gp.invoiceIds.length
+          ? gp.invoiceIds
+          : (gp.invoiceId ? [gp.invoiceId] : []);
+        if (ids.length > 0) {
+          await ManagerialStockLedger.deleteMany({
+            transactionId: { $in: ids },
+            type: "ORDER",
+          });
+        }
         await ManagerialStockLedger.insertMany(managerialOps);
       }
     } catch (e) {
@@ -201,12 +286,56 @@ exports.updateGatePass = async (req, res) => {
     const body = { ...req.body };
     delete body.gatePassNo;
 
+    const invoiceIds = normalizeInvoiceIds(body);
+    body.invoiceIds = invoiceIds;
+    body.invoiceId = invoiceIds[0] || null; // backward compatibility
+
+    if (body.type === "IN") {
+      const hasProductionItem = Array.isArray(body.items)
+        ? body.items.some((it) => String(it?.stockType || "Production") !== "Managerial")
+        : false;
+      if (hasProductionItem && (!body.supplier || String(body.supplier).trim() === "")) {
+        return res.status(400).json({
+          success: false,
+          message: "Brand / trademark is required when receiving Production/Paddy stock.",
+        });
+      }
+    }
+
+    const before = await GatePass.findById(req.params.id).select("invoiceId invoiceIds type").lean();
+
     const gp = await GatePass.findByIdAndUpdate(req.params.id, body, {
       new: true,
       runValidators: true,
     });
 
     if (gp) {
+      // If invoice changed, keep used flags consistent.
+      try {
+        const oldIds = Array.isArray(before?.invoiceIds) && before.invoiceIds.length
+          ? before.invoiceIds.map(String)
+          : (before?.invoiceId ? [String(before.invoiceId)] : []);
+        const newIds = Array.isArray(gp?.invoiceIds) && gp.invoiceIds.length
+          ? gp.invoiceIds.map(String)
+          : (gp?.invoiceId ? [String(gp.invoiceId)] : []);
+
+        const removed = oldIds.filter((x) => !newIds.includes(x));
+        const added = newIds.filter((x) => !oldIds.includes(x));
+
+        for (const id of removed) {
+          await unmarkInvoiceUsedForGatePass({ invoiceId: id, gatePassId: gp._id });
+        }
+        for (const id of added) {
+          await markInvoiceUsedForGatePass({
+            invoiceId: id,
+            gatePassId: gp._id,
+            gatePassType: gp.type,
+          });
+        }
+      } catch (e) {
+        console.error("Gate pass invoice mark error:", e);
+      }
+
       try {
         await StockLedger.deleteMany({ gatePassId: gp._id });
         await ManagerialStockLedger.deleteMany({ gatePassId: gp._id });
@@ -218,6 +347,15 @@ exports.updateGatePass = async (req, res) => {
         }
         const managerialOps = buildManagerialOps(gp);
         if (managerialOps.length > 0) {
+          const ids = Array.isArray(gp.invoiceIds) && gp.invoiceIds.length
+            ? gp.invoiceIds
+            : (gp.invoiceId ? [gp.invoiceId] : []);
+          if (ids.length > 0) {
+            await ManagerialStockLedger.deleteMany({
+              transactionId: { $in: ids },
+              type: "ORDER",
+            });
+          }
           await ManagerialStockLedger.insertMany(managerialOps);
         }
       } catch (e) {
@@ -247,6 +385,18 @@ exports.deleteGatePass = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Gate pass not found." });
+
+    // Unmark invoice so it becomes selectable again.
+    try {
+      const ids = Array.isArray(gp.invoiceIds) && gp.invoiceIds.length
+        ? gp.invoiceIds
+        : (gp.invoiceId ? [gp.invoiceId] : []);
+      for (const id of ids) {
+        await unmarkInvoiceUsedForGatePass({ invoiceId: id, gatePassId: gp._id });
+      }
+    } catch (e) {
+      console.error("Gate pass invoice unmark error:", e);
+    }
     try {
       await StockLedger.deleteMany({ gatePassId: gp._id });
       await ManagerialStockLedger.deleteMany({ gatePassId: gp._id });

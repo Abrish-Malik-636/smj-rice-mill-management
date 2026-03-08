@@ -1,524 +1,392 @@
-// frontend/src/pages/Reports.jsx
-import { useEffect, useMemo, useState } from "react";
-import { BarChart3, Filter, RefreshCcw } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
+import DataTable from "../components/ui/DataTable";
 import api from "../services/api";
+import CompanyManager from "../components/MasterData/CompanyManager";
+import ProductManager from "../components/MasterData/ProductManager";
 
-const DATE_RANGES = [
-  { id: "today", label: "Today" },
-  { id: "this_week", label: "This Week" },
-  { id: "this_month", label: "This Month" },
-  { id: "custom", label: "Custom" },
+const REPORT_TABS = [
+  { key: "stock", label: "Stock Report" },
+  { key: "production", label: "Production Report" },
+  { key: "sales", label: "Sales Report" },
+  { key: "purchases", label: "Purchase Report" },
+  { key: "pl", label: "Profit & Loss" },
+  { key: "trial", label: "Trial Balance" },
+  { key: "balance", label: "Balance Sheet" },
+  { key: "receivables", label: "Outstanding Receivables" },
+  { key: "payables", label: "Outstanding Payables" },
+  { key: "daybook", label: "Day Book" },
+  { key: "ledger", label: "Ledger" },
+  { key: "customers", label: "Customer Report" },
+  { key: "brands", label: "Brand Report" },
 ];
 
-const TYPE_OPTIONS = [
-  { id: "ALL", label: "All Types" },
-  { id: "SALE", label: "Sales" },
-  { id: "PURCHASE", label: "Purchases" },
+const RANGE_OPTIONS = [
+  { value: "day", label: "Day (Today)" },
+  { value: "particular", label: "Particular Date" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "year", label: "Year" },
+  { value: "custom", label: "Custom Range" },
 ];
 
-function startOfToday() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfToday() {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function startOfWeek() {
-  const d = new Date();
-  const day = d.getDay(); // 0-6
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday as first day
-  d.setDate(diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function startOfMonth() {
-  const d = new Date();
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function toDateInputValue(date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function formatDateLabel(dateString) {
-  if (!dateString) return "";
-  const d = new Date(dateString);
-  if (Number.isNaN(d.getTime())) return dateString;
-  return d.toLocaleDateString();
-}
+const num = (v) => Math.round(Number(v || 0));
+const fmt = (v) => `Rs ${num(v)}`;
+const fmtDate = (v) => (v ? new Date(v).toLocaleDateString() : "-");
 
 export default function Reports() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState("stock");
+  const [range, setRange] = useState("month");
+  const [particularDate, setParticularDate] = useState(new Date().toISOString().slice(0, 10));
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [transactions, setTransactions] = useState([]);
-  const [companies, setCompanies] = useState([]);
-  const [filters, setFilters] = useState({
-    dateRange: "today",
-    customFrom: "",
-    customTo: "",
-    type: "ALL",
-    companyId: "ALL",
-  });
 
-  // Load companies once (for filter dropdown)
   useEffect(() => {
-    const fetchCompanies = async () => {
-      try {
-        const res = await api.get("/companies");
-        setCompanies(res.data?.data || res.data || []);
-      } catch (err) {
-        console.error(err);
-        toast.error("Failed to load companies for filters.");
-      }
-    };
-    fetchCompanies();
-  }, []);
+    const tab = searchParams.get("tab");
+    if (tab && REPORT_TABS.some((t) => t.key === tab)) setActiveTab(tab);
+  }, [searchParams]);
 
-  // Build query params based on filters
-  const buildQueryParams = () => {
-    const params = {};
-
-    // type filter
-    if (filters.type !== "ALL") {
-      params.type = filters.type;
+  const params = useMemo(() => {
+    const p = { range };
+    if (range === "particular" && particularDate) p.date = particularDate;
+    if (range === "custom") {
+      if (startDate) p.startDate = startDate;
+      if (endDate) p.endDate = endDate;
     }
+    return { params: p };
+  }, [range, particularDate, startDate, endDate]);
 
-    // company filter
-    if (filters.companyId !== "ALL") {
-      params.companyId = filters.companyId;
-    }
-
-    // date filters
-    if (filters.dateRange === "today") {
-      const s = toDateInputValue(startOfToday());
-      const e = toDateInputValue(endOfToday());
-      params.startDate = s;
-      params.endDate = e;
-    } else if (filters.dateRange === "this_week") {
-      const s = toDateInputValue(startOfWeek());
-      const e = toDateInputValue(endOfToday());
-      params.startDate = s;
-      params.endDate = e;
-    } else if (filters.dateRange === "this_month") {
-      const s = toDateInputValue(startOfMonth());
-      const e = toDateInputValue(endOfToday());
-      params.startDate = s;
-      params.endDate = e;
-    } else if (
-      filters.dateRange === "custom" &&
-      filters.customFrom &&
-      filters.customTo
-    ) {
-      params.startDate = filters.customFrom;
-      params.endDate = filters.customTo;
-    }
-
-    return params;
-  };
-
-  const fetchTransactions = async () => {
-    setLoading(true);
+  const loadReport = async () => {
     try {
-      const params = buildQueryParams();
-      const res = await api.get("/transactions", { params });
-      setTransactions(res.data?.data || res.data || []);
+      setLoading(true);
+      if (activeTab === "customers" || activeTab === "brands") {
+        setRows([]);
+        return;
+      }
+      if (activeTab === "stock") {
+        const res = await api.get("/reports/stock", params);
+        const production = (res.data?.data?.production || []).map((r, idx) => ({
+          id: `p-${idx}`,
+          stockType: "Production",
+          item: r.productTypeName || "-",
+          party: r.companyName || "-",
+          balance: `${num(r.balanceKg)} kg`,
+        }));
+        const managerial = (res.data?.data?.managerial || []).map((r, idx) => ({
+          id: `m-${idx}`,
+          stockType: "Managerial",
+          item: r.itemName || "-",
+          party: r.category || "-",
+          balance: `${num(r.balanceQty)} ${r.unit || ""}`.trim(),
+        }));
+        setRows([...production, ...managerial]);
+        return;
+      }
+      if (activeTab === "production") {
+        const res = await api.get("/reports/production", params);
+        const mapped = (res.data?.data || []).flatMap((b) =>
+          (b.outputs?.length ? b.outputs : [{ productTypeName: "-", netWeightKg: 0, outputDate: b.date }]).map((o, idx) => ({
+            id: `${b._id}-${idx}`,
+            date: fmtDate(o.outputDate || b.date),
+            batchNo: b.batchNo || "-",
+            company: o.companyName || b.sourceCompanyName || "-",
+            product: o.productTypeName || "-",
+            outputKg: num(o.netWeightKg),
+            status: b.status || "-",
+          }))
+        );
+        setRows(mapped);
+        return;
+      }
+      if (activeTab === "sales") {
+        const res = await api.get("/reports/sales", params);
+        setRows(
+          (res.data?.data || []).map((r) => ({
+            ...r,
+            date: fmtDate(r.date),
+            totalAmount: num(r.totalAmount),
+            partialPaid: num(r.partialPaid),
+            remaining: Math.max(num(r.totalAmount) - num(r.partialPaid), 0),
+          }))
+        );
+        return;
+      }
+      if (activeTab === "purchases") {
+        const res = await api.get("/reports/purchases", params);
+        setRows(
+          (res.data?.data || []).map((r) => ({
+            ...r,
+            date: fmtDate(r.date),
+            totalAmount: num(r.totalAmount),
+            partialPaid: num(r.partialPaid),
+            remaining: Math.max(num(r.totalAmount) - num(r.partialPaid), 0),
+          }))
+        );
+        return;
+      }
+      if (activeTab === "trial") {
+        const res = await api.get("/accounting/trial-balance", params);
+        setRows(res.data?.data || []);
+        return;
+      }
+      if (activeTab === "pl") {
+        const res = await api.get("/accounting/pl", params);
+        const p = res.data?.data || {};
+        setRows([
+          { id: "sales", line: "Sales Revenue", amount: num(p.salesTotal) },
+          { id: "cogs", line: "Cost of Goods Sold", amount: -num(p.cogsTotal) },
+          { id: "purchase", line: "Purchases Expense", amount: -num(p.purchasesTotal) },
+          { id: "expense", line: "Operating Expense", amount: -num(p.expenseTotal) },
+          { id: "payroll", line: "Payroll Expense", amount: -num(p.payrollTotal) },
+          { id: "net", line: "Net Profit / (Loss)", amount: num(p.profit) },
+        ]);
+        return;
+      }
+      if (activeTab === "balance") {
+        const res = await api.get("/accounting/balance", params);
+        const b = res.data?.data || {};
+        setRows([
+          { id: "a1", section: "Assets", line: "Cash & Bank", amount: num(b.assets?.cash) },
+          { id: "a2", section: "Assets", line: "Accounts Receivable", amount: num(b.assets?.receivables) },
+          { id: "a3", section: "Assets", line: "Inventory", amount: num(b.assets?.inventory) },
+          { id: "a4", section: "Assets", line: "Fixed Assets", amount: num(b.assets?.fixedAssets) },
+          { id: "l1", section: "Liabilities", line: "Accounts Payable", amount: num(b.liabilities?.payables) },
+          { id: "l2", section: "Liabilities", line: "Long-term Liabilities", amount: num(b.liabilities?.longTerm) },
+          { id: "e1", section: "Equity", line: "Owner Equity", amount: num(b.equity) },
+        ]);
+        return;
+      }
+      if (activeTab === "receivables") {
+        const res = await api.get("/accounting/outstanding/receivables", params);
+        setRows(res.data?.data || []);
+        return;
+      }
+      if (activeTab === "payables") {
+        const res = await api.get("/accounting/outstanding/payables", params);
+        setRows(res.data?.data || []);
+        return;
+      }
+      if (activeTab === "daybook") {
+        const res = await api.get("/accounting/daybook", params);
+        setRows(
+          (res.data?.data || []).map((r, idx) => ({
+            id: `${idx}-${r.description || ""}`,
+            date: fmtDate(r.date),
+            type: r.type || "-",
+            party: r.party || "-",
+            description: r.description || "-",
+            inflow: num(r.inflow),
+            outflow: num(r.outflow),
+          }))
+        );
+        return;
+      }
+      if (activeTab === "ledger") {
+        const res = await api.get("/accounting/ledger", params);
+        setRows(
+          (res.data?.data || []).map((r, idx) => ({
+            id: `${idx}-${r.account || ""}`,
+            date: fmtDate(r.date),
+            account: r.account || "-",
+            description: r.description || "-",
+            debit: num(r.debit),
+            credit: num(r.credit),
+            balance: num(r.balance),
+          }))
+        );
+      }
     } catch (err) {
-      console.error(err);
-      toast.error("Failed to load report data.");
+      toast.error(err?.response?.data?.message || "Failed to load report.");
+      setRows([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // Load on mount + whenever filters change
   useEffect(() => {
-    fetchTransactions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    filters.dateRange,
-    filters.customFrom,
-    filters.customTo,
-    filters.type,
-    filters.companyId,
-  ]);
+    loadReport();
+  }, [activeTab, params]);
 
-  const { totals, chartData } = useMemo(() => {
-    const totals = {
-      sales: 0,
-      purchases: 0,
-    };
-
-    const byDateMap = new Map();
-
-    for (const t of transactions || []) {
-      const amount = Number(t.totalAmount || 0);
-      if (t.type === "SALE") totals.sales += amount;
-      if (t.type === "PURCHASE") totals.purchases += amount;
-
-      const dateKey = (t.date || "").slice(0, 10);
-      const existing = byDateMap.get(dateKey) || {
-        date: dateKey,
-        label: formatDateLabel(t.date),
-        sales: 0,
-        purchases: 0,
-      };
-      if (t.type === "SALE") existing.sales += amount;
-      if (t.type === "PURCHASE") existing.purchases += amount;
-      byDateMap.set(dateKey, existing);
+  const columns = useMemo(() => {
+    if (activeTab === "stock") {
+      return [
+        { key: "stockType", label: "Stock Type" },
+        { key: "item", label: "Item / Product" },
+        { key: "party", label: "Brand / Category" },
+        { key: "balance", label: "Balance" },
+      ];
     }
+    if (activeTab === "production") {
+      return [
+        { key: "date", label: "Date" },
+        { key: "batchNo", label: "Batch #" },
+        { key: "company", label: "Brand" },
+        { key: "product", label: "Product" },
+        { key: "outputKg", label: "Output (kg)" },
+        { key: "status", label: "Status" },
+      ];
+    }
+    if (activeTab === "sales" || activeTab === "purchases") {
+      const partyLabel = activeTab === "sales" ? "Customer" : "Supplier";
+      return [
+        { key: "date", label: "Date" },
+        { key: "invoiceNo", label: "Invoice #" },
+        { key: "companyName", label: partyLabel },
+        { key: "paymentStatus", label: "Payment Status" },
+        { key: "totalAmount", label: "Total (PKR)", render: (v) => fmt(v) },
+        { key: "partialPaid", label: "Paid (PKR)", render: (v) => fmt(v) },
+        { key: "remaining", label: "Remaining (PKR)", render: (v) => fmt(v) },
+      ];
+    }
+    if (activeTab === "trial") {
+      return [
+        { key: "code", label: "Code" },
+        { key: "account", label: "Account" },
+        { key: "debit", label: "Debit (PKR)", render: (v) => fmt(v) },
+        { key: "credit", label: "Credit (PKR)", render: (v) => fmt(v) },
+      ];
+    }
+    if (activeTab === "pl") {
+      return [
+        { key: "line", label: "Particular" },
+        { key: "amount", label: "Amount (PKR)", render: (v) => fmt(v) },
+      ];
+    }
+    if (activeTab === "balance") {
+      return [
+        { key: "section", label: "Section" },
+        { key: "line", label: "Particular" },
+        { key: "amount", label: "Amount (PKR)", render: (v) => fmt(v) },
+      ];
+    }
+    if (activeTab === "receivables" || activeTab === "payables") {
+      return [
+        { key: "date", label: "Date", render: (v) => fmtDate(v) },
+        { key: "invoiceNo", label: "Invoice #" },
+        { key: "party", label: "Party" },
+        { key: "totalAmount", label: "Total (PKR)", render: (v) => fmt(v) },
+        { key: "paid", label: "Paid (PKR)", render: (v) => fmt(v) },
+        { key: "outstanding", label: "Outstanding (PKR)", render: (v) => fmt(v) },
+        { key: "dueDate", label: "Due Date", render: (v) => fmtDate(v) },
+      ];
+    }
+    if (activeTab === "daybook") {
+      return [
+        { key: "date", label: "Date" },
+        { key: "type", label: "Type" },
+        { key: "party", label: "Party" },
+        { key: "description", label: "Description" },
+        { key: "inflow", label: "Inflow (PKR)", render: (v) => fmt(v) },
+        { key: "outflow", label: "Outflow (PKR)", render: (v) => fmt(v) },
+      ];
+    }
+    return [
+      { key: "date", label: "Date" },
+      { key: "account", label: "Account" },
+      { key: "description", label: "Description" },
+      { key: "debit", label: "Debit (PKR)", render: (v) => fmt(v) },
+      { key: "credit", label: "Credit (PKR)", render: (v) => fmt(v) },
+      { key: "balance", label: "Balance (PKR)", render: (v) => fmt(v) },
+    ];
+  }, [activeTab]);
 
-    const chartData = Array.from(byDateMap.values()).sort((a, b) =>
-      a.date.localeCompare(b.date)
-    );
-
-    return { totals, chartData };
-  }, [transactions]);
-
-  const net = totals.sales - totals.purchases;
-
-  const handleResetFilters = () => {
-    setFilters({
-      dateRange: "today",
-      customFrom: "",
-      customTo: "",
-      type: "ALL",
-      companyId: "ALL",
-    });
-  };
+  const title = REPORT_TABS.find((t) => t.key === activeTab)?.label || "Report";
 
   return (
     <div className="p-4 md:p-6 space-y-4">
-      {/* Header */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-blue-50">
-            <BarChart3 className="w-5 h-5 text-blue-600" />
-          </div>
-          <div>
-            <h1 className="text-xl md:text-2xl font-semibold text-gray-800">
-              Reports &amp; Analytics
-            </h1>
-            <p className="text-sm text-gray-500">
-              Transaction summary by date, type and company.
-            </p>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={fetchTransactions}
-          className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 shadow-sm w-full md:w-auto justify-center"
-        >
-          <RefreshCcw className="w-4 h-4" />
-          Refresh
-        </button>
+      <div className="flex flex-wrap gap-2">
+        {REPORT_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => {
+              setActiveTab(tab.key);
+              setSearchParams({ tab: tab.key });
+            }}
+            className={`px-3 py-1.5 rounded-full text-sm border ${
+              activeTab === tab.key
+                ? "bg-emerald-600 text-white border-emerald-600"
+                : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* Filters */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 space-y-4">
-        <div className="flex items-center gap-2 mb-1">
-          <Filter className="w-4 h-4 text-gray-500" />
-          <h2 className="text-sm font-medium text-gray-700">Filters</h2>
-        </div>
-
-        <div className="flex flex-col md:flex-row md:items-end gap-4">
-          {/* Date range */}
-          <div className="flex-1 space-y-2">
-            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Date Range
+      <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-wrap items-end gap-3">
+        <label className="text-sm">
+          <span className="block text-gray-600 mb-1">Range</span>
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[160px]"
+          >
+            {RANGE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {range === "particular" && (
+          <label className="text-sm">
+            <span className="block text-gray-600 mb-1">Date</span>
+            <input
+              type="date"
+              value={particularDate}
+              onChange={(e) => setParticularDate(e.target.value)}
+              className="border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </label>
+        )}
+        {range === "custom" && (
+          <>
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Start Date</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="border border-gray-300 rounded px-3 py-2 text-sm"
+              />
             </label>
-            <div className="flex flex-wrap gap-2">
-              {DATE_RANGES.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() =>
-                    setFilters((prev) => ({ ...prev, dateRange: r.id }))
-                  }
-                  className={`px-3 py-1.5 text-xs rounded-full border ${
-                    filters.dateRange === r.id
-                      ? "border-blue-500 bg-blue-50 text-blue-700"
-                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-
-            {filters.dateRange === "custom" && (
-              <div className="mt-2 flex flex-wrap gap-3">
-                <div className="flex flex-col">
-                  <span className="text-xs text-gray-500 mb-1">From</span>
-                  <input
-                    type="date"
-                    className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                    value={filters.customFrom}
-                    onChange={(e) =>
-                      setFilters((prev) => ({
-                        ...prev,
-                        customFrom: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-xs text-gray-500 mb-1">To</span>
-                  <input
-                    type="date"
-                    className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                    value={filters.customTo}
-                    onChange={(e) =>
-                      setFilters((prev) => ({
-                        ...prev,
-                        customTo: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Type */}
-          <div className="w-full md:w-52 space-y-2">
-            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Transaction Type
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">End Date</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="border border-gray-300 rounded px-3 py-2 text-sm"
+              />
             </label>
-            <select
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-              value={filters.type}
-              onChange={(e) =>
-                setFilters((prev) => ({ ...prev, type: e.target.value }))
-              }
-            >
-              {TYPE_OPTIONS.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Company */}
-          <div className="w-full md:w-64 space-y-2">
-            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide">
-              Company
-            </label>
-            <select
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-              value={filters.companyId}
-              onChange={(e) =>
-                setFilters((prev) => ({ ...prev, companyId: e.target.value }))
-              }
-            >
-              <option value="ALL">All Companies</option>
-              {companies.map((c) => (
-                <option key={c._id} value={c._id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Reset */}
-          <div className="flex md:block">
-            <button
-              type="button"
-              onClick={handleResetFilters}
-              className="mt-2 md:mt-0 inline-flex items-center justify-center px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-            >
-              Reset
-            </button>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
-      {/* Content */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        {/* Summary cards */}
-        <div className="xl:col-span-1 space-y-3">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Summary
-            </h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Total Sales</span>
-                <span className="text-base font-semibold text-emerald-600">
-                  {totals.sales.toFixed(2)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">Total Purchases</span>
-                <span className="text-base font-semibold text-blue-600">
-                  {totals.purchases.toFixed(2)}
-                </span>
-              </div>
-              <div className="border-t border-gray-100 pt-3 mt-1 flex items-center justify-between">
-                <span className="text-sm font-medium text-gray-700">
-                  Net (Sales – Purchases)
-                </span>
-                <span
-                  className={`text-base font-semibold ${
-                    net >= 0 ? "text-emerald-600" : "text-red-600"
-                  }`}
-                >
-                  {net.toFixed(2)}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-sm text-gray-600">
-            <p className="mb-1">
-              <span className="font-medium">Hint:</span> Use this report to
-              review period-wise performance of sales and purchases, and to
-              quickly drill down by company.
-            </p>
-          </div>
-        </div>
-
-        {/* Chart + table */}
-        <div className="xl:col-span-2 space-y-4">
-          {/* Chart */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 md:p-5 h-72 min-h-[288px] min-w-[200px]">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-gray-700">
-                Sales vs Purchases (by Date)
-              </h3>
-              {loading && (
-                <span className="text-xs text-gray-400">Loading...</span>
-              )}
-            </div>
-
-            {chartData.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-sm text-gray-400">
-                No data for the selected filters.
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={chartData}
-                  margin={{ top: 8, right: 16, bottom: 4, left: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-                  <Bar dataKey="sales" name="Sales" />
-                  <Bar dataKey="purchases" name="Purchases" />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Table */}
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-700">
-                Transactions ({transactions.length})
-              </h3>
-              {loading && (
-                <span className="text-xs text-gray-400">Loading...</span>
-              )}
-            </div>
-
-            {transactions.length === 0 && !loading ? (
-              <div className="p-4 text-sm text-gray-400">
-                No transactions found for the selected filters.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">
-                        Date
-                      </th>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">
-                        Invoice #
-                      </th>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">
-                        Company
-                      </th>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">
-                        Type
-                      </th>
-                      <th className="px-4 py-2 text-right font-medium text-gray-500">
-                        Amount
-                      </th>
-                      <th className="px-4 py-2 text-left font-medium text-gray-500">
-                        Payment
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {transactions.map((t) => (
-                      <tr
-                        key={t._id}
-                        className="border-t border-gray-50 hover:bg-gray-50/60"
-                      >
-                        <td className="px-4 py-2 whitespace-nowrap text-gray-700">
-                          {formatDateLabel(t.date)}
-                        </td>
-                        <td className="px-4 py-2 whitespace-nowrap font-mono text-xs text-gray-700">
-                          {t.invoiceNo}
-                        </td>
-                        <td className="px-4 py-2 whitespace-nowrap text-gray-700">
-                          {t.companyName}
-                        </td>
-                        <td className="px-4 py-2 whitespace-nowrap">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              t.type === "SALE"
-                                ? "bg-emerald-50 text-emerald-700"
-                                : "bg-blue-50 text-blue-700"
-                            }`}
-                          >
-                            {t.type}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 whitespace-nowrap text-right text-gray-800">
-                          {Number(t.totalAmount || 0).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 whitespace-nowrap text-gray-700">
-                          <span className="text-xs font-medium">
-                            {t.paymentStatus}
-                          </span>
-                          {t.paymentMethod && (
-                            <span className="ml-1 text-xs text-gray-400">
-                              • {t.paymentMethod}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+      <div className="bg-white rounded-lg shadow-sm p-4">
+        {activeTab === "customers" ? (
+          <CompanyManager tableOnly editInModal />
+        ) : activeTab === "brands" ? (
+          <ProductManager tableOnly editInModal />
+        ) : (
+          loading ? (
+          <div className="text-sm text-gray-500">Loading {title.toLowerCase()}...</div>
+        ) : (
+          <DataTable
+            title={title}
+            columns={columns}
+            data={rows}
+            idKey="id"
+            searchPlaceholder={`Search ${title.toLowerCase()}...`}
+            emptyMessage={`No ${title.toLowerCase()} found.`}
+          />
+        )
+        )}
       </div>
     </div>
   );

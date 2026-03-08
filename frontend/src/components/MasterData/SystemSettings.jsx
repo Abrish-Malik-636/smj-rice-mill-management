@@ -272,55 +272,44 @@ export default function SystemSettings() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold text-emerald-800">
-            System Settings
-          </h2>
-          <p className="text-sm text-gray-500">
-            General information & full system backup/restore
-          </p>
-        </div>
-        <div className="flex items-center gap-3" />
-      </div>
-
       {/* Tabs */}
-      <div className="flex flex-wrap gap-2 border-b border-gray-200">
+      <div className="border-b border-emerald-200">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setActiveTab("general")}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition border-b-2 ${
+          className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg border-b-2 transition ${
             activeTab === "general"
-              ? "text-emerald-700 border-emerald-700 bg-emerald-50"
-              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-gray-50"
+              ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
           General
         </button>
         <button
           onClick={() => setActiveTab("stock")}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition border-b-2 ${
+          className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg border-b-2 transition ${
             activeTab === "stock"
-              ? "text-emerald-700 border-emerald-700 bg-emerald-50"
-              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-gray-50"
+              ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
           Admin Settings
         </button>
         <button
           onClick={() => setActiveTab("backup")}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition border-b-2 ${
+          className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg border-b-2 transition ${
             activeTab === "backup"
-              ? "text-emerald-700 border-emerald-700 bg-emerald-50"
-              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-gray-50"
+              ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+              : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
           Backup & Restore
         </button>
       </div>
+      </div>
 
       {/* Content */}
-      <div className="bg-white p-4 rounded-lg shadow-sm">
+      <div className="p-4 rounded-lg">
         {/* GENERAL TAB */}
         {activeTab === "general" && (
           <>

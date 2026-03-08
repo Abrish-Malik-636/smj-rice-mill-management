@@ -1,5 +1,746 @@
 const AIChat = require("../models/AIChat");
-const AISuggestion = require("../models/AISuggestion");
+const Transaction = require("../models/transactionModel");
+const ProductionBatch = require("../models/productionBatchModel");
+const StockLedger = require("../models/stockLedgerModel");
+const Company = require("../models/companyModel");
+const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
+const axios = require("axios");
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+
+const toNum = (value) => Number(value || 0);
+const fmtAmount = (value) => Math.round(toNum(value)).toLocaleString("en-US");
+const fmtKg = (value) => `${Math.round(toNum(value)).toLocaleString("en-US")} kg`;
+
+const paidAmount = (tx) => {
+  const total = toNum(tx.totalAmount);
+  if (tx.paymentStatus === "PAID") return total;
+  if (tx.paymentStatus === "PARTIAL") return toNum(tx.partialPaid);
+  return 0;
+};
+
+const remainingAmount = (tx) => {
+  const total = toNum(tx.totalAmount);
+  if (tx.paymentStatus === "UNPAID") return total;
+  if (tx.paymentStatus === "PARTIAL") return Math.max(total - toNum(tx.partialPaid), 0);
+  return 0;
+};
+
+async function buildBusinessSnapshot() {
+  const now = new Date();
+  const since7 = new Date(now.getTime() - 7 * DAY_MS);
+  const since30 = new Date(now.getTime() - 30 * DAY_MS);
+
+  const inRange = (since) => ({
+    $or: [{ date: { $gte: since } }, { createdAt: { $gte: since } }],
+  });
+
+  const [sales7, sales30, purchases7, purchases30, stockAgg, paddyAgg, managerialAgg, inProcessCount] =
+    await Promise.all([
+      Transaction.find({ type: "SALE", ...inRange(since7) })
+        .select("totalAmount partialPaid paymentStatus date createdAt")
+        .lean(),
+      Transaction.find({ type: "SALE", ...inRange(since30) })
+        .select("totalAmount partialPaid paymentStatus date createdAt")
+        .lean(),
+      Transaction.find({ type: "PURCHASE", ...inRange(since7) })
+        .select("totalAmount partialPaid paymentStatus date createdAt")
+        .lean(),
+      Transaction.find({ type: "PURCHASE", ...inRange(since30) })
+        .select("totalAmount partialPaid paymentStatus date createdAt")
+        .lean(),
+      // IMPORTANT: brands are unique, and the same productType can appear under different brands.
+      // Group by brand/trademark (companyName) + productTypeId to avoid mixing different brands together.
+      StockLedger.aggregate([
+        {
+          $group: {
+            _id: { brandName: "$companyName", productTypeId: "$productTypeId" },
+            brandName: { $last: "$companyName" },
+            productTypeId: { $last: "$productTypeId" },
+            productTypeName: { $last: "$productTypeName" },
+            inKg: {
+              $sum: {
+                $cond: [{ $eq: ["$type", "IN"] }, "$netWeightKg", 0],
+              },
+            },
+            outKg: {
+              $sum: {
+                $cond: [{ $eq: ["$type", "OUT"] }, "$netWeightKg", 0],
+              },
+            },
+          },
+        },
+      ]),
+      // Unprocessed Paddy is stored in ledger with productTypeId null and productTypeName "Paddy"/"Unprocessed Paddy".
+      StockLedger.aggregate([
+        {
+          $match: {
+            productTypeId: null,
+            productTypeName: { $in: ["Paddy", "Unprocessed Paddy", "paddy", "unprocessed paddy"] },
+          },
+        },
+        {
+          $group: {
+            _id: { brandName: "$companyName" },
+            brandName: { $last: "$companyName" },
+            inKg: {
+              $sum: {
+                $cond: [{ $eq: ["$type", "IN"] }, "$netWeightKg", 0],
+              },
+            },
+            outKg: {
+              $sum: {
+                $cond: [{ $eq: ["$type", "OUT"] }, "$netWeightKg", 0],
+              },
+            },
+          },
+        },
+      ]),
+      // Managerial stock is tracked separately (qty, not kg).
+      ManagerialStockLedger.aggregate([
+        {
+          $group: {
+            _id: { itemName: "$itemName", category: "$category" },
+            itemName: { $last: "$itemName" },
+            category: { $last: "$category" },
+            inQty: {
+              $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$quantity", 0] },
+            },
+            outQty: {
+              $sum: { $cond: [{ $eq: ["$type", "OUT"] }, "$quantity", 0] },
+            },
+          },
+        },
+      ]),
+      ProductionBatch.countDocuments({ status: "IN_PROCESS" }),
+    ]);
+
+  const effectiveTimeMs = (tx) => {
+    const dateMs = tx?.date ? new Date(tx.date).getTime() : NaN;
+    const createdMs = tx?.createdAt ? new Date(tx.createdAt).getTime() : NaN;
+    if (!Number.isNaN(dateMs)) return dateMs;
+    if (!Number.isNaN(createdMs)) return createdMs;
+    return 0;
+  };
+
+  const filterSince = (rows, since) => {
+    const sinceMs = since.getTime();
+    return (Array.isArray(rows) ? rows : []).filter(
+      (tx) => effectiveTimeMs(tx) >= sinceMs,
+    );
+  };
+
+  // Defensive: query uses $or(date/createdAt), but we re-filter using effective timestamp
+  // so totals always match the intended window.
+  const sales7Filtered = filterSince(sales7, since7);
+  const sales30Filtered = filterSince(sales30, since30);
+  const purchases7Filtered = filterSince(purchases7, since7);
+  const purchases30Filtered = filterSince(purchases30, since30);
+
+  const sales7Total = sales7Filtered.reduce((sum, tx) => sum + toNum(tx.totalAmount), 0);
+  const sales30Total = sales30Filtered.reduce((sum, tx) => sum + toNum(tx.totalAmount), 0);
+  const purchases7Total = purchases7Filtered.reduce((sum, tx) => sum + toNum(tx.totalAmount), 0);
+  const purchases30Total = purchases30Filtered.reduce((sum, tx) => sum + toNum(tx.totalAmount), 0);
+
+  const received30 = sales30Filtered.reduce((sum, tx) => sum + paidAmount(tx), 0);
+  const receivable30 = sales30Filtered.reduce((sum, tx) => sum + remainingAmount(tx), 0);
+
+  const stockRows = stockAgg
+    .filter((row) => row && row.productTypeId)
+    .map((row) => {
+      const balanceKg = toNum(row.inKg) - toNum(row.outKg);
+      return {
+        brandName: String(row.brandName || "").trim() || "Unbranded",
+        productTypeId: String(row.productTypeId),
+        productTypeName: String(row.productTypeName || "Unknown").trim() || "Unknown",
+        balanceKg,
+      };
+    });
+
+  const paddyByBrand = (Array.isArray(paddyAgg) ? paddyAgg : [])
+    .map((row) => ({
+      brandName: String(row.brandName || "").trim() || "Unbranded",
+      balanceKg: toNum(row.inKg) - toNum(row.outKg),
+    }))
+    .filter((row) => row.balanceKg > 0)
+    .sort((a, b) => b.balanceKg - a.balanceKg);
+
+  const managerialRows = (Array.isArray(managerialAgg) ? managerialAgg : [])
+    .map((row) => ({
+      itemName: String(row.itemName || row.category || "").trim() || "Item",
+      category: String(row.category || "").trim() || "",
+      balanceQty: toNum(row.inQty) - toNum(row.outQty),
+    }))
+    .filter((row) => row.balanceQty > 0)
+    .sort((a, b) => b.balanceQty - a.balanceQty);
+
+  const managerialTotalQty = managerialRows.reduce(
+    (sum, r) => sum + Math.max(0, toNum(r.balanceQty)),
+    0,
+  );
+
+  const managerialTopItems = managerialRows.slice(0, 12);
+
+  const totalPositiveKg = stockRows.reduce(
+    (sum, row) => sum + Math.max(0, toNum(row.balanceKg)),
+    0,
+  );
+
+  const topStockItems = [...stockRows]
+    .filter((row) => toNum(row.balanceKg) > 0)
+    .sort((a, b) => toNum(b.balanceKg) - toNum(a.balanceKg))
+    .slice(0, 12);
+
+  const lowStockItems = stockRows
+    .filter((row) => row.balanceKg > 0 && row.balanceKg <= 300)
+    .sort((a, b) => a.balanceKg - b.balanceKg)
+    .slice(0, 5);
+
+  const outOfStockItems = stockRows
+    .filter((row) => row.balanceKg <= 0)
+    .sort((a, b) => a.productTypeName.localeCompare(b.productTypeName))
+    .slice(0, 5);
+
+  return {
+    generatedAt: now.toISOString(),
+    windows: {
+      last7DaysSince: since7.toISOString(),
+      last30DaysSince: since30.toISOString(),
+    },
+    sales: {
+      last7Days: sales7Total,
+      last30Days: sales30Total,
+      collectedLast30Days: received30,
+      receivableLast30Days: receivable30,
+    },
+    purchases: {
+      last7Days: purchases7Total,
+      last30Days: purchases30Total,
+    },
+    stock: {
+      productionTotalKg: totalPositiveKg,
+      topStockItems,
+      lowStockItems,
+      outOfStockItems,
+      totalTrackedProducts: stockRows.length,
+      unprocessedPaddyByBrand: paddyByBrand,
+    },
+    managerialStock: {
+      totalQty: managerialTotalQty,
+      topItems: managerialTopItems,
+      totalTrackedItems: managerialRows.length,
+    },
+    production: {
+      inProcessBatches: inProcessCount,
+    },
+  };
+}
+
+function generateAutoSuggestions(snapshot) {
+  const items = [];
+  const receivable = toNum(snapshot?.sales?.receivableLast30Days);
+  const lowStockItems = Array.isArray(snapshot?.stock?.lowStockItems)
+    ? snapshot.stock.lowStockItems
+    : [];
+  const inProcess = toNum(snapshot?.production?.inProcessBatches);
+  const sales7 = toNum(snapshot?.sales?.last7Days);
+  const purchases7 = toNum(snapshot?.purchases?.last7Days);
+
+  if (receivable > 0) {
+    items.push({
+      type: "customer",
+      title: "Follow up pending receivables",
+      description: `Outstanding receivables in last 30 days are around PKR ${fmtAmount(
+        receivable,
+      )}. Prioritize follow-ups for unpaid and partial invoices.`,
+      priority: receivable >= 500000 ? "high" : "medium",
+      data: { receivableLast30Days: receivable },
+      userId: "system",
+      status: "pending",
+    });
+  }
+
+  if (lowStockItems.length > 0) {
+    const names = lowStockItems
+      .slice(0, 3)
+      .map((x) => `${x.productTypeName} (${Math.round(x.balanceKg)} kg)`)
+      .join(", ");
+    items.push({
+      type: "inventory",
+      title: "Replenish low stock products",
+      description: `Low stock detected: ${names}. Plan purchase/production before these SKUs run out.`,
+      priority: "high",
+      data: { lowStockItems },
+      userId: "system",
+      status: "pending",
+    });
+  }
+
+  if (inProcess >= 5) {
+    items.push({
+      type: "gatepass",
+      title: "Review in-process production load",
+      description: `${inProcess} production batches are currently in process. Review bottlenecks and close aged batches.`,
+      priority: "medium",
+      data: { inProcessBatches: inProcess },
+      userId: "system",
+      status: "pending",
+    });
+  }
+
+  if (sales7 > 0 && purchases7 > sales7 * 1.2) {
+    items.push({
+      type: "pricing",
+      title: "Check pricing and sales conversion",
+      description: `Last 7 days purchases (PKR ${fmtAmount(
+        purchases7,
+      )}) are much higher than sales (PKR ${fmtAmount(
+        sales7,
+      )}). Review pricing, promotions, and sales follow-up.`,
+      priority: "medium",
+      data: { sales7Days: sales7, purchases7Days: purchases7 },
+      userId: "system",
+      status: "pending",
+    });
+  }
+
+  if (items.length === 0) {
+    items.push({
+      type: "general",
+      title: "Business metrics are stable",
+      description:
+        "No high-risk pattern detected right now. Continue daily monitoring for receivables, stock, and in-process batches.",
+      priority: "low",
+      data: { stable: true },
+      userId: "system",
+      status: "pending",
+    });
+  }
+
+  return items.slice(0, 6);
+}
+
+
+
+function buildLocalAIReply(message, snapshot) {
+  const text = String(message || "").toLowerCase().trim();
+  const sales30 = toNum(snapshot?.sales?.last30Days);
+  const collected30 = toNum(snapshot?.sales?.collectedLast30Days);
+  const receivable30 = toNum(snapshot?.sales?.receivableLast30Days);
+  const purchases30 = toNum(snapshot?.purchases?.last30Days);
+  const inProcess = toNum(snapshot?.production?.inProcessBatches);
+  const lowStockItems = Array.isArray(snapshot?.stock?.lowStockItems)
+    ? snapshot.stock.lowStockItems
+    : [];
+
+  if (text.includes("sale") || text.includes("sales") || text.includes("revenue")) {
+    return [
+      `Sales in last 30 days: PKR ${fmtAmount(sales30)}.`,
+      `Collected amount: PKR ${fmtAmount(collected30)}.`,
+      `Pending receivable: PKR ${fmtAmount(receivable30)}.`,
+    ].join("\n");
+  }
+
+  if (text.includes("purchase") || text.includes("expense")) {
+    return `Purchases in last 30 days are about PKR ${fmtAmount(
+      purchases30,
+    )}. Compare this with current sales trend before the next procurement cycle.`;
+  }
+
+  if (text.includes("stock") || text.includes("inventory")) {
+    const totalKg = toNum(snapshot?.stock?.totalPositiveKg);
+    if (!lowStockItems.length) {
+      if (text.includes("total") || text.includes("how much") || text.includes("kitna")) {
+        return `Total available stock is about ${fmtKg(totalKg)}.`;
+      }
+      return "No low-stock alert under 300 kg right now. Inventory looks stable.";
+    }
+    if (text.includes("total") || text.includes("how much") || text.includes("kitna")) {
+      return `Total available stock is about ${fmtKg(totalKg)}.`;
+    }
+    const lines = lowStockItems
+      .slice(0, 5)
+      .map((row) => `- ${row.productTypeName}: ${fmtKg(row.balanceKg)}`)
+      .join("\n");
+    return `Low stock items (<= 300 kg):\n${lines}`;
+  }
+
+  if (text.includes("production") || text.includes("batch")) {
+    return `Currently ${inProcess} production batch(es) are in process.`;
+  }
+
+  if (
+    text.includes("suggest") ||
+    text.includes("advice") ||
+    text.includes("recommend")
+  ) {
+    const items = generateAutoSuggestions(snapshot).slice(0, 3);
+    return items.map((x, i) => `${i + 1}. ${x.title} - ${x.description}`).join("\n");
+  }
+
+  return [
+    "Current business snapshot:",
+    `- Sales (30d): PKR ${fmtAmount(sales30)}`,
+    `- Purchases (30d): PKR ${fmtAmount(purchases30)}`,
+    `- Receivables (30d): PKR ${fmtAmount(receivable30)}`,
+    `- In-process batches: ${inProcess}`,
+    'Ask me about sales, stock, purchases, receivables, or production for focused insights.',
+  ].join("\n");
+}
+
+function detectIntent(rawMessage) {
+  const msg = String(rawMessage || "").toLowerCase();
+  const has = (s) => msg.includes(s);
+
+  const wantsTotal = has("total") || has("overall") || has("kitna") || has("how much") || has("sum");
+  const wantsList = has("list") || has("show") || has("all") || has("names") || has("name") || has("customers") || has("customer");
+  const wantsManagerial = has("managerial") || has("office") || has("admin stock");
+  const wantsProduction = has("production") || has("finished") || has("rice stock");
+
+  if ((has("stock") || has("inventory")) && wantsTotal) {
+    if (wantsManagerial) return { type: "stock_total_managerial" };
+    if (wantsProduction) return { type: "stock_total_production" };
+    return { type: "stock_total_both" };
+  }
+  if (has("low stock") || (has("stock") && has("low"))) return { type: "stock_low" };
+  if (has("top stock") || (has("stock") && (has("top") || has("highest")))) return { type: "stock_top" };
+  if ((has("stock") || has("inventory")) && wantsManagerial) return { type: "managerial_top" };
+  if ((has("stock") || has("inventory")) && wantsProduction) return { type: "stock_top" };
+  if (has("paddy") || has("unprocessed paddy") || has("unprocessed")) {
+    if (has("which") || has("brand") || has("brnd")) return { type: "paddy_brands" };
+    return { type: "paddy_brands" };
+  }
+
+  if (has("sale") || has("sales") || has("revenue")) return { type: "sales_summary" };
+  if (has("purchase") || has("purchases")) return { type: "purchases_summary" };
+  if (has("receivable") || has("pending payment") || has("due") || has("overdue")) return { type: "receivables_summary" };
+  if (has("production") || has("batch")) return { type: "production_summary" };
+
+  if (has("suggest") || has("recommend") || has("advice")) return { type: "suggestions" };
+
+  if (has("customer") || has("customers")) {
+    // Try to capture a search query: "customer <name/phone>"
+    const m = String(rawMessage || "").match(/customers?\s+(?:named|name|with|of|for)?\s*[:\-]?\s*(.+)$/i);
+    const q = m && m[1] ? String(m[1]).trim() : "";
+    if (q && q.length >= 2) return { type: "customer_search", q };
+    if (wantsList) return { type: "customer_list" };
+    return { type: "customer_list" };
+  }
+
+  // "invoice INV-..." -> return customer name
+  const inv = String(rawMessage || "").match(/inv[-\s]*[a-z0-9\-]+/i);
+  if (inv) return { type: "invoice_customer", invoiceNo: inv[0].replace(/\s+/g, "") };
+
+  return { type: "general" };
+}
+
+function answerFromSnapshot(intent, snapshot) {
+  if (!snapshot) return null;
+  const lowStockItems = Array.isArray(snapshot?.stock?.lowStockItems)
+    ? snapshot.stock.lowStockItems
+    : [];
+  const topStockItems = Array.isArray(snapshot?.stock?.topStockItems)
+    ? snapshot.stock.topStockItems
+    : [];
+  const paddyByBrand = Array.isArray(snapshot?.stock?.unprocessedPaddyByBrand)
+    ? snapshot.stock.unprocessedPaddyByBrand
+    : [];
+
+  if (intent.type === "stock_total") {
+    return `Total available production stock is about ${fmtKg(
+      toNum(snapshot?.stock?.productionTotalKg),
+    )}.`;
+  }
+  if (intent.type === "stock_total_production") {
+    return `Available production stock is about ${fmtKg(
+      toNum(snapshot?.stock?.productionTotalKg),
+    )}.`;
+  }
+  if (intent.type === "stock_total_managerial") {
+    return `Available managerial stock is about ${Math.round(
+      toNum(snapshot?.managerialStock?.totalQty),
+    ).toLocaleString("en-US")} items.`;
+  }
+  if (intent.type === "stock_total_both") {
+    const prod = fmtKg(toNum(snapshot?.stock?.productionTotalKg));
+    const man = Math.round(toNum(snapshot?.managerialStock?.totalQty)).toLocaleString("en-US");
+    return `Available stock:\n- Production: ${prod}\n- Managerial: ${man} items`;
+  }
+  if (intent.type === "stock_low") {
+    if (!lowStockItems.length) return "No low-stock items under 300 kg right now.";
+    return (
+      "Low stock items (<= 300 kg):\n" +
+      lowStockItems.map((r) => `- ${r.productTypeName}: ${fmtKg(r.balanceKg)}`).join("\n")
+    );
+  }
+  if (intent.type === "stock_top") {
+    if (!topStockItems.length) return "No stock items found.";
+    return (
+      "Top stock items:\n" +
+      topStockItems.map((r) => `- ${r.productTypeName}: ${fmtKg(r.balanceKg)}`).join("\n")
+    );
+  }
+  if (intent.type === "managerial_top") {
+    const top = Array.isArray(snapshot?.managerialStock?.topItems)
+      ? snapshot.managerialStock.topItems
+      : [];
+    if (!top.length) return "No managerial stock items found.";
+    const lines = top
+      .slice(0, 12)
+      .map((r) => `- ${r.itemName}: ${Math.round(toNum(r.balanceQty)).toLocaleString("en-US")}`)
+      .join("\n");
+    return `Top managerial stock items:\n${lines}`;
+  }
+  if (intent.type === "paddy_brands") {
+    if (!paddyByBrand.length) return "No Unprocessed Paddy stock found for any brand.";
+    const top = paddyByBrand[0];
+    const lines = paddyByBrand.slice(0, 10).map((r) => `- ${r.brandName}: ${fmtKg(r.balanceKg)}`).join("\n");
+    return `Brands with Unprocessed Paddy:\n${lines}\n\nTop brand: ${top.brandName} (${fmtKg(top.balanceKg)}).`;
+  }
+  if (intent.type === "sales_summary") {
+    return [
+      `Sales (7d): PKR ${fmtAmount(snapshot?.sales?.last7Days)}`,
+      `Sales (30d): PKR ${fmtAmount(snapshot?.sales?.last30Days)}`,
+      `Collected (30d): PKR ${fmtAmount(snapshot?.sales?.collectedLast30Days)}`,
+      `Receivables (30d): PKR ${fmtAmount(snapshot?.sales?.receivableLast30Days)}`,
+    ].join("\n");
+  }
+  if (intent.type === "purchases_summary") {
+    return [
+      `Purchases (7d): PKR ${fmtAmount(snapshot?.purchases?.last7Days)}`,
+      `Purchases (30d): PKR ${fmtAmount(snapshot?.purchases?.last30Days)}`,
+    ].join("\n");
+  }
+  if (intent.type === "receivables_summary") {
+    return `Receivables (30d): PKR ${fmtAmount(snapshot?.sales?.receivableLast30Days)}`;
+  }
+  if (intent.type === "production_summary") {
+    return `In-process batches: ${toNum(snapshot?.production?.inProcessBatches)}`;
+  }
+  if (intent.type === "suggestions") {
+    const items = generateAutoSuggestions(snapshot).slice(0, 5);
+    return items.map((x, i) => `${i + 1}. ${x.title} - ${x.description}`).join("\n");
+  }
+  return null;
+}
+
+async function answerFromDatabase(intent) {
+  if (intent.type === "customer_list") {
+    const rows = await Company.find({})
+      .sort({ createdAt: -1 })
+      .limit(25)
+      .select("name phone")
+      .lean();
+    if (!rows.length) return "No customers found.";
+    return (
+      "Recent customers:\n" +
+      rows
+        .map((c) => `- ${String(c.name || "").trim() || "Unnamed"}${c.phone ? ` (${c.phone})` : ""}`)
+        .join("\n")
+    );
+  }
+
+  if (intent.type === "customer_search") {
+    const q = String(intent.q || "").trim();
+    if (!q) return "Tell me the customer name/phone to search.";
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const rows = await Company.find({ $or: [{ name: rx }, { phone: rx }] })
+      .limit(20)
+      .select("name phone address email")
+      .lean();
+    if (!rows.length) return `No customer matched "${q}".`;
+    return (
+      `Customers matching "${q}":\n` +
+      rows
+        .map((c) => `- ${String(c.name || "").trim() || "Unnamed"}${c.phone ? ` (${c.phone})` : ""}`)
+        .join("\n")
+    );
+  }
+
+  if (intent.type === "invoice_customer") {
+    const invoiceNo = String(intent.invoiceNo || "").trim();
+    const tx = await Transaction.findOne({ invoiceNo: new RegExp(`^${invoiceNo}$`, "i") })
+      .select("invoiceNo companyName")
+      .lean();
+    if (!tx) return `Invoice not found: ${invoiceNo}`;
+    return `Invoice ${tx.invoiceNo}: Customer is ${tx.companyName || "Unknown"}.`;
+  }
+
+  return null;
+}
+
+async function generateAIResponse({ message, context, history, snapshot }) {
+  const hfToken = process.env.HF_API_TOKEN || process.env.HUGGINGFACE_API_TOKEN;
+  const hfModel = process.env.HF_MODEL || process.env.HUGGINGFACE_MODEL;
+  const hfBaseUrl = String(process.env.HF_BASE_URL || "https://router.huggingface.co").replace(
+    /\/+$/,
+    "",
+  );
+  const debug = String(process.env.AI_DEBUG || "").trim() === "1";
+  if (hfToken && hfModel) {
+    try {
+      const chatHistory = Array.isArray(history)
+        ? history.slice(-8).map((m) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: String(m.content || ""),
+          }))
+        : [];
+
+      const baseRules = [
+        "You are the SMJ Rice Mill AI assistant.",
+        "Give concise and practical answers based on the provided business snapshot.",
+        "Never invent financial values not present in snapshot.",
+      ].join(" ");
+
+      const isFlanT5 = String(hfModel || "").toLowerCase().includes("flan-t5");
+
+      const prompt = isFlanT5
+        ? [
+            "Instruction: Answer using ONLY the snapshot values. If data is missing, say what is missing.",
+            `Rules: ${baseRules}`,
+            `Context: ${context || "general"}`,
+            `Snapshot JSON: ${JSON.stringify(snapshot)}`,
+            `Question: ${String(message || "")}`,
+            "Answer:",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : [
+            baseRules,
+            `Context: ${context || "general"}`,
+            `Snapshot: ${JSON.stringify(snapshot)}`,
+          ].join("\n");
+
+      const headers = { Authorization: `Bearer ${hfToken}` };
+      const axiosCfg = { headers, timeout: 45000 };
+
+      // Hugging Face Router provides OpenAI-compatible endpoints.
+      // Try chat completions first (works for many instruction/chat-tuned models).
+      if (!isFlanT5) {
+        try {
+          const chatRes = await axios.post(
+            `${hfBaseUrl}/v1/chat/completions`,
+            {
+              model: hfModel,
+              messages: [
+                {
+                  role: "system",
+                  content: [
+                    "You are the SMJ Rice Mill AI assistant.",
+                    "Use the provided snapshot and keep answers concise and practical.",
+                    "Never invent numbers not present in snapshot.",
+                    `Context: ${context || "general"}`,
+                    `Snapshot JSON: ${JSON.stringify(snapshot)}`,
+                  ].join("\n"),
+                },
+                ...chatHistory,
+                { role: "user", content: String(message || "") },
+              ],
+              temperature: 0.3,
+              max_tokens: 256,
+            },
+            axiosCfg,
+          );
+          const text = chatRes?.data?.choices?.[0]?.message?.content;
+          if (text && String(text).trim()) {
+            return { text: String(text).trim(), provider: "huggingface", model: hfModel };
+          }
+        } catch (err) {
+          if (debug) {
+            const status = err?.response?.status;
+            const statusText = err?.response?.statusText;
+            const snippet = JSON.stringify(err?.response?.data || {}).slice(0, 300);
+            return {
+              text: buildLocalAIReply(message, snapshot),
+              provider: "local",
+              model: hfModel,
+              error: `HF chat ${status || "ERR"} ${statusText || ""}${snippet ? ` - ${snippet}` : ""}`.trim(),
+            };
+          }
+        }
+      }
+
+      // For Flan-T5 and other non-chat models, use HF router inference path.
+      // The old api-inference domain is deprecated; router uses /hf-inference/models/<model>.
+      if (isFlanT5) {
+        try {
+          const inferRes = await axios.post(
+            `${hfBaseUrl}/hf-inference/models/${encodeURIComponent(hfModel)}`,
+            { inputs: prompt },
+            axiosCfg,
+          );
+          const data = inferRes?.data;
+          const generated = Array.isArray(data) ? data?.[0]?.generated_text : null;
+          if (generated && String(generated).trim()) {
+            return { text: String(generated).trim(), provider: "huggingface", model: hfModel };
+          }
+          if (data?.generated_text && String(data.generated_text).trim()) {
+            return { text: String(data.generated_text).trim(), provider: "huggingface", model: hfModel };
+          }
+        } catch (err) {
+          if (debug) {
+            const status = err?.response?.status;
+            const statusText = err?.response?.statusText;
+            const snippet = JSON.stringify(err?.response?.data || {}).slice(0, 300);
+            return {
+              text: buildLocalAIReply(message, snapshot),
+              provider: "local",
+              model: hfModel,
+              error: `HF inference ${status || "ERR"} ${statusText || ""}${snippet ? ` - ${snippet}` : ""}`.trim(),
+            };
+          }
+        }
+      }
+
+      // Fallback to classic completions endpoint (only for providers that support it).
+      try {
+        const compRes = await axios.post(
+          `${hfBaseUrl}/v1/completions`,
+          {
+            model: hfModel,
+            prompt,
+            temperature: 0.3,
+            max_tokens: 256,
+          },
+          axiosCfg,
+        );
+        const text = compRes?.data?.choices?.[0]?.text;
+        if (text && String(text).trim()) {
+          return { text: String(text).trim(), provider: "huggingface", model: hfModel };
+        }
+      } catch (err) {
+        if (debug) {
+          const status = err?.response?.status;
+          const statusText = err?.response?.statusText;
+          const snippet = JSON.stringify(err?.response?.data || {}).slice(0, 300);
+          return {
+            text: buildLocalAIReply(message, snapshot),
+            provider: "local",
+            model: hfModel,
+            error: `HF completion ${status || "ERR"} ${statusText || ""}${snippet ? ` - ${snippet}` : ""}`.trim(),
+          };
+        }
+      }
+    } catch (err) {
+      console.error("HF AI fallback to local:", err.message);
+      if (debug) {
+        return {
+          text: buildLocalAIReply(message, snapshot),
+          provider: "local",
+          model: hfModel,
+          error: `HF request failed - ${err.message}`,
+        };
+      }
+    }
+  }
+
+  // If HF is configured but failed (and debug isn't enabled), we still return model so UI can show "configured but not used".
+  if (hfToken && hfModel) {
+    return { text: buildLocalAIReply(message, snapshot), provider: "local", model: hfModel, error: null };
+  }
+  return { text: buildLocalAIReply(message, snapshot), provider: "local", model: null, error: null };
+}
 
 // ============ CHATBOT ENDPOINTS ============
 
@@ -15,44 +756,86 @@ exports.sendMessage = async (req, res) => {
       });
     }
 
-    // TODO: Integrate with AI service (OpenAI, Gemini, etc.)
-    // For now, return placeholder response
-    const aiResponse = {
-      role: "assistant",
-      content: "AI response placeholder - Integration pending",
-      timestamp: new Date(),
-    };
-
-    // Find or create chat session
-    let chat = await AIChat.findOne({ sessionId, active: true });
-
-    if (!chat) {
-      chat = new AIChat({
-        userId: req.body.userId || "anonymous",
-        sessionId,
-        context: context || "general",
-        messages: [],
+    const cleanMessage = String(message).trim();
+    if (!cleanMessage) {
+      return res.status(400).json({
+        success: false,
+        message: "Message cannot be empty",
+      });
+    }
+    if (cleanMessage.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: "Message is too long (max 2000 characters)",
       });
     }
 
-    // Add user message
-    chat.messages.push({
-      role: "user",
-      content: message,
+    const saveChat = String(process.env.AI_SAVE_CHAT || "").trim() === "1";
+
+    // Find or create chat session (optional persistence)
+    let chat = null;
+    if (saveChat) {
+      chat = await AIChat.findOne({ sessionId, active: true });
+
+      if (!chat) {
+        chat = new AIChat({
+          userId: req.body.userId || "anonymous",
+          sessionId,
+          context:
+            ["gatepass", "inventory", "general", "reports"].includes(context)
+              ? context
+              : "general",
+          messages: [],
+        });
+      }
+
+      // Add user message
+      chat.messages.push({
+        role: "user",
+        content: cleanMessage,
+        timestamp: new Date(),
+      });
+    }
+
+    const snapshot = await buildBusinessSnapshot();
+    const intent = detectIntent(cleanMessage);
+
+    // Deterministic real-time answers for common questions to avoid model hallucination.
+    const direct = answerFromSnapshot(intent, snapshot);
+    const dbDirect = direct == null ? await answerFromDatabase(intent) : null;
+    const ai =
+      direct != null
+        ? { text: direct, provider: "local", model: process.env.HF_MODEL || null, error: null }
+        : dbDirect != null
+          ? { text: dbDirect, provider: "local", model: process.env.HF_MODEL || null, error: null }
+          : await generateAIResponse({
+              message: cleanMessage,
+              context: (chat && chat.context) || "general",
+              history: (chat && chat.messages) || [],
+              snapshot,
+            });
+
+    const aiResponse = {
+      role: "assistant",
+      content: ai.text,
       timestamp: new Date(),
-    });
+    };
 
-    // Add AI response
-    chat.messages.push(aiResponse);
-
-    await chat.save();
+    if (saveChat && chat) {
+      // Add AI response
+      chat.messages.push(aiResponse);
+      await chat.save();
+    }
 
     res.json({
       success: true,
       data: {
         response: aiResponse.content,
-        sessionId: chat.sessionId,
-        messageCount: chat.messages.length,
+        sessionId,
+        messageCount: saveChat && chat ? chat.messages.length : null,
+        aiProvider: ai.provider,
+        aiModel: ai.model,
+        ...(ai.error ? { aiError: ai.error } : {}),
       },
     });
   } catch (error) {
@@ -68,6 +851,14 @@ exports.sendMessage = async (req, res) => {
 exports.getChatHistory = async (req, res) => {
   try {
     const { sessionId } = req.params;
+
+    const saveChat = String(process.env.AI_SAVE_CHAT || "").trim() === "1";
+    if (!saveChat) {
+      return res.json({
+        success: true,
+        data: { messages: [] },
+      });
+    }
 
     const chat = await AIChat.findOne({ sessionId, active: true });
 
@@ -99,15 +890,13 @@ exports.clearChat = async (req, res) => {
   try {
     const { sessionId } = req.params;
 
-    await AIChat.findOneAndUpdate(
-      { sessionId },
-      { active: false },
-      { new: true }
-    );
+    const saveChat = String(process.env.AI_SAVE_CHAT || "").trim() === "1";
+    const result = saveChat ? await AIChat.deleteMany({ sessionId }) : { deletedCount: 0 };
 
     res.json({
       success: true,
-      message: "Chat history cleared",
+      message: "Chat deleted",
+      data: { deletedCount: result?.deletedCount || 0 },
     });
   } catch (error) {
     res.status(500).json({
@@ -117,103 +906,22 @@ exports.clearChat = async (req, res) => {
   }
 };
 
-// ============ SUGGESTIONS ENDPOINTS ============
 
-// Get AI suggestions
-exports.getSuggestions = async (req, res) => {
-  try {
-    const { type, status } = req.query;
+// ============ DEBUG / CONFIG ============
 
-    const filter = {};
-    if (type) filter.type = type;
-    if (status) filter.status = status;
+exports.getConfig = async (_req, res) => {
+  const hfToken = process.env.HF_API_TOKEN || process.env.HUGGINGFACE_API_TOKEN || "";
+  const hfModel = process.env.HF_MODEL || process.env.HUGGINGFACE_MODEL || "";
+  const debug = String(process.env.AI_DEBUG || "").trim() === "1";
 
-    // TODO: Generate AI suggestions based on data analysis
-    // For now, return mock suggestions
-    const suggestions = await AISuggestion.find(filter)
-      .sort({ priority: -1, createdAt: -1 })
-      .limit(10);
-
-    res.json({
-      success: true,
-      data: suggestions,
-      message: "AI suggestions placeholder - Integration pending",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-// Create suggestion
-exports.createSuggestion = async (req, res) => {
-  try {
-    const suggestion = new AISuggestion(req.body);
-    await suggestion.save();
-
-    res.status(201).json({
-      success: true,
-      data: suggestion,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-// Update suggestion status
-exports.updateSuggestionStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    const suggestion = await AISuggestion.findByIdAndUpdate(
-      id,
-      {
-        status,
-        appliedAt: status === "applied" ? new Date() : undefined,
-      },
-      { new: true }
-    );
-
-    if (!suggestion) {
-      return res.status(404).json({
-        success: false,
-        message: "Suggestion not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: suggestion,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-// Delete suggestion
-exports.deleteSuggestion = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    await AISuggestion.findByIdAndDelete(id);
-
-    res.json({
-      success: true,
-      message: "Suggestion deleted",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
+  res.json({
+    success: true,
+    data: {
+      aiDebug: debug,
+      hfModel: hfModel || null,
+      hfModelSet: !!hfModel,
+      hfTokenSet: !!hfToken,
+      hfTokenPrefix: hfToken ? String(hfToken).slice(0, 6) : null,
+    },
+  });
 };

@@ -34,6 +34,27 @@ const systemSettingsSchema = new mongoose.Schema(
     // Managerial stock thresholds (qty): 0 = out of stock; <= extremeLow = Extreme Low; <= low = Low; > low = Okay.
     managerialStockStatusExtremeLowQty: { type: Number, default: 2, min: 0 },
     managerialStockStatusLowQty: { type: Number, default: 5, min: 0 },
+    // Purchase dropdown options
+    purchaseItemOptions: { type: [String], default: [] },
+    purchaseCategoryOptions: { type: [String], default: [] },
+    transporterOptions: { type: [String], default: [] },
+    brandOptions: { type: [String], default: [] },
+    // HR settings
+    hrMonthlyWorkingDays: { type: Number, default: 30, min: 1 },
+    hrWorkingHoursPerDay: { type: Number, default: 8, min: 1 },
+    hrOvertimeRate: { type: Number, default: 1.5, min: 1 },
+    hrAllowPaidLeave: { type: Boolean, default: true },
+    hrAllowUnpaidLeave: { type: Boolean, default: true },
+    hrAdvanceDeductionMode: { type: String, default: "FULL" },
+    // Notifications / alerts schedule
+    alertsEnabled: { type: Boolean, default: true },
+    alertsWorkStart: { type: String, default: "09:00" },
+    alertsWorkEnd: { type: String, default: "18:00" },
+    // Allow up to 24 hours (1440 min). Default: 24 hours.
+    alertsIntervalMinutes: { type: Number, default: 1440, min: 1, max: 1440 },
+    // Accounting migration marker for idempotent historical journal rebuild
+    accountingBackfillVersion: { type: Number, default: 0, min: 0 },
+    accountingBackfillAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

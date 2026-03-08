@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { MessageCircle, Send, X, Trash2, Loader } from "lucide-react";
+import { Bot, MessageCircle, Send, X, Trash2, Loader } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../../services/api";
 
@@ -21,7 +21,7 @@ export default function AIChatbot() {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sessionId] = useState(() => `session-${Date.now()}`);
+  const [sessionId, setSessionId] = useState(() => `session-${Date.now()}`);
 
   const defaultPos = { x: typeof window !== "undefined" ? window.innerWidth - 80 : 0, y: typeof window !== "undefined" ? window.innerHeight - 80 : 0 };
   const [position, setPosition] = useState(() => getStoredPosition() || defaultPos);
@@ -41,20 +41,12 @@ export default function AIChatbot() {
 
   useEffect(() => {
     if (isOpen && messages.length === 0) {
-      loadChatHistory();
+      // No persisted history; start fresh each time this page loads.
+      setSessionId(`session-${Date.now()}`);
     }
   }, [isOpen]);
 
-  const loadChatHistory = async () => {
-    try {
-      const res = await api.get(`/ai/chat/history/${sessionId}`);
-      if (res.data && res.data.success) {
-        setMessages(res.data.data.messages || []);
-      }
-    } catch (err) {
-      console.error("Failed to load chat history:", err);
-    }
-  };
+  // History is intentionally not loaded (no persistence).
 
   const sendMessage = async () => {
     if (!inputMessage.trim()) return;
@@ -73,7 +65,6 @@ export default function AIChatbot() {
       const res = await api.post("/ai/chat/message", {
         sessionId,
         message: inputMessage,
-        context: "general",
       });
 
       if (res.data && res.data.success) {
@@ -104,9 +95,11 @@ export default function AIChatbot() {
     try {
       await api.delete(`/ai/chat/clear/${sessionId}`);
       setMessages([]);
-      toast.success("Chat cleared");
+      const next = `session-${Date.now()}`;
+      setSessionId(next);
+      toast.success("Chat deleted");
     } catch (err) {
-      toast.error("Failed to clear chat");
+      toast.error("Failed to delete chat");
     }
   };
 
@@ -177,7 +170,7 @@ export default function AIChatbot() {
           style={{ left: position.x, top: position.y }}
           title="Drag to move · Click to open"
         >
-          <MessageCircle className="w-6 h-6 pointer-events-none" />
+          <Bot className="w-6 h-6 pointer-events-none" />
         </button>
       )}
 
@@ -191,7 +184,7 @@ export default function AIChatbot() {
           >
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
-                <MessageCircle className="w-5 h-5" />
+                <Bot className="w-5 h-5" />
               </div>
               <div>
                 <h3 className="font-semibold">AI Assistant</h3>
@@ -202,7 +195,8 @@ export default function AIChatbot() {
               <button
                 onClick={clearChat}
                 className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Clear chat"
+                title="Delete chat"
+                disabled={loading}
               >
                 <Trash2 className="w-4 h-4" />
               </button>

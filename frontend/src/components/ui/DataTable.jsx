@@ -1,8 +1,9 @@
 import React, { useMemo, useState, useEffect, useCallback } from "react";
-import { Search, ChevronLeft, ChevronRight, Download, Printer, Filter, X, FileText } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, Download, Printer, Filter, X, FileText, Trash2 } from "lucide-react";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import Pin4Input from "../Pin4Input";
 
 const PAGE_SIZES = [5, 10, 25, 50, 100];
 
@@ -36,6 +37,7 @@ export default function DataTable({
   enableKeyboard = true,
   onRowAction,
   toolbarActions,
+  deleteAll,
 }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -43,6 +45,12 @@ export default function DataTable({
   const [filters, setFilters] = useState({});
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [activeRowIndex, setActiveRowIndex] = useState(-1);
+  const [deleteAllDialog, setDeleteAllDialog] = useState({
+    open: false,
+    pin: "",
+    pinError: "",
+    confirming: false,
+  });
 
   const filteredData = useMemo(() => {
     let result = [...data];
@@ -219,6 +227,18 @@ export default function DataTable({
           {(showExport || showPrint || toolbarActions) && (
             <div className="flex flex-wrap gap-2 sm:ml-auto">
               {toolbarActions}
+              {deleteAll && typeof deleteAll.onConfirm === "function" && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDeleteAllDialog({ open: true, pin: "", pinError: "", confirming: false })
+                  }
+                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-700 hover:bg-red-50"
+                  title="Delete all records"
+                >
+                  <Trash2 size={16} /> Delete All
+                </button>
+              )}
               {showExport && (
                 <>
                   <button
@@ -251,6 +271,90 @@ export default function DataTable({
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {deleteAllDialog.open && (
+        <div className="fixed inset-0 z-[300] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-700">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">Delete All</h3>
+                <p className="text-xs text-gray-600 mt-1">
+                  {deleteAll?.description ||
+                    "This will permanently delete all records for this table."}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs text-gray-600 mb-2">Enter admin PIN to confirm.</p>
+              <Pin4Input
+                value={deleteAllDialog.pin}
+                onChange={(v) =>
+                  setDeleteAllDialog((d) => ({ ...d, pin: v.slice(0, 4), pinError: "" }))
+                }
+                onComplete={async (pin) => {
+                  setDeleteAllDialog((d) => ({ ...d, confirming: true, pinError: "" }));
+                  try {
+                    await deleteAll.onConfirm(pin);
+                    setDeleteAllDialog({ open: false, pin: "", pinError: "", confirming: false });
+                  } catch (e) {
+                    setDeleteAllDialog((d) => ({
+                      ...d,
+                      confirming: false,
+                      pinError: e?.message || "Failed to delete.",
+                    }));
+                  }
+                }}
+                error={!!deleteAllDialog.pinError}
+              />
+              {deleteAllDialog.pinError && (
+                <p className="mt-2 text-xs text-red-600">{deleteAllDialog.pinError}</p>
+              )}
+            </div>
+
+            <div className="mt-4 flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() =>
+                  setDeleteAllDialog({ open: false, pin: "", pinError: "", confirming: false })
+                }
+                className="px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                disabled={deleteAllDialog.confirming}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const pin = String(deleteAllDialog.pin || "").slice(0, 4);
+                  if (pin.length !== 4) {
+                    setDeleteAllDialog((d) => ({ ...d, pinError: "Enter 4-digit PIN" }));
+                    return;
+                  }
+                  setDeleteAllDialog((d) => ({ ...d, confirming: true, pinError: "" }));
+                  try {
+                    await deleteAll.onConfirm(pin);
+                    setDeleteAllDialog({ open: false, pin: "", pinError: "", confirming: false });
+                  } catch (e) {
+                    setDeleteAllDialog((d) => ({
+                      ...d,
+                      confirming: false,
+                      pinError: e?.message || "Failed to delete.",
+                    }));
+                  }
+                }}
+                className="px-3 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 disabled:opacity-60"
+                disabled={deleteAllDialog.confirming}
+              >
+                {deleteAllDialog.confirming ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -298,7 +402,7 @@ export default function DataTable({
           }
         }}
       >
-        <table className="min-w-[640px] w-full text-sm">
+        <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-emerald-800">
             <tr>
               {columns.map((col) => (

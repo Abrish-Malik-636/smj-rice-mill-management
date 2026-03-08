@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
-import { Filter, X, Info, Settings, Lock } from "lucide-react";
+import { Filter, X, Info, Download, FileText, Printer } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
-import Pin4Input from "../components/Pin4Input";
 import DataTable from "../components/ui/DataTable";
+import * as XLSX from "xlsx";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import {
   PieChart,
   Pie,
@@ -29,25 +31,8 @@ export function ManagerialStockView({ lastClearedAt }) {
   const [loading, setLoading] = useState(false);
 
   const [settings, setSettings] = useState({
-    managerialStockStatusExtremeLowQty: 2,
-    managerialStockStatusLowQty: 5,
+    additionalStockSettingsEnabled: false,
     adminPin: "0000",
-  });
-  const [stockThresholdsUnlocked, setStockThresholdsUnlocked] = useState(false);
-  const [stockThresholdPinDialog, setStockThresholdPinDialog] = useState({
-    open: false,
-    pin: "",
-    pinError: "",
-  });
-  const [stockThresholdForm, setStockThresholdForm] = useState({
-    extremeLowKg: "2",
-    lowKg: "5",
-  });
-  const [savingThresholds, setSavingThresholds] = useState(false);
-  const [saveThresholdPinDialog, setSaveThresholdPinDialog] = useState({
-    open: false,
-    pin: "",
-    pinError: "",
   });
 
   const [itemFilter, setItemFilter] = useState("ALL");
@@ -56,6 +41,8 @@ export function ManagerialStockView({ lastClearedAt }) {
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [sourceModalRow, setSourceModalRow] = useState(null);
+  const [useDialog, setUseDialog] = useState({ open: false, itemName: "", available: 0, qty: "", remarks: "" });
+  const [using, setUsing] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -125,75 +112,29 @@ export function ManagerialStockView({ lastClearedAt }) {
     }));
   }, [filteredRows]);
 
-  const extremeLowQty =
-    Number(settings.managerialStockStatusExtremeLowQty) || 2;
-  const lowQty = Number(settings.managerialStockStatusLowQty) || 5;
   function statusOf(r) {
-    const q = r.balanceQty || 0;
-    if (q <= 0) return "OUT";
-    if (q <= extremeLowQty) return "EXTREME_LOW";
-    if (q <= lowQty) return "LOW";
-    return "OK";
+    const available = Number(r.balanceQty || 0);
+    const ordered = Number(r.orderedQty || 0);
+    if (available > 0) return "RECEIVED";
+    if (ordered > 0) return "ORDERED";
+    return "OUT";
   }
 
   function rowColor(status) {
     if (status === "OUT") return "bg-red-50";
-    if (status === "EXTREME_LOW") return "bg-red-100";
-    if (status === "LOW") return "bg-yellow-50";
-    return "bg-green-50";
+    if (status === "ORDERED") return "bg-amber-50";
+    return "bg-emerald-50";
   }
 
   function statusBadge(status) {
     if (status === "OUT")
-      return <span className="text-red-700 font-semibold">Out of Stock</span>;
-    if (status === "EXTREME_LOW")
-      return <span className="text-red-600 font-semibold">Extreme Low</span>;
-    if (status === "LOW")
-      return <span className="text-yellow-600 font-semibold">Low Stock</span>;
-    return <span className="text-green-600 font-semibold">Available</span>;
+      return <span className="text-gray-600 font-semibold">Out</span>;
+    if (status === "ORDERED")
+      return <span className="text-amber-700 font-semibold">Ordered</span>;
+    return <span className="text-emerald-700 font-semibold">Received</span>;
   }
 
-  async function handleSaveStockThresholds(pinToSave) {
-    const extreme = Math.max(
-      0,
-      Math.floor(Number(stockThresholdForm.extremeLowKg) || 0),
-    );
-    const low = Math.max(0, Math.floor(Number(stockThresholdForm.lowKg) || 0));
-    if (extreme > low) {
-      toast.error("Extreme low must be less than or equal to Low.");
-      return;
-    }
-    setSavingThresholds(true);
-    try {
-      const res = await api.put("/settings", {
-        managerialStockStatusExtremeLowQty: extreme,
-        managerialStockStatusLowQty: low,
-        adminPin: pinToSave,
-      });
-      if (res.data?.success) {
-        setSettings((s) => ({ ...s, ...res.data.data }));
-        setStockThresholdForm({
-          extremeLowKg: String(extreme),
-          lowKg: String(low),
-        });
-        setSaveThresholdPinDialog({ open: false, pin: "", pinError: "" });
-        toast.success("Stock status thresholds saved.");
-      } else {
-        setSaveThresholdPinDialog((d) => ({
-          ...d,
-          pinError: res.data?.message || "Failed to save.",
-        }));
-      }
-    } catch (err) {
-      setSaveThresholdPinDialog((d) => ({
-        ...d,
-        pinError:
-          err.response?.data?.message || err.message || "Failed to save.",
-      }));
-    } finally {
-      setSavingThresholds(false);
-    }
-  }
+  // Managerial stock status is order/received/out (no thresholds).
 
   const managerialTableData = useMemo(
     () =>
@@ -242,9 +183,81 @@ export function ManagerialStockView({ lastClearedAt }) {
         render: (_value, row) =>
           row.lastUpdated ? new Date(row.lastUpdated).toLocaleString() : "-",
       },
+      {
+        key: "__use",
+        label: "Use",
+        skipExport: true,
+        render: (_value, row) => (
+          <button
+            type="button"
+            className="px-2 py-1 rounded border border-gray-200 text-xs text-gray-700 hover:bg-gray-50"
+            onClick={() =>
+              setUseDialog({
+                open: true,
+                itemName: row.itemName,
+                available: Number(row.balanceQty || 0),
+                qty: "",
+                remarks: "",
+              })
+            }
+            disabled={Number(row.balanceQty || 0) <= 0}
+            title={Number(row.balanceQty || 0) <= 0 ? "No stock available" : "Mark used/consume"}
+          >
+            Use
+          </button>
+        ),
+      },
     ],
     [statusBadge, statusOf],
   );
+
+  const exportManagerialRows = useMemo(
+    () =>
+      managerialTableData.map((r) => ({
+        Item: r.itemName || "-",
+        Qty: Number(r.balanceQty || 0).toFixed(2),
+        Status:
+          statusOf(r) === "OUT"
+            ? "Out of Stock"
+            : statusOf(r) === "EXTREME_LOW"
+              ? "Extreme Low"
+              : statusOf(r) === "LOW"
+                ? "Low Stock"
+                : "Available",
+        Updated: r.lastUpdated ? new Date(r.lastUpdated).toLocaleString() : "-",
+      })),
+    [managerialTableData],
+  );
+
+  const handleExportExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(exportManagerialRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "ManagerialStock");
+    XLSX.writeFile(
+      wb,
+      `managerial_stock_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
+  };
+
+  const handleExportPdf = () => {
+    const doc = new jsPDF();
+    const body = exportManagerialRows.map((r) => [
+      r.Item,
+      r.Qty,
+      r.Status,
+      r.Updated,
+    ]);
+    doc.text("Managerial Stock", 14, 12);
+    autoTable(doc, {
+      startY: 18,
+      head: [["Item", "Qty", "Status", "Updated"]],
+      body,
+      styles: { fontSize: 8 },
+    });
+    doc.save(`managerial_stock_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
+
+  const handlePrint = () => window.print();
 
   return (
     <div className="space-y-6 w-full">
@@ -256,262 +269,35 @@ export function ManagerialStockView({ lastClearedAt }) {
             Managerial Stock Overview
           </h2>
         </div>
-
-        <button
-          className="p-2 rounded-lg hover:bg-gray-100"
-          onClick={() => setShowFilters(true)}
-        >
-          <Filter size={18} className="text-gray-600" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="p-2 rounded-lg hover:bg-gray-100"
+            onClick={() => setShowFilters(true)}
+            title="Filters"
+          >
+            <Filter size={18} className="text-gray-600" />
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+            onClick={handleExportExcel}
+          >
+            <Download size={15} /> Export Excel
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+            onClick={handleExportPdf}
+          >
+            <FileText size={15} /> Export PDF
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+            onClick={handlePrint}
+          >
+            <Printer size={15} /> Print
+          </button>
+        </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-4 mb-4 border border-gray-100">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
-            <Settings size={18} />
-            Stock status thresholds
-          </div>
-          {!stockThresholdsUnlocked && (
-            <button
-              type="button"
-              onClick={() => {
-                setStockThresholdPinDialog({
-                  open: true,
-                  pin: "",
-                  pinError: "",
-                });
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50"
-            >
-              <Lock size={14} />
-              Unlock with PIN
-            </button>
-          )}
-        </div>
-        {!stockThresholdsUnlocked ? null : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs items-end">
-            <div>
-              <label className="block text-[11px] text-gray-500 mb-1">
-                Extreme low
-              </label>
-              <input
-                type="number"
-                min={0}
-                value={stockThresholdForm.extremeLowKg}
-                onChange={(e) =>
-                  setStockThresholdForm((f) => ({
-                    ...f,
-                    extremeLowKg:
-                      e.target.value.replace(/\D/g, "").slice(0, 8) || "",
-                  }))
-                }
-                placeholder="e.g. 2"
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-              />
-              <p className="text-[10px] text-gray-400 mt-0.5">
-                Below this = Extreme low
-              </p>
-            </div>
-            <div>
-              <label className="block text-[11px] text-gray-500 mb-1">
-                Low
-              </label>
-              <input
-                type="number"
-                min={0}
-                value={stockThresholdForm.lowKg}
-                onChange={(e) =>
-                  setStockThresholdForm((f) => ({
-                    ...f,
-                    lowKg:
-                      e.target.value.replace(/\D/g, "").slice(0, 8) || "",
-                  }))
-                }
-                placeholder="e.g. 5"
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-              />
-              <p className="text-[10px] text-gray-400 mt-0.5">
-                Below this = Low; above = Okay
-              </p>
-            </div>
-            <div className="sm:col-span-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setSaveThresholdPinDialog({
-                    open: true,
-                    pin: "",
-                    pinError: "",
-                  })
-                }
-                disabled={savingThresholds}
-                className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-              >
-                {savingThresholds ? "Saving..." : "Save thresholds"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockThresholdsUnlocked(false)}
-                className="px-3 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
-              >
-                Lock
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {stockThresholdPinDialog.open && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Admin PIN
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">
-              Enter PIN to view and edit stock status thresholds.
-            </p>
-            <Pin4Input
-              value={stockThresholdPinDialog.pin}
-              onChange={(v) =>
-                setStockThresholdPinDialog((p) => ({
-                  ...p,
-                  pin: v.slice(0, 4),
-                  pinError: "",
-                }))
-              }
-              onComplete={(entered) => {
-                const expected = settings.adminPin || "0000";
-                if (entered === expected) {
-                  setStockThresholdsUnlocked(true);
-                  setStockThresholdForm({
-                    extremeLowKg: String(
-                      settings.managerialStockStatusExtremeLowQty ?? 2,
-                    ),
-                    lowKg: String(settings.managerialStockStatusLowQty ?? 5),
-                  });
-                  setStockThresholdPinDialog({
-                    open: false,
-                    pin: "",
-                    pinError: "",
-                  });
-                } else {
-                  setStockThresholdPinDialog((p) => ({
-                    ...p,
-                    pinError: "Incorrect PIN.",
-                  }));
-                }
-              }}
-              error={!!stockThresholdPinDialog.pinError}
-              className="mb-3"
-            />
-            {stockThresholdPinDialog.pinError && (
-              <p className="text-xs text-red-600 mb-3">
-                {stockThresholdPinDialog.pinError}
-              </p>
-            )}
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() =>
-                  setStockThresholdPinDialog({
-                    open: false,
-                    pin: "",
-                    pinError: "",
-                  })
-                }
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  const entered = stockThresholdPinDialog.pin;
-                  const expected = settings.adminPin || "0000";
-                  if (entered === expected) {
-                    setStockThresholdsUnlocked(true);
-                    setStockThresholdForm({
-                    extremeLowKg: String(
-                      settings.managerialStockStatusExtremeLowQty ?? 2,
-                    ),
-                    lowKg: String(settings.managerialStockStatusLowQty ?? 5),
-                    });
-                    setStockThresholdPinDialog({
-                      open: false,
-                      pin: "",
-                      pinError: "",
-                    });
-                  } else {
-                    setStockThresholdPinDialog((p) => ({
-                      ...p,
-                      pinError: "Incorrect PIN.",
-                    }));
-                  }
-                }}
-                disabled={stockThresholdPinDialog.pin.length !== 4}
-                className="px-4 py-2 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 text-sm"
-              >
-                Unlock
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {saveThresholdPinDialog.open && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Confirm with PIN
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">
-              Enter admin PIN to save stock status thresholds.
-            </p>
-            <Pin4Input
-              value={saveThresholdPinDialog.pin}
-              onChange={(v) =>
-                setSaveThresholdPinDialog((p) => ({
-                  ...p,
-                  pin: v.slice(0, 4),
-                  pinError: "",
-                }))
-              }
-              onComplete={(entered) => handleSaveStockThresholds(entered)}
-              error={!!saveThresholdPinDialog.pinError}
-              className="mb-3"
-            />
-            {saveThresholdPinDialog.pinError && (
-              <p className="text-xs text-red-600 mb-3">
-                {saveThresholdPinDialog.pinError}
-              </p>
-            )}
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() =>
-                  setSaveThresholdPinDialog({
-                    open: false,
-                    pin: "",
-                    pinError: "",
-                  })
-                }
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() =>
-                  saveThresholdPinDialog.pin.length === 4 &&
-                  handleSaveStockThresholds(saveThresholdPinDialog.pin)
-                }
-                disabled={
-                  saveThresholdPinDialog.pin.length !== 4 || savingThresholds
-                }
-                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 text-sm"
-              >
-                {savingThresholds ? "Saving..." : "Save"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showFilters && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
@@ -612,6 +398,21 @@ export function ManagerialStockView({ lastClearedAt }) {
             showSearch={false}
             showFilters={false}
             showClearFilters={false}
+            showExport={false}
+            showPrint={false}
+            deleteAll={{
+              description:
+                "This will permanently delete ALL managerial stock ledger entries (IN/OUT/ORDER) from the database.",
+              onConfirm: async (adminPin) => {
+                const res = await api.post("/admin/purge", {
+                  adminPin,
+                  key: "managerialStockLedgers",
+                });
+                const deleted = res?.data?.data?.deletedCount ?? 0;
+                toast.success(`Deleted ${deleted} managerial ledger entries`);
+                loadData();
+              },
+            }}
           />
 
           {/* SOURCE DETAILS MODAL (MANAGERIAL) */}
@@ -620,7 +421,7 @@ export function ManagerialStockView({ lastClearedAt }) {
               <div className="bg-white rounded-lg p-4 w-full max-w-lg shadow-xl max-h-[80vh] overflow-hidden flex flex-col">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-emerald-800">
-                    Stock source details — {sourceModalRow.itemName}
+                    Stock source details â€” {sourceModalRow.itemName}
                   </h3>
                   <button
                     className="text-gray-500 hover:text-gray-700"
@@ -700,6 +501,93 @@ export function ManagerialStockView({ lastClearedAt }) {
           </div>
         </div>
       </div>
+
+      {useDialog.open && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-emerald-800">Use Stock</h3>
+              <button
+                className="text-gray-500 hover:text-gray-700"
+                onClick={() => setUseDialog({ open: false, itemName: "", available: 0, qty: "", remarks: "" })}
+                disabled={using}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="text-gray-700">
+                <div className="text-xs text-gray-500">Item</div>
+                <div className="font-semibold">{useDialog.itemName}</div>
+              </div>
+              <div className="text-xs text-gray-500">Available: {useDialog.available.toFixed(2)}</div>
+              <div>
+                <label className="text-xs text-gray-600">Used Quantity</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={useDialog.qty}
+                  onChange={(e) => setUseDialog((d) => ({ ...d, qty: e.target.value }))}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">Remarks (optional)</label>
+                <input
+                  value={useDialog.remarks}
+                  onChange={(e) => setUseDialog((d) => ({ ...d, remarks: e.target.value }))}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  placeholder="Used in maintenance..."
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="px-3 py-2 rounded border border-gray-200 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={() => setUseDialog({ open: false, itemName: "", available: 0, qty: "", remarks: "" })}
+                disabled={using}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 py-2 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-60"
+                disabled={using}
+                onClick={async () => {
+                  const q = Math.floor(Number(useDialog.qty || 0));
+                  if (!q || q <= 0) {
+                    toast.error("Enter used quantity");
+                    return;
+                  }
+                  if (q > useDialog.available) {
+                    toast.error(`Cannot use more than available (${useDialog.available.toFixed(2)})`);
+                    return;
+                  }
+                  setUsing(true);
+                  try {
+                    const res = await api.post("/managerial-stock/consume", {
+                      itemName: useDialog.itemName,
+                      quantity: q,
+                      remarks: useDialog.remarks,
+                    });
+                    if (res.data?.success === false) throw new Error(res.data?.message || "Failed");
+                    toast.success("Stock updated");
+                    setUseDialog({ open: false, itemName: "", available: 0, qty: "", remarks: "" });
+                    loadData();
+                  } catch (e) {
+                    toast.error(e?.response?.data?.message || e?.message || "Failed to update");
+                  } finally {
+                    setUsing(false);
+                  }
+                }}
+              >
+                {using ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

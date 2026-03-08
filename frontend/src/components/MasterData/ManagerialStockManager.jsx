@@ -316,6 +316,15 @@ export default function ManagerialStockManager() {
         idKey="_id"
         searchPlaceholder="Search items..."
         emptyMessage="No managerial stock items found. Quantity is managed via Gate Pass Inward."
+        deleteAll={{
+          description: "This will permanently delete ALL managerial stock items from the database.",
+          onConfirm: async (adminPin) => {
+            const res = await api.post("/admin/purge", { adminPin, key: "managerialStocks" });
+            const deleted = res?.data?.data?.deletedCount ?? 0;
+            toast.success(`Deleted ${deleted} managerial stock items`);
+            fetchItems();
+          },
+        }}
       />
 
       <ConfirmDialog
