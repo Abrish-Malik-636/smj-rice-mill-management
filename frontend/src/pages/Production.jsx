@@ -70,6 +70,8 @@ export default function Production() {
     netWeightKg: "",
     durationMinutes: "0",
     durationUnit: "min",
+    plannedCompleteAt: "",
+    completeNow: false,
   });
 
   // Delete completed batch confirmation
@@ -85,6 +87,10 @@ export default function Production() {
   const [editingOutputId, setEditingOutputId] = useState(null);
   const [editOutputForm, setEditOutputForm] = useState({ numBags: "", perBagWeightKg: "", durationMinutes: "0", productTypeId: "" });
   const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
   const [savingOutputId, setSavingOutputId] = useState(null);
   const [editingBatchInfo, setEditingBatchInfo] = useState(false);
   const [settings, setSettings] = useState({
@@ -171,7 +177,6 @@ export default function Production() {
           const n = String(r.productTypeName || "").toLowerCase();
           return n === "paddy" || n === "unprocessed paddy";
         })
-        .filter((r) => Number(r.balanceKg || 0) > 0)
         .map((r) => ({
           companyName: r.companyName || "",
           balanceKg: Number(r.balanceKg || 0),
@@ -471,6 +476,9 @@ export default function Production() {
     if (!outputForm.productTypeId) err.outputProduct = "Select product.";
     if (!outputForm.numBags) err.outputBags = "Enter bags.";
     if (!outputForm.perBagWeightKg) err.outputPerBag = "Select product to fetch bag weight.";
+    if (!outputForm.completeNow && !outputForm.plannedCompleteAt) {
+      err.outputSchedule = "Set completion time or click Complete Now.";
+    }
     const currentOutputsTotal = (selectedBatch.outputs || []).reduce(
       (sum, o) => sum + (o.netWeightKg || 0),
       0
@@ -506,8 +514,12 @@ export default function Production() {
       productTypeName: product?.name || "",
       numBags: Number(outputForm.numBags),
       perBagWeightKg: Number(outputForm.perBagWeightKg),
-      durationMinutes: durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit),
+      durationMinutes: 0,
     };
+    if (!outputForm.completeNow && outputForm.plannedCompleteAt) {
+      const d = new Date(outputForm.plannedCompleteAt);
+      if (!Number.isNaN(d.getTime())) payload.plannedCompleteAt = d.toISOString();
+    }
     if (selectedBatch.status === "COMPLETED" && completedBatchUnlocked) {
       payload.adminPin = lastEnteredPin || settings.adminPin || "0000";
     }
@@ -530,6 +542,8 @@ export default function Production() {
           netWeightKg: "",
           durationMinutes: "0",
           durationUnit: "min",
+          plannedCompleteAt: "",
+          completeNow: false,
         });
         // keep output form visible
         await loadSummary();
@@ -849,9 +863,13 @@ export default function Production() {
                       {batchForm.sourceCompanyName}
                     </option>
                   )}
-                {paddyCompanyOptions.map((name, idx) => (
-                  <option key={`${name}-${idx}`} value={name}>
-                    {name}
+                {paddyByCompany.map((r, idx) => (
+                  <option
+                    key={`${r.companyName}-${idx}`}
+                    value={r.companyName}
+                    disabled={Number(r.balanceKg || 0) <= 0}
+                  >
+                    {r.companyName} ({Math.round(Number(r.balanceKg || 0))} kg)
                   </option>
                 ))}
               </select>
@@ -1388,6 +1406,12 @@ export default function Production() {
                             className="border rounded px-2 py-1 col-span-3 bg-gray-100 cursor-not-allowed"
                             placeholder="Source company"
                           />
+                          <div className="col-span-3 flex items-center justify-between rounded border border-emerald-200 bg-emerald-50 px-2 py-1">
+                            <div className="text-[11px] text-emerald-900 font-medium">Remaining Paddy</div>
+                            <div className="text-[11px] text-emerald-900 font-semibold">
+                              {Math.round(remainingPaddy)} kg
+                            </div>
+                          </div>
                           <select
                             value={outputForm.productTypeId}
                             onChange={(e) => {
@@ -1436,36 +1460,55 @@ export default function Production() {
                           />
                           {fieldErrors.outputTotal && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputTotal}</p>}
                           <div className="col-span-3">
-                            <label className="block text-[11px] text-gray-500 mb-1">Timer</label>
-                            <div className="flex gap-2">
-                              <input
-                                type="number"
-                                value={outputForm.durationMinutes}
-                                onChange={(e) =>
-                                  setOutputForm((f) => ({ ...f, durationMinutes: intClean(e.target.value) }))
-                                }
-                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                                placeholder="0"
-                                className="border rounded px-2 py-1 w-28"
-                                title="0 means complete now; otherwise it will be scheduled and auto-completed."
-                              />
-                              <select
-                                value={outputForm.durationUnit}
-                                onChange={(e) =>
-                                  setOutputForm((f) => ({ ...f, durationUnit: e.target.value }))
-                                }
-                                className="border rounded px-2 py-1"
-                                title="Timer unit"
+                            <label className="block text-[11px] text-gray-500 mb-1">Schedule</label>
+                            <div className="flex flex-wrap gap-2 items-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOutputForm((f) => ({
+                                    ...f,
+                                    completeNow: true,
+                                    plannedCompleteAt: "",
+                                  }));
+                                  setFieldErrors((e) => ({ ...e, outputSchedule: "" }));
+                                }}
+                                className={`px-2.5 py-1 rounded text-xs border ${
+                                  outputForm.completeNow
+                                    ? "bg-emerald-600 text-white border-emerald-600"
+                                    : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                                }`}
+                                title="Mark this output as completed immediately (stock updates now)."
                               >
-                                <option value="min">Minutes</option>
-                                <option value="hr">Hours</option>
-                              </select>
-                              <div className="text-[11px] text-gray-500 self-center">
-                                {durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit) === 0
-                                  ? "Completes now"
-                                  : `Complete at ${new Date(Date.now() + durationToMinutes(outputForm.durationMinutes, outputForm.durationUnit) * 60 * 1000).toLocaleString()}`}
+                                Complete Now
+                              </button>
+                              <input
+                                type="datetime-local"
+                                value={outputForm.plannedCompleteAt}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setOutputForm((f) => ({ ...f, plannedCompleteAt: v, completeNow: false }));
+                                  setFieldErrors((e) => ({ ...e, outputSchedule: "" }));
+                                }}
+                                disabled={outputForm.completeNow}
+                                className={`border rounded px-2 py-1 ${
+                                  outputForm.completeNow ? "bg-gray-100 cursor-not-allowed" : ""
+                                }`}
+                                title="Exact time when this output should be completed and added to stock."
+                              />
+                              <div className="text-[11px] text-gray-600">
+                                {(() => {
+                                  if (outputForm.completeNow) return "Completes now";
+                                  if (!outputForm.plannedCompleteAt) return "Pick time (required)";
+                                  const target = new Date(outputForm.plannedCompleteAt);
+                                  if (Number.isNaN(target.getTime())) return "Invalid time";
+                                  const diffMin = Math.max(0, Math.round((target.getTime() - nowTick) / (60 * 1000)));
+                                  return `${diffMin} min`;
+                                })()}
                               </div>
                             </div>
+                            {fieldErrors.outputSchedule && (
+                              <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.outputSchedule}</p>
+                            )}
                           </div>
                         </div>
                         <button

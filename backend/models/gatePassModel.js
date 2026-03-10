@@ -3,6 +3,13 @@ const mongoose = require("mongoose");
 
 const ItemSchema = new mongoose.Schema(
   {
+    // Optional per-line brand/trademark (mainly for Paddy/Production lines).
+    // Allows multi-brand gate passes while keeping backward compatibility with `supplier`.
+    brand: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     itemType: {
       type: String,
       required: true,

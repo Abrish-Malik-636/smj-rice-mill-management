@@ -10,7 +10,7 @@ const SystemSettings = require("../models/systemSettingsModel");
 function makeKey(companyId, companyName, productTypeId, productTypeName) {
   const c =
     (companyId != null ? String(companyId) : null) ||
-    (companyName || "").trim() ||
+    String(companyName || "").trim().toLowerCase() ||
     "NO_COMPANY";
   const p =
     (productTypeId != null ? String(productTypeId) : null) ||
@@ -97,12 +97,14 @@ exports.getCurrentStock = async (req, res) => {
       map.set(key, existing);
     };
 
-    // 0️⃣ Raw paddy from full paddy ledger (gate pass + production batch allocation/returns)
-    const ledgerRows = await StockLedger.find({ productTypeId: null }).lean();
+    // 0️⃣ Raw paddy from paddy ledger (gate pass + production batch allocation/returns)
+    // Query narrowly to avoid any case/whitespace inconsistencies in productTypeName.
+    const ledgerRows = await StockLedger.find({
+      productTypeId: null,
+      productTypeName: { $regex: /^(paddy|unprocessed paddy)\s*$/i },
+    }).lean();
     for (const l of ledgerRows) {
       if (!l.productTypeName) continue;
-      const normalized = normalizeProductName(null, l.productTypeName);
-      if (normalized !== "Unprocessed Paddy") continue;
       const net = Number(l.netWeightKg || 0);
       if (!net) continue;
       const delta = l.type === "OUT" ? -net : net;
@@ -235,9 +237,9 @@ exports.getCurrentStock = async (req, res) => {
     // 4️⃣ Final rows: fix companyName & lastUpdated
     const rows = [];
     for (const val of map.values()) {
-      if (val.balanceKg <= 0.0001) continue;
-
-      val.balanceKg = +val.balanceKg.toFixed(3);
+      // Never show negative stock in UI; clamp at 0 but still return the brand/product row
+      // so users can see the brand exists in stock and why it is "empty".
+      val.balanceKg = Math.max(0, +val.balanceKg.toFixed(3));
 
       if (val.lastUpdated) {
         val.lastUpdated = new Date(val.lastUpdated);

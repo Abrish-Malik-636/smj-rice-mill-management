@@ -68,6 +68,8 @@ const normalizeRawPaddyName = (name) => {
   return name;
 };
 
+const normalizeBrandName = (name) => String(name || "").trim();
+
 /** Build production ledger ops from items array (e.g. req.body.items or gp.items). Use gp for type, id, gatePassNo, createdAt. */
 const buildProductionOpsFromItems = (items, gp, bagWeightKg = 65) => {
   const ops = [];
@@ -84,7 +86,10 @@ const buildProductionOpsFromItems = (items, gp, bagWeightKg = 65) => {
     const kg = toKg(qty, (item && item.unit) || "kg", bagWeightKg);
     if (!kg) return;
     const name = normalizeRawPaddyName(getItemName(item) || "Paddy");
-    const paddyCompanyName = String(gp.supplier || "SMJ Own").trim() || "SMJ Own";
+    const paddyCompanyName =
+      normalizeBrandName(item?.brand) ||
+      normalizeBrandName(gp.supplier) ||
+      "SMJ Own";
     ops.push({
       date,
       type: "IN",
@@ -155,11 +160,20 @@ exports.createGatePass = async (req, res) => {
       const hasProductionItem = Array.isArray(body.items)
         ? body.items.some((it) => String(it?.stockType || "Production") !== "Managerial")
         : false;
-      if (hasProductionItem && (!body.supplier || String(body.supplier).trim() === "")) {
+      if (hasProductionItem) {
+        const supplierOk = normalizeBrandName(body.supplier) !== "";
+        const allItemsHaveBrand = Array.isArray(body.items)
+          ? body.items
+              .filter((it) => String(it?.stockType || "Production") !== "Managerial")
+              .every((it) => normalizeBrandName(it?.brand) !== "")
+          : false;
+        if (!supplierOk && !allItemsHaveBrand) {
         return res.status(400).json({
           success: false,
-          message: "Brand / trademark is required when receiving Production/Paddy stock.",
+          message:
+            "Brand / trademark is required for Production/Paddy stock. Select a brand for each paddy line or set a single brand at top.",
         });
+      }
       }
     }
 
@@ -294,11 +308,20 @@ exports.updateGatePass = async (req, res) => {
       const hasProductionItem = Array.isArray(body.items)
         ? body.items.some((it) => String(it?.stockType || "Production") !== "Managerial")
         : false;
-      if (hasProductionItem && (!body.supplier || String(body.supplier).trim() === "")) {
+      if (hasProductionItem) {
+        const supplierOk = normalizeBrandName(body.supplier) !== "";
+        const allItemsHaveBrand = Array.isArray(body.items)
+          ? body.items
+              .filter((it) => String(it?.stockType || "Production") !== "Managerial")
+              .every((it) => normalizeBrandName(it?.brand) !== "")
+          : false;
+        if (!supplierOk && !allItemsHaveBrand) {
         return res.status(400).json({
           success: false,
-          message: "Brand / trademark is required when receiving Production/Paddy stock.",
+          message:
+            "Brand / trademark is required for Production/Paddy stock. Select a brand for each paddy line or set a single brand at top.",
         });
+      }
       }
     }
 

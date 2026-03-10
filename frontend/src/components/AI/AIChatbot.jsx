@@ -22,6 +22,7 @@ export default function AIChatbot() {
   const [inputMessage, setInputMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState(() => `session-${Date.now()}`);
+  const containerRef = useRef(null);
 
   const defaultPos = { x: typeof window !== "undefined" ? window.innerWidth - 80 : 0, y: typeof window !== "undefined" ? window.innerHeight - 80 : 0 };
   const [position, setPosition] = useState(() => getStoredPosition() || defaultPos);
@@ -44,6 +45,23 @@ export default function AIChatbot() {
       // No persisted history; start fresh each time this page loads.
       setSessionId(`session-${Date.now()}`);
     }
+  }, [isOpen]);
+
+  // Click outside: collapse the chat but keep state so user can continue where they left off.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onDown = (e) => {
+      const el = containerRef.current;
+      if (!el) return;
+      if (el.contains(e.target)) return;
+      setIsOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("touchstart", onDown, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("touchstart", onDown, true);
+    };
   }, [isOpen]);
 
   // History is intentionally not loaded (no persistence).
@@ -176,7 +194,11 @@ export default function AIChatbot() {
 
       {/* Chat Window (same position as button when opened) */}
       {isOpen && (
-        <div className="fixed w-96 h-[500px] max-h-[90vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-gray-200" style={chatStyle}>
+        <div
+          ref={containerRef}
+          className="fixed w-96 h-[500px] max-h-[90vh] bg-white rounded-2xl shadow-2xl flex flex-col z-50 border border-gray-200"
+          style={chatStyle}
+        >
           {/* Header - drag to move (buttons still clickable) */}
           <div
             className="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white p-4 rounded-t-2xl flex items-center justify-between cursor-grab active:cursor-grabbing select-none"

@@ -22,6 +22,7 @@ const HRAdvance = require("../models/hrAdvanceModel");
 const HRPayroll = require("../models/hrPayrollModel");
 const NotificationReminder = require("../models/notificationReminderModel");
 const AIChat = require("../models/AIChat");
+const SystemAction = require("../models/systemActionModel");
 const Account = require("../models/accountModel");
 const JournalEntry = require("../models/journalEntryModel");
 const JournalLine = require("../models/journalLineModel");
@@ -49,6 +50,7 @@ const COLLECTIONS = [
   { key: "hrPayrolls", model: HRPayroll },
   { key: "notificationReminders", model: NotificationReminder },
   { key: "aiChats", model: AIChat },
+  { key: "systemActions", model: SystemAction },
 ];
 
 /**

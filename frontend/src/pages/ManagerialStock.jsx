@@ -173,11 +173,6 @@ export function ManagerialStockView({ lastClearedAt }) {
         ),
       },
       {
-        key: "__status",
-        label: "Status",
-        render: (_value, row) => statusBadge(statusOf(row)),
-      },
-      {
         key: "lastUpdated",
         label: "Updated",
         render: (_value, row) =>
@@ -216,14 +211,6 @@ export function ManagerialStockView({ lastClearedAt }) {
       managerialTableData.map((r) => ({
         Item: r.itemName || "-",
         Qty: Number(r.balanceQty || 0).toFixed(2),
-        Status:
-          statusOf(r) === "OUT"
-            ? "Out of Stock"
-            : statusOf(r) === "EXTREME_LOW"
-              ? "Extreme Low"
-              : statusOf(r) === "LOW"
-                ? "Low Stock"
-                : "Available",
         Updated: r.lastUpdated ? new Date(r.lastUpdated).toLocaleString() : "-",
       })),
     [managerialTableData],
@@ -244,13 +231,12 @@ export function ManagerialStockView({ lastClearedAt }) {
     const body = exportManagerialRows.map((r) => [
       r.Item,
       r.Qty,
-      r.Status,
       r.Updated,
     ]);
     doc.text("Managerial Stock", 14, 12);
     autoTable(doc, {
       startY: 18,
-      head: [["Item", "Qty", "Status", "Updated"]],
+      head: [["Item", "Qty", "Updated"]],
       body,
       styles: { fontSize: 8 },
     });

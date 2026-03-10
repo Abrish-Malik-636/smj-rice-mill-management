@@ -94,6 +94,12 @@ export default function Stock({ initialTab = "production" }) {
   }, []);
 
   useEffect(() => {
+    const onChanged = () => loadData();
+    window.addEventListener("smj-stock-changed", onChanged);
+    return () => window.removeEventListener("smj-stock-changed", onChanged);
+  }, []);
+
+  useEffect(() => {
     const loadSettings = async () => {
       try {
         const res = await api.get("/settings");

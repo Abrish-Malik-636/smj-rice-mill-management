@@ -1,5 +1,6 @@
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
+const SystemAction = require("../models/systemActionModel");
 const { postProductionOutputEntry } = require("./accountingJournalService");
 
 function computeShift(date) {
@@ -90,6 +91,50 @@ async function runOnce() {
       } catch (e) {
         console.error("productionScheduler save error:", e?.message || e);
       }
+
+      // If batch just completed, create a pending decision for remaining paddy (if any).
+      if (allDone) {
+        try {
+          const raw = Number(batch.paddyWeightKg || 0) || 0;
+          // Don't rely on stored aggregates (may be stale). Compute from outputs.
+          const outKg = (batch.outputs || [])
+            .filter((o) => (o.status || "COMPLETED") === "COMPLETED")
+            .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0);
+
+          // Keep aggregates consistent for UI/other endpoints.
+          batch.totalRawWeightKg = +raw.toFixed(3);
+          batch.totalOutputWeightKg = +outKg.toFixed(3);
+          batch.dayShiftOutputWeightKg = +(batch.outputs || [])
+            .filter((o) => (o.status || "COMPLETED") === "COMPLETED" && o.shift === "DAY")
+            .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0)
+            .toFixed(3);
+          batch.nightShiftOutputWeightKg = +(batch.outputs || [])
+            .filter((o) => (o.status || "COMPLETED") === "COMPLETED" && o.shift === "NIGHT")
+            .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0)
+            .toFixed(3);
+          await batch.save();
+          const remaining = Math.max(0, +(raw - outKg).toFixed(3));
+          if (remaining > 0) {
+            const exists = await SystemAction.findOne({
+              type: "PADDY_REMAINING_DECISION",
+              status: "PENDING",
+              batchId: batch._id,
+            }).lean();
+            if (!exists) {
+              await SystemAction.create({
+                type: "PADDY_REMAINING_DECISION",
+                status: "PENDING",
+                batchId: batch._id,
+                batchNo: batch.batchNo,
+                brandName: String(batch.sourceCompanyName || "").trim(),
+                remainingPaddyKg: remaining,
+              });
+            }
+          }
+        } catch (e) {
+          console.error("productionScheduler remaining paddy action error:", e?.message || e);
+        }
+      }
     }
   }
 }
@@ -113,4 +158,3 @@ function start({ intervalMs = 30_000 } = {}) {
 }
 
 module.exports = { start, runOnce };
-

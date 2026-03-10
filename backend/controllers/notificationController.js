@@ -4,6 +4,7 @@ const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const NotificationReminder = require("../models/notificationReminderModel");
 const SystemSettings = require("../models/systemSettingsModel");
+const SystemAction = require("../models/systemActionModel");
 
 const pendingAmount = (t) => {
   const total = Number(t.totalAmount || 0);
@@ -117,7 +118,7 @@ exports.getAlerts = async (_req, res) => {
     const next3Days = new Date(todayEnd);
     next3Days.setDate(next3Days.getDate() + 3);
 
-    const [settingsRaw, invoices, inProcessCount, remindersToday, recentGps, recentSales, recentBatches, recentProdOutputs] =
+    const [settingsRaw, invoices, inProcessCount, remindersToday, recentGps, recentSales, recentBatches, recentProdOutputs, pendingActions, recentPaddyReturns] =
       await Promise.all([
         // Keep singleton behavior even if multiple settings docs exist.
         SystemSettings.find({})
@@ -157,6 +158,21 @@ exports.getAlerts = async (_req, res) => {
           .sort({ date: -1, createdAt: -1 })
           .limit(5)
           .select("companyName productTypeName netWeightKg remarks date createdAt")
+          .lean(),
+        SystemAction.find({ status: "PENDING" })
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .select("type batchId batchNo brandName remainingPaddyKg createdAt")
+          .lean(),
+        StockLedger.find({
+          type: "IN",
+          productTypeId: null,
+          productTypeName: "Unprocessed Paddy",
+          remarks: { $regex: "^Remaining paddy returned", $options: "i" },
+        })
+          .sort({ date: -1, createdAt: -1 })
+          .limit(5)
+          .select("companyName netWeightKg remarks date createdAt")
           .lean(),
       ]);
 
@@ -218,6 +234,14 @@ exports.getAlerts = async (_req, res) => {
         at: l.date || l.createdAt,
       });
     });
+    (recentPaddyReturns || []).forEach((l) => {
+      activities.push({
+        type: "PADDY_RETURN",
+        title: "Remaining paddy returned to stock",
+        detail: `${l.companyName || "-"} · ${Number(l.netWeightKg || 0).toFixed(0)} kg`,
+        at: l.date || l.createdAt,
+      });
+    });
     activities.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
     const startMinutes = parseHm(settings?.alertsWorkStart, 9 * 60);
@@ -266,6 +290,15 @@ exports.getAlerts = async (_req, res) => {
           },
         ],
         recentActivities: activities.slice(0, 8),
+        pendingActions: (pendingActions || []).map((a) => ({
+          id: String(a._id),
+          type: a.type,
+          batchId: a.batchId,
+          batchNo: a.batchNo || "",
+          brandName: a.brandName || "",
+          remainingPaddyKg: Number(a.remainingPaddyKg || 0),
+          createdAt: a.createdAt,
+        })),
         alertSchedule: {
           enabled: settings?.alertsEnabled !== false,
           workStart: settings?.alertsWorkStart || "09:00",

@@ -6,6 +6,7 @@ import DataTable from "../ui/DataTable";
 import AddOptionModal from "../ui/AddOptionModal";
 
 const UNITS = ["kg", "ton", "bags", "pcs", "mounds"];
+const PADDY_UNITS = ["kg", "ton"];
 const OTHER_OPTION = "__OTHER__";
 const createBrandModalState = () => ({
   open: false,
@@ -43,7 +44,7 @@ export default function GatePassIN() {
     freightCharges: "",
   });
   const [items, setItems] = useState([
-    { itemType: "Paddy", quantity: "", unit: "kg" },
+    { itemType: "Paddy", brand: "", quantity: "", unit: "kg" },
   ]);
 
   const toggleInvoiceId = (id) => {
@@ -123,7 +124,20 @@ export default function GatePassIN() {
   const validateField = (name, value) => {
     let msg = "";
     if (name === "truckNo") msg = validateTruckNo(value);
-    if (name === "supplier") msg = needsBrand() ? (value ? "" : "Brand / trademark is required.") : "";
+    if (name === "supplier") {
+      if (!needsBrand()) msg = "";
+      else {
+        const manualPaddy = (items || []).filter((it) => {
+          const name = String(it?.itemType || "").trim().toLowerCase();
+          const qty = Number(it?.quantity || 0);
+          return (name === "paddy" || name === "unprocessed paddy") && qty > 0;
+        });
+        const perRowOk =
+          manualPaddy.length > 0 &&
+          manualPaddy.every((it) => String(it?.brand || "").trim() !== "");
+        msg = value || perRowOk ? "" : "Brand / trademark is required.";
+      }
+    }
     if (name === "driverName")
       msg = value ? validateDriverName(value) : "Driver name is required.";
     if (name === "driverContact")
@@ -136,7 +150,19 @@ export default function GatePassIN() {
 
   const validateForm = () => {
     const e1 = validateTruckNo(form.truckNo);
-    const e2 = needsBrand() ? (form.supplier ? "" : "Brand / trademark is required.") : "";
+    const manualPaddy = (items || []).filter((it) => {
+      const name = String(it?.itemType || "").trim().toLowerCase();
+      const qty = Number(it?.quantity || 0);
+      return (name === "paddy" || name === "unprocessed paddy") && qty > 0;
+    });
+    const perRowOk =
+      manualPaddy.length > 0 &&
+      manualPaddy.every((it) => String(it?.brand || "").trim() !== "");
+    const e2 = needsBrand()
+      ? form.supplier || perRowOk
+        ? ""
+        : "Brand / trademark is required."
+      : "";
     const e3 = form.driverName
       ? validateDriverName(form.driverName)
       : "Driver name is required.";
@@ -620,19 +646,28 @@ export default function GatePassIN() {
       : [];
     const manualItems = items
       .filter((it) => it.itemType && Number(it.quantity) > 0)
-      .map((it) => ({
-        itemType: it.itemType,
-        stockType:
-          String(it.itemType || "").toLowerCase() === "paddy"
-            ? "Production"
-            : "Managerial",
-        customItemName: "",
-        quantity: Number(it.quantity),
-        unit: normalizeUnit(it.unit),
-      }));
+      .map((it) => {
+        const isPaddy = String(it.itemType || "").toLowerCase() === "paddy";
+        return {
+          itemType: it.itemType,
+          stockType: isPaddy ? "Production" : "Managerial",
+          brand: isPaddy ? String(it.brand || "").trim() : "",
+          customItemName: "",
+          quantity: Number(it.quantity),
+          unit: normalizeUnit(it.unit),
+        };
+      });
+
+    const firstPaddyBrand =
+      manualItems.find(
+        (it) =>
+          String(it?.itemType || "").toLowerCase() === "paddy" &&
+          String(it?.brand || "").trim() !== ""
+      )?.brand || "";
 
     const payload = {
       ...form,
+      supplier: String(form.supplier || "").trim() || firstPaddyBrand || "",
       type: "IN",
       invoiceIds: selectedInvoiceIds.map((id) => purchaseInvoices.find((t) => String(t._id) === String(id))?._id).filter(Boolean),
       invoiceId: invoice ? invoice._id : undefined,
@@ -660,7 +695,7 @@ export default function GatePassIN() {
         freightCharges: "",
       });
       setSelectedInvoiceIds([]);
-      setItems([{ itemType: "Paddy", quantity: "", unit: "kg" }]);
+      setItems([{ itemType: "Paddy", brand: "", quantity: "", unit: "kg" }]);
       setEditingId(null);
       setErrors({});
       fetchRows();
@@ -688,11 +723,12 @@ export default function GatePassIN() {
     setSelectedInvoiceIds(ids.map((x) => String(x)));
     const rowItems = (row.items || []).map((it) => ({
       itemType: it.itemType || it.customItemName || "SMJ Own",
+      brand: String(it.brand || "").trim() || (String(it.itemType || "").toLowerCase() === "paddy" ? (row.supplier || "") : ""),
       quantity: it.quantity ? String(it.quantity) : "",
       unit: it.unit || "kg",
     }));
     setItems(
-      rowItems.length > 0 ? rowItems : [{ itemType: "Paddy", quantity: "", unit: "kg" }]
+      rowItems.length > 0 ? rowItems : [{ itemType: "Paddy", brand: "", quantity: "", unit: "kg" }]
     );
 
     setEditingId(row._id);
@@ -737,7 +773,7 @@ export default function GatePassIN() {
   };
 
   // Print window - A5 size (148mm x 210mm)
-  const openPrintWindow = (row) => {
+  const openPrintWindow = async (row) => {
     const win = window.open("", "_blank", "width=600,height=842");
     if (!win) return;
 
@@ -754,16 +790,32 @@ export default function GatePassIN() {
       ? `<img src="${logo}" style="height:50px;margin-right:12px;" alt="logo" />`
       : `<div style="width:50px;height:50px;background:#d1fae5;color:#047857;display:inline-flex;align-items:center;justify-content:center;font-weight:700;margin-right:12px;border-radius:8px;font-size:20px;">GP</div>`;
 
+    const paddyBrands = Array.from(
+      new Set(
+        (row.items || [])
+          .filter((it) => String(it?.itemType || "").toLowerCase() === "paddy")
+          .map((it) => String(it?.brand || row.supplier || "").trim())
+          .filter(Boolean),
+      ),
+    );
+
     let itemsHtml = "";
     if (row.items && row.items.length > 0) {
       itemsHtml = row.items
         .map((item) => {
+          const isPaddy = String(item?.itemType || "").toLowerCase() === "paddy";
+          const paddyBrand = isPaddy
+            ? String(item?.brand || row.supplier || "").trim()
+            : "";
           const displayName =
             item.itemType === "Other" && item.customItemName
               ? `${item.itemType} (${item.customItemName})`
               : item.itemType || "-";
+          const nameWithBrand = isPaddy
+            ? `Unprocessed Paddy${paddyBrand ? ` (${paddyBrand})` : ""}`
+            : displayName;
           return `<tr>
-          <td style="border:1px solid #ddd;padding:6px;">${displayName}</td>
+          <td style="border:1px solid #ddd;padding:6px;">${nameWithBrand}</td>
           <td style="border:1px solid #ddd;padding:6px;text-align:right;">${
             item.quantity || 0
           } ${item.unit || ""}</td>
@@ -771,6 +823,105 @@ export default function GatePassIN() {
         })
         .join("");
     }
+
+    // Invoice details (optional): show linked invoice numbers and their items on the slip.
+    let invoiceHtml = "";
+    try {
+      const ids = Array.isArray(row.invoiceIds) && row.invoiceIds.length
+        ? row.invoiceIds
+        : (row.invoiceId ? [row.invoiceId] : []);
+      const invoiceDocs = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const r = await api.get(`/transactions/${id}`);
+            return r.data?.data || null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      const invoices = invoiceDocs.filter(Boolean);
+      if (invoices.length > 0) {
+        const invBlocks = invoices
+          .map((inv) => {
+            const invNo = inv.invoiceNo || "-";
+            const invItems = Array.isArray(inv.items) ? inv.items : [];
+            const rows = invItems
+              .map((it) => {
+                const label = it.itemName || it.productTypeName || "Item";
+                const qty =
+                  it.netWeightKg != null && it.netWeightKg !== ""
+                    ? `${Math.round(Number(it.netWeightKg || 0))} kg`
+                    : `${Math.round(Number(it.quantity || 0))} ${it.unit || ""}`;
+                return `<tr>
+                  <td style="border:1px solid #ddd;padding:6px;">${label}</td>
+                  <td style="border:1px solid #ddd;padding:6px;text-align:right;">${qty}</td>
+                </tr>`;
+              })
+              .join("");
+
+            return `
+              <div style="margin-top:10px;">
+                <div style="font-weight:700;color:#065f46;margin-bottom:6px;">Invoice: ${invNo}</div>
+                <table style="width:100%;border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th style="border:1px solid #ddd;padding:6px;text-align:left;background:#f3f4f6;">Product</th>
+                      <th style="border:1px solid #ddd;padding:6px;text-align:right;background:#f3f4f6;">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>${rows || `<tr><td colspan="2" style="border:1px solid #ddd;padding:6px;color:#6b7280;">No items</td></tr>`}</tbody>
+                </table>
+              </div>
+            `;
+          })
+          .join("");
+
+        invoiceHtml = `
+          <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:10px;">
+            <div style="font-weight:800;color:#111827;margin-bottom:6px;">Invoice Details</div>
+            ${invBlocks}
+          </div>
+        `;
+      } else {
+        const nos = Array.isArray(row.invoiceNos) && row.invoiceNos.length
+          ? row.invoiceNos
+          : (row.invoiceNo ? [row.invoiceNo] : []);
+        if (nos.length > 0) {
+          invoiceHtml = `
+            <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:10px;">
+              <div style="font-weight:800;color:#111827;margin-bottom:6px;">Invoice No(s)</div>
+              <div style="color:#374151;">${nos.filter(Boolean).join(", ")}</div>
+            </div>
+          `;
+        }
+      }
+    } catch {
+      // ignore invoice errors on print
+    }
+
+    const hasInvoice =
+      (Array.isArray(row.invoiceIds) && row.invoiceIds.length > 0) ||
+      (Array.isArray(row.invoiceNos) && row.invoiceNos.length > 0) ||
+      !!(row.invoiceId || row.invoiceNo);
+    const hasPaddy = (row.items || []).some(
+      (it) => String(it?.itemType || "").toLowerCase() === "paddy"
+    );
+
+    const itemsTableHtml = `
+      <table>
+        <thead><tr><th>Item Description</th><th style="text-align:right;">Quantity</th></tr></thead>
+        <tbody>${itemsHtml}</tbody>
+        <tfoot>
+          <tr style="background:#f0fdf4;font-weight:700;">
+            <td style="border:1px solid #ddd;padding:6px;">Total</td>
+            <td style="border:1px solid #ddd;padding:6px;text-align:right;">${
+              (row.items || []).reduce((sum, it) => sum + Number(it.quantity || 0), 0)
+            }</td>
+          </tr>
+        </tfoot>
+      </table>
+    `;
 
     const html = `
       <html><head><title>Gate Pass ${row.gatePassNo || ""}</title>
@@ -806,11 +957,16 @@ export default function GatePassIN() {
         <div><span class="label">Date:</span><span class="value">${
           row.createdAt ? new Date(row.createdAt).toLocaleDateString() : "-"
         }</span></div>
-        <div><span class="label">Invoice No:</span><span class="value">${
-          row.invoiceNo || "-"
+        <div><span class="label">Invoice No(s):</span><span class="value">${
+          (Array.isArray(row.invoiceNos) && row.invoiceNos.length
+            ? row.invoiceNos.filter(Boolean).join(", ")
+            : (row.invoiceNo || "-"))
         }</span></div>
         <div><span class="label">Truck No:</span><span class="value">${
           row.truckNo || "-"
+        }</span></div>
+        <div><span class="label">Paddy Brand(s):</span><span class="value">${
+          paddyBrands.length ? paddyBrands.join(", ") : (row.supplier || "-")
         }</span></div>
         <div><span class="label">Driver:</span><span class="value">${
           row.driverName || "-"
@@ -820,18 +976,9 @@ export default function GatePassIN() {
         }</span></div>
       </div>
 
-      <table>
-        <thead><tr><th>Item Description</th><th style="text-align:right;">Quantity</th></tr></thead>
-        <tbody>${itemsHtml}</tbody>
-        <tfoot>
-          <tr style="background:#f0fdf4;font-weight:700;">
-            <td style="border:1px solid #ddd;padding:6px;">Total</td>
-            <td style="border:1px solid #ddd;padding:6px;text-align:right;">${
-              (row.items || []).reduce((sum, it) => sum + Number(it.quantity || 0), 0)
-            }</td>
-          </tr>
-        </tfoot>
-      </table>
+      ${hasInvoice && !hasPaddy ? "" : itemsTableHtml}
+
+      ${invoiceHtml}
 
       <div class="footer">
         <div>Authorized Signature: _________________</div>
@@ -1101,10 +1248,15 @@ export default function GatePassIN() {
           </h3>
           <div className="p-3 bg-gray-50 rounded-lg space-y-3">
             <div className="flex items-center justify-between">
-              <div className="text-xs text-gray-600">Add one or more paddy lines (same brand/trademark).</div>
+              <div className="text-xs text-gray-600">Add one or more paddy lines (each row can have a different brand/trademark).</div>
               <button
                 type="button"
-                onClick={() => setItems((prev) => [...(prev || []), { itemType: "Paddy", quantity: "", unit: "kg" }])}
+                onClick={() =>
+                  setItems((prev) => [
+                    ...(prev || []),
+                    { itemType: "Paddy", brand: "", quantity: "", unit: "kg" },
+                  ])
+                }
                 className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
               >
                 <Plus size={14} />
@@ -1120,23 +1272,38 @@ export default function GatePassIN() {
                 </label>
               </div>
               <select
-                name="supplier"
-                value={form.supplier}
-                onChange={handleChange}
+                value={items[0]?.brand ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const used = (items || [])
+                    .slice(1)
+                    .map((x) => String(x?.brand || "").trim())
+                    .filter(Boolean);
+                  if (v && used.includes(v)) {
+                    toast.error("Each paddy row must have a different brand/trademark.");
+                    return;
+                  }
+                  handleItemChange(0, "brand", v);
+                  // Keep top-level supplier in sync for backward compatibility (printing/listing).
+                  setForm((prev) => ({ ...prev, supplier: v }));
+                  clearFieldError("supplier");
+                }}
                 className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
                   errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
                 }`}
               >
                 <option value="">Select brand / trademark</option>
-                {form.supplier && !brandOptions.includes(form.supplier) && (
-                  <option value={form.supplier}>{form.supplier}</option>
-                )}
                 {brandOptions.map((b, idx) => (
-                  <option key={`${b}-${idx}`} value={b}>
+                  <option
+                    key={`${b}-${idx}`}
+                    value={b}
+                    disabled={(items || [])
+                      .slice(1)
+                      .some((x) => String(x?.brand || "").trim() === b)}
+                  >
                     {b}
                   </option>
                 ))}
-                <option value={OTHER_OPTION}>Other (Add New)</option>
               </select>
               {errors.supplier && (
                 <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
@@ -1144,13 +1311,11 @@ export default function GatePassIN() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Item</label>
-              <select
+              <input
                 value="Paddy"
-                onChange={() => {}}
-                className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
-              >
-                <option value="Paddy">Paddy</option>
-              </select>
+                readOnly
+                className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300 bg-gray-100 cursor-not-allowed"
+              />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Quantity (no decimals)</label>
@@ -1170,11 +1335,11 @@ export default function GatePassIN() {
             <div>
               <label className="block text-xs text-gray-500 mb-1">Unit</label>
               <select
-                value={items[0]?.unit ?? "kg"}
+                value={PADDY_UNITS.includes(items[0]?.unit) ? (items[0]?.unit ?? "kg") : "kg"}
                 onChange={(e) => handleItemChange(0, "unit", e.target.value)}
                 className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
               >
-                {UNITS.map((u) => (
+                {PADDY_UNITS.map((u) => (
                   <option key={u} value={u}>
                     {u}
                   </option>
@@ -1192,22 +1357,35 @@ export default function GatePassIN() {
                       <div className="md:col-span-1">
                         <label className="block text-xs text-gray-500 mb-1">Brand / Trademark</label>
                         <select
-                          value={form.supplier}
-                          onChange={handleChange}
+                          value={it?.brand ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const used = (items || [])
+                              .map((x, i) => (i === realIdx ? "" : String(x?.brand || "").trim()))
+                              .filter(Boolean);
+                            if (v && used.includes(v)) {
+                              toast.error("Each paddy row must have a different brand/trademark.");
+                              return;
+                            }
+                            handleItemChange(realIdx, "brand", v);
+                          }}
                           className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
                             errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
                           }`}
                         >
                           <option value="">Select brand / trademark</option>
-                          {form.supplier && !brandOptions.includes(form.supplier) && (
-                            <option value={form.supplier}>{form.supplier}</option>
-                          )}
                           {brandOptions.map((b, idx2) => (
-                            <option key={`${b}-${idx2}`} value={b}>
+                            <option
+                              key={`${b}-${idx2}`}
+                              value={b}
+                              disabled={(items || [])
+                                .map((x, i) => (i === realIdx ? "" : String(x?.brand || "").trim()))
+                                .filter(Boolean)
+                                .includes(b)}
+                            >
                               {b}
                             </option>
                           ))}
-                          <option value={OTHER_OPTION}>Other (Add New)</option>
                         </select>
                       </div>
                       <div>
@@ -1236,11 +1414,11 @@ export default function GatePassIN() {
                         <div className="flex-1">
                           <label className="block text-xs text-gray-500 mb-1">Unit</label>
                           <select
-                            value={it?.unit ?? "kg"}
+                            value={PADDY_UNITS.includes(it?.unit) ? (it?.unit ?? "kg") : "kg"}
                             onChange={(e) => handleItemChange(realIdx, "unit", e.target.value)}
                             className="w-full rounded-lg border px-3 py-2 text-sm outline-none border-gray-300"
                           >
-                            {UNITS.map((u) => (
+                            {PADDY_UNITS.map((u) => (
                               <option key={u} value={u}>
                                 {u}
                               </option>
@@ -1324,7 +1502,7 @@ export default function GatePassIN() {
                 });
                 setSelectedInvoiceId("");
                 setItems([
-                  { itemType: "Paddy", quantity: "", unit: "kg" },
+                  { itemType: "Paddy", brand: "", quantity: "", unit: "kg" },
                 ]);
                 setErrors({});
               }}

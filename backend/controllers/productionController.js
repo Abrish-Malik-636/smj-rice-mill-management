@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const SystemSettings = require("../models/systemSettingsModel");
+const SystemAction = require("../models/systemActionModel");
 const {
   postProductionOutputEntry,
   reverseBySource,
@@ -54,11 +55,18 @@ function ensureBatchSourceCompany(batch) {
 /**
  * Get current paddy balance (kg) from stock ledger (Paddy only).
  */
+function escapeRegex(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function getPaddyBalanceKg(companyName = "") {
+  const name = String(companyName || "").trim();
+  if (!name) return 0;
   const rows = await StockLedger.find({
     productTypeId: null,
     productTypeName: { $in: ["Paddy", "Unprocessed Paddy"] },
-    companyName: String(companyName || "").trim(),
+    // Case-insensitive match to avoid split stock like "Anwar Trades" vs "anwar trades"
+    companyName: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
   }).lean();
   let balance = 0;
   rows.forEach((r) => {
@@ -425,6 +433,7 @@ exports.addOutput = async (req, res) => {
       perBagWeightKg,
       outputDate,
       durationMinutes,
+      plannedCompleteAt,
       adminPin,
     } = req.body;
 
@@ -479,8 +488,17 @@ exports.addOutput = async (req, res) => {
 
     const now = new Date();
     const outDate = outputDate ? new Date(outputDate) : now;
-    const durMin = Math.max(0, Number(durationMinutes || 0) || 0);
-    const planned = durMin > 0 ? new Date(outDate.getTime() + durMin * 60 * 1000) : null;
+    // Scheduling: allow either durationMinutes or an explicit plannedCompleteAt timestamp.
+    let durMin = Math.max(0, Number(durationMinutes || 0) || 0);
+    let planned = durMin > 0 ? new Date(outDate.getTime() + durMin * 60 * 1000) : null;
+    if (plannedCompleteAt) {
+      const target = new Date(plannedCompleteAt);
+      if (!Number.isNaN(target.getTime())) {
+        const diff = Math.round((target.getTime() - outDate.getTime()) / (60 * 1000));
+        durMin = Math.max(0, diff);
+        planned = durMin > 0 ? target : null;
+      }
+    }
     const isCompletedNow = batch.status === "COMPLETED" || durMin === 0;
 
     const completedAt = isCompletedNow ? now : null;
@@ -571,6 +589,7 @@ exports.updateOutput = async (req, res) => {
       productTypeId,
       productTypeName,
       durationMinutes,
+      plannedCompleteAt,
     } = req.body;
 
     if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(outputId)) {
@@ -616,6 +635,16 @@ exports.updateOutput = async (req, res) => {
       output.plannedCompleteAt = durMin > 0
         ? new Date((output.outputDate || new Date()).getTime() + durMin * 60 * 1000)
         : null;
+    }
+    if ((output.status || "COMPLETED") !== "COMPLETED" && plannedCompleteAt) {
+      const base = output.outputDate || new Date();
+      const target = new Date(plannedCompleteAt);
+      if (!Number.isNaN(target.getTime())) {
+        const diff = Math.round((target.getTime() - new Date(base).getTime()) / (60 * 1000));
+        const durMin = Math.max(0, diff);
+        output.durationMinutes = durMin;
+        output.plannedCompleteAt = durMin > 0 ? target : null;
+      }
     }
     if (productTypeId !== undefined) output.productTypeId = productTypeId;
     if (productTypeName !== undefined) output.productTypeName = productTypeName || "";
@@ -699,6 +728,67 @@ exports.updateOutput = async (req, res) => {
 };
 
 /**
+ * POST /api/production/batches/:id/remaining-paddy/decision
+ * Body: { decision: "RETURN_TO_STOCK" | "KEEP_IN_BATCH" }
+ * Resolves the pending remaining paddy action created on auto-complete.
+ */
+exports.resolveRemainingPaddyDecision = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+    const decision = String(req.body?.decision || "").trim();
+    if (!["RETURN_TO_STOCK", "KEEP_IN_BATCH"].includes(decision)) {
+      return res.status(400).json({ success: false, message: "Invalid decision." });
+    }
+
+    const batch = await ProductionBatch.findById(id).lean();
+    if (!batch) {
+      return res.status(404).json({ success: false, message: "Batch not found" });
+    }
+
+    const action = await SystemAction.findOne({
+      type: "PADDY_REMAINING_DECISION",
+      status: "PENDING",
+      batchId: id,
+    });
+    if (!action) {
+      return res.status(404).json({ success: false, message: "No pending decision for this batch." });
+    }
+
+    const remainingKg = Number(action.remainingPaddyKg || 0) || 0;
+    const brandName = String(action.brandName || batch.sourceCompanyName || "").trim() || "SMJ Own";
+
+    if (decision === "RETURN_TO_STOCK" && remainingKg > 0) {
+      await StockLedger.create({
+        date: new Date(),
+        type: "IN",
+        companyId: batch.sourceCompanyId || null,
+        companyName: brandName,
+        productTypeId: null,
+        productTypeName: "Unprocessed Paddy",
+        numBags: 0,
+        netWeightKg: remainingKg,
+        gatePassId: null,
+        gatePassNo: "",
+        remarks: `Remaining paddy returned - ${batch.batchNo} (${brandName})`,
+      });
+    }
+
+    action.status = "RESOLVED";
+    action.decision = decision;
+    action.resolvedAt = new Date();
+    await action.save();
+
+    return res.json({ success: true, data: action });
+  } catch (err) {
+    console.error("resolveRemainingPaddyDecision error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Failed to resolve decision." });
+  }
+};
+
+/**
  * POST /api/production/batches/:id/complete
  * Marks batch COMPLETED and creates IN stock entries for outputs.
  */
@@ -730,6 +820,32 @@ exports.completeBatch = async (req, res) => {
     recomputeAggregates(batch);
     batch.status = "COMPLETED";
     const saved = await batch.save();
+
+    // Create pending decision for remaining paddy (if any).
+    try {
+      const raw = Number(saved.paddyWeightKg || 0) || 0;
+      const outKg = Number(saved.totalOutputWeightKg || 0) || 0;
+      const remaining = Math.max(0, +(raw - outKg).toFixed(3));
+      if (remaining > 0) {
+        const exists = await SystemAction.findOne({
+          type: "PADDY_REMAINING_DECISION",
+          status: "PENDING",
+          batchId: saved._id,
+        }).lean();
+        if (!exists) {
+          await SystemAction.create({
+            type: "PADDY_REMAINING_DECISION",
+            status: "PENDING",
+            batchId: saved._id,
+            batchNo: saved.batchNo,
+            brandName: String(saved.sourceCompanyName || "").trim(),
+            remainingPaddyKg: remaining,
+          });
+        }
+      }
+    } catch (e) {
+      console.error("completeBatch remaining paddy action error:", e?.message || e);
+    }
 
     // Backward compatibility: if no output ledger exists for this batch, create once.
     try {

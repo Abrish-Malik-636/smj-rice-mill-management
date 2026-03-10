@@ -17,6 +17,7 @@ export default function MainLayout({ children }) {
   const [loginPin, setLoginPin] = useState("");
   const [loginError, setLoginError] = useState("");
   const lastAlertSnapshotRef = useRef(null);
+  const [pendingActions, setPendingActions] = useState([]);
   const [draftPrompt, setDraftPrompt] = useState({
     open: false,
     storageKey: "",
@@ -43,7 +44,7 @@ export default function MainLayout({ children }) {
     `smj_draft_${pathname}${search || ""}`;
 
   const isDraftEnabledRoute = (pathname) =>
-    ["/financial", "/gatepass", "/production", "/masterdata"].includes(pathname);
+    ["/financial", "/gatepass", "/production"].includes(pathname);
 
   const getControlKey = (el, idx) =>
     el.getAttribute("data-draft-key") ||
@@ -176,6 +177,8 @@ export default function MainLayout({ children }) {
         const recentActivities = Array.isArray(data.recentActivities)
           ? data.recentActivities
           : [];
+        const pending = Array.isArray(data.pendingActions) ? data.pendingActions : [];
+        setPendingActions(pending);
         const schedule = data.alertSchedule || {};
 
         const nextSnapshot = {
@@ -187,7 +190,13 @@ export default function MainLayout({ children }) {
           latestActivityAt: recentActivities[0]?.at
             ? new Date(recentActivities[0].at).getTime()
             : 0,
+          latestActivityTitle: String(recentActivities[0]?.title || ""),
+          latestActivityDetail: String(recentActivities[0]?.detail || ""),
           inWorkingHours: !!schedule.inWorkingHours,
+          pendingActionsCount: pending.length,
+          latestPendingActionAt: pending[0]?.createdAt
+            ? new Date(pending[0].createdAt).getTime()
+            : 0,
         };
 
         const prev = lastAlertSnapshotRef.current;
@@ -235,7 +244,23 @@ export default function MainLayout({ children }) {
           nextSnapshot.latestActivityAt &&
           nextSnapshot.latestActivityAt > (prev.latestActivityAt || 0)
         ) {
-          messages.push("New system activity detected");
+          const t = nextSnapshot.latestActivityTitle || "New activity";
+          const d = nextSnapshot.latestActivityDetail || "";
+          messages.push(d ? `${t}: ${d}` : t);
+        }
+        if (nextSnapshot.pendingActionsCount > (prev.pendingActionsCount || 0)) {
+          // Prefer an actionable message.
+          const newest = pending[0] || null;
+          if (newest?.type === "PADDY_REMAINING_DECISION") {
+            const kg = Number(newest.remainingPaddyKg || 0);
+            const bn = newest.brandName || "-";
+            const batchNo = newest.batchNo || "-";
+            messages.push(
+              `Batch ${batchNo}: remaining paddy ${kg.toFixed(0)} kg for ${bn} needs decision`
+            );
+          } else {
+            messages.push("New action required");
+          }
         }
 
         if (messages.length > 0) {
@@ -492,6 +517,58 @@ export default function MainLayout({ children }) {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
+          {pendingActions?.length > 0 && pendingActions[0]?.type === "PADDY_REMAINING_DECISION" && (
+            <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+              <span className="text-emerald-900">
+                Batch <span className="font-semibold">{pendingActions[0]?.batchNo || "-"}</span>: remaining paddy{" "}
+                <span className="font-semibold">
+                  {Math.round(Number(pendingActions[0]?.remainingPaddyKg || 0))} kg
+                </span>{" "}
+                for <span className="font-semibold">{pendingActions[0]?.brandName || "-"}</span>. Add back to Unprocessed
+                Paddy stock?
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.post(
+                      `/production/batches/${pendingActions[0].batchId}/remaining-paddy/decision`,
+                      { decision: "RETURN_TO_STOCK" }
+                    );
+                    toast.success("Remaining paddy added back to stock.");
+                    window.dispatchEvent(new Event("smj-stock-changed"));
+                    // Refresh pending actions quickly.
+                    const res = await api.get("/notifications/alerts");
+                    setPendingActions(Array.isArray(res.data?.data?.pendingActions) ? res.data.data.pendingActions : []);
+                  } catch (e) {
+                    toast.error(e?.response?.data?.message || "Failed to update.");
+                  }
+                }}
+                className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white text-xs"
+              >
+                Yes, add back
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.post(
+                      `/production/batches/${pendingActions[0].batchId}/remaining-paddy/decision`,
+                      { decision: "KEEP_IN_BATCH" }
+                    );
+                    toast.success("Kept remaining paddy in batch.");
+                    const res = await api.get("/notifications/alerts");
+                    setPendingActions(Array.isArray(res.data?.data?.pendingActions) ? res.data.data.pendingActions : []);
+                  } catch (e) {
+                    toast.error(e?.response?.data?.message || "Failed to update.");
+                  }
+                }}
+                className="px-2.5 py-1 rounded border border-emerald-300 text-emerald-800 text-xs hover:bg-emerald-100"
+              >
+                No
+              </button>
+            </div>
+          )}
           {draftPrompt.open && (
             <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
               <span className="text-amber-900">
