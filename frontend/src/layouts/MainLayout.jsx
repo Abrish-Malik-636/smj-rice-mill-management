@@ -131,7 +131,15 @@ export default function MainLayout({ children }) {
     try {
       const res = await api.get("/settings");
       if (res.data?.data) {
-        setSettings((prev) => ({ ...prev, ...res.data.data }));
+        const data = res.data.data || {};
+        const general = data.general || data.generalSettings || data;
+        setSettings((prev) => ({
+          ...prev,
+          ...data,
+          companyName: general.companyName || general.millName || prev.companyName || "",
+          shortName: general.shortName || prev.shortName || "",
+          email: general.email || general.companyEmail || prev.email || "",
+        }));
       }
     } catch (err) {
       toast.error("Failed to load settings");
@@ -248,20 +256,7 @@ export default function MainLayout({ children }) {
           const d = nextSnapshot.latestActivityDetail || "";
           messages.push(d ? `${t}: ${d}` : t);
         }
-        if (nextSnapshot.pendingActionsCount > (prev.pendingActionsCount || 0)) {
-          // Prefer an actionable message.
-          const newest = pending[0] || null;
-          if (newest?.type === "PADDY_REMAINING_DECISION") {
-            const kg = Number(newest.remainingPaddyKg || 0);
-            const bn = newest.brandName || "-";
-            const batchNo = newest.batchNo || "-";
-            messages.push(
-              `Batch ${batchNo}: remaining paddy ${kg.toFixed(0)} kg for ${bn} needs decision`
-            );
-          } else {
-            messages.push("New action required");
-          }
-        }
+        // Ignore pending actions banner text in alerts.
 
         if (messages.length > 0) {
           showPopup("SMJ Alerts", messages.join(" | "));
@@ -494,6 +489,8 @@ export default function MainLayout({ children }) {
         toggleSidebar={toggleSidebar}
         userName={settings.companyName || settings.shortName || "Admin User"}
         userEmail={settings.email || "admin@smjrice.pk"}
+        companyName={settings.companyName || settings.shortName}
+        companyAddress={settings.address}
         onLogout={() => window.dispatchEvent(new Event("smj-logout"))}
       />
 
@@ -517,86 +514,6 @@ export default function MainLayout({ children }) {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
-          {pendingActions?.length > 0 && pendingActions[0]?.type === "PADDY_REMAINING_DECISION" && (
-            <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
-              <span className="text-emerald-900">
-                Batch <span className="font-semibold">{pendingActions[0]?.batchNo || "-"}</span>: remaining paddy{" "}
-                <span className="font-semibold">
-                  {Math.round(Number(pendingActions[0]?.remainingPaddyKg || 0))} kg
-                </span>{" "}
-                for <span className="font-semibold">{pendingActions[0]?.brandName || "-"}</span>. Add back to Unprocessed
-                Paddy stock?
-              </span>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await api.post(
-                      `/production/batches/${pendingActions[0].batchId}/remaining-paddy/decision`,
-                      { decision: "RETURN_TO_STOCK" }
-                    );
-                    toast.success("Remaining paddy added back to stock.");
-                    window.dispatchEvent(new Event("smj-stock-changed"));
-                    // Refresh pending actions quickly.
-                    const res = await api.get("/notifications/alerts");
-                    setPendingActions(Array.isArray(res.data?.data?.pendingActions) ? res.data.data.pendingActions : []);
-                  } catch (e) {
-                    toast.error(e?.response?.data?.message || "Failed to update.");
-                  }
-                }}
-                className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white text-xs"
-              >
-                Yes, add back
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await api.post(
-                      `/production/batches/${pendingActions[0].batchId}/remaining-paddy/decision`,
-                      { decision: "KEEP_IN_BATCH" }
-                    );
-                    toast.success("Kept remaining paddy in batch.");
-                    const res = await api.get("/notifications/alerts");
-                    setPendingActions(Array.isArray(res.data?.data?.pendingActions) ? res.data.data.pendingActions : []);
-                  } catch (e) {
-                    toast.error(e?.response?.data?.message || "Failed to update.");
-                  }
-                }}
-                className="px-2.5 py-1 rounded border border-emerald-300 text-emerald-800 text-xs hover:bg-emerald-100"
-              >
-                No
-              </button>
-            </div>
-          )}
-          {draftPrompt.open && (
-            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
-              <span className="text-amber-900">
-                Unsaved form data found for this page. Continue previous draft?
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  restoreDraft(draftPrompt.payload);
-                  setDraftPrompt((p) => ({ ...p, open: false }));
-                  toast.success("Draft restored");
-                }}
-                className="ml-auto px-2.5 py-1 rounded bg-emerald-600 text-white text-xs"
-              >
-                Continue
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  sessionStorage.removeItem(draftPrompt.storageKey);
-                  setDraftPrompt((p) => ({ ...p, open: false }));
-                }}
-                className="px-2.5 py-1 rounded border border-gray-300 text-gray-700 text-xs"
-              >
-                Remove
-              </button>
-            </div>
-          )}
           {!isDashboard && (
             <div className="mb-3">
               <h1 className="text-xl md:text-2xl font-semibold text-emerald-900">

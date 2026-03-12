@@ -7,6 +7,7 @@ const ProductType = require("../models/productTypeModel");
 const SystemSettings = require("../models/systemSettingsModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ManagerialStock = require("../models/managerialStockModel");
+const StockLedger = require("../models/stockLedgerModel");
 const {
   postTransactionEntry,
   reverseBySource,
@@ -89,8 +90,10 @@ function computeItemAmounts(itemsRaw) {
   let totalAmount = 0;
 
   for (const raw of itemsRaw) {
+    const isPaddy = raw.isPaddy === true;
     const isManagerial =
-      raw.isManagerial === true || (!!raw.itemName && !raw.productTypeId);
+      !isPaddy &&
+      (raw.isManagerial === true || (!!raw.itemName && !raw.productTypeId));
 
     if (isManagerial) {
       const quantity = Number(raw.quantity || raw.numBags || 0);
@@ -146,6 +149,9 @@ function computeItemAmounts(itemsRaw) {
       rate,
       rateType,
       amount,
+      isPaddy,
+      productName: "",
+      salePricePerKg: 0,
     });
   }
 
@@ -190,14 +196,24 @@ function validatePayload(body) {
     return 'Field "paymentMethod" must be one of CASH, CARD, ONLINE_TRANSFER, BANK_TRANSFER, CREDIT.';
   }
 
+  const purchaseKind = body.purchaseKind === "PADDY" ? "PADDY" : "MANAGERIAL";
+
   // Items-level checks
   for (let i = 0; i < body.items.length; i++) {
     const it = body.items[i];
-    const isManagerial = it.isManagerial === true || (!!it.itemName && !it.productTypeId);
+    const isPaddy = purchaseKind === "PADDY" && body.type === "PURCHASE";
+    const isManagerial = !isPaddy && (it.isManagerial === true || (!!it.itemName && !it.productTypeId));
     if (isManagerial) {
       if (!it.itemName) return `Item ${i + 1}: "itemName" is required.`;
       if (it.quantity === undefined || it.quantity === null || it.quantity === "") {
         return `Item ${i + 1}: "quantity" is required.`;
+      }
+      if (it.rate === undefined || it.rate === null || it.rate === "") {
+        return `Item ${i + 1}: "rate" is required.`;
+      }
+    } else if (isPaddy) {
+      if (it.netWeightKg === undefined || it.netWeightKg === null || it.netWeightKg === "") {
+        return `Item ${i + 1}: "netWeightKg" is required.`;
       }
       if (it.rate === undefined || it.rate === null || it.rate === "") {
         return `Item ${i + 1}: "rate" is required.`;
@@ -244,6 +260,11 @@ exports.createTransaction = async (req, res) => {
 
     // Compute item amounts
     const { items, totalAmount } = computeItemAmounts(payload.items);
+    const purchaseKind = payload.purchaseKind
+      ? payload.purchaseKind === "PADDY"
+        ? "PADDY"
+        : "MANAGERIAL"
+      : existing.purchaseKind || "MANAGERIAL";
 
     // Resolve product names (production items only)
     const productIds = items
@@ -264,11 +285,15 @@ exports.createTransaction = async (req, res) => {
         item.productTypeName =
           productMap[item.productTypeId.toString()] || "Unknown";
       }
+      if (item.isPaddy) {
+        item.productTypeName = "Unprocessed Paddy";
+      }
     }
 
     // Ensure managerial master items exist for purchase entries
     if (payload.type === "PURCHASE") {
       for (const item of items) {
+        if (purchaseKind === "PADDY") continue;
         if (!item.isManagerial || item.managerialItemId) continue;
         // eslint-disable-next-line no-await-in-loop
         const created = await ensureManagerialItem(item);
@@ -310,6 +335,7 @@ exports.createTransaction = async (req, res) => {
 
     const doc = new Transaction({
       type: payload.type, // PURCHASE or SALE
+      purchaseKind,
       invoiceNo,
       date: new Date(payload.date),
       companyId: payload.companyId || null,
@@ -350,6 +376,57 @@ exports.createTransaction = async (req, res) => {
         .filter((i) => i.quantity > 0);
       if (managerialOps.length) {
         await ManagerialStockLedger.insertMany(managerialOps);
+      }
+    }
+
+    if (payload.type === "PURCHASE" && purchaseKind === "PADDY") {
+      const settings = await SystemSettings.findOne({}).lean();
+      const ownBrand =
+        settings?.general?.companyName ||
+        settings?.generalSettings?.companyName ||
+        "SMJ";
+      const paddyOps = items
+        .filter((i) => i.isPaddy)
+        .map((i) => ({
+          date: new Date(payload.date),
+          type: "IN",
+          companyId: null,
+          companyName: ownBrand,
+          productTypeId: null,
+          productTypeName: "Unprocessed Paddy",
+          numBags: Number(i.numBags || 0),
+          netWeightKg: Number(i.netWeightKg || 0),
+          transactionId: saved._id,
+          remarks: `Paddy purchase - ${saved.invoiceNo}`,
+        }))
+        .filter((i) => i.netWeightKg > 0);
+      if (paddyOps.length) {
+        await StockLedger.insertMany(paddyOps);
+      }
+      for (const it of items.filter((i) => i.isPaddy)) {
+        const name = String(it.productName || "").trim();
+        if (!name) continue;
+        const existing = await ProductType.findOne({
+          name: { $regex: new RegExp(`^${name}$`, "i") },
+          brand: { $regex: new RegExp(`^${ownBrand}$`, "i") },
+        });
+        if (!existing) {
+          await ProductType.create({
+            name,
+            brand: ownBrand,
+            baseUnit: "KG",
+            allowableSaleUnits: ["Bag", "Ton", "KG"],
+            conversionFactors: { KG: 1, Bag: 65, Ton: 1000 },
+            pricePerKg: Number(it.salePricePerKg || 0),
+            pricePerBag: Math.round(Number(it.salePricePerKg || 0) * 65),
+            pricePerTon: Math.round(Number(it.salePricePerKg || 0) * 1000),
+          });
+        } else {
+          existing.pricePerKg = Number(it.salePricePerKg || 0);
+          existing.pricePerBag = Math.round(Number(it.salePricePerKg || 0) * 65);
+          existing.pricePerTon = Math.round(Number(it.salePricePerKg || 0) * 1000);
+          await existing.save();
+        }
       }
     }
 
@@ -580,6 +657,7 @@ exports.updateTransaction = async (req, res) => {
 
     // Items & totals
     const { items, totalAmount } = computeItemAmounts(payload.items);
+    const purchaseKind = payload.purchaseKind === "PADDY" ? "PADDY" : "MANAGERIAL";
 
     const productIds = items
       .filter((i) => i.productTypeId)
@@ -598,6 +676,9 @@ exports.updateTransaction = async (req, res) => {
       if (item.productTypeId) {
         item.productTypeName =
           productMap[item.productTypeId.toString()] || "Unknown";
+      }
+      if (item.isPaddy) {
+        item.productTypeName = "Unprocessed Paddy";
       }
     }
 
@@ -635,6 +716,7 @@ exports.updateTransaction = async (req, res) => {
     existing.paymentMethod =
       payload.paymentMethod || existing.paymentMethod || "CASH";
     existing.dueDate = dueDate;
+    existing.purchaseKind = purchaseKind;
     existing.items = items;
     existing.totalAmount = totalAmount;
     existing.partialPaid = finalPaid;
@@ -650,6 +732,7 @@ exports.updateTransaction = async (req, res) => {
 
     if (existing.type === "PURCHASE") {
       await ManagerialStockLedger.deleteMany({ transactionId: existing._id });
+      await StockLedger.deleteMany({ transactionId: existing._id });
       const managerialOps = items
         .filter((i) => i.isManagerial && i.itemName)
         .map((i) => ({
@@ -665,6 +748,56 @@ exports.updateTransaction = async (req, res) => {
         .filter((i) => i.quantity > 0);
       if (managerialOps.length) {
         await ManagerialStockLedger.insertMany(managerialOps);
+      }
+      if (purchaseKind === "PADDY") {
+        const settings = await SystemSettings.findOne({}).lean();
+        const ownBrand =
+          settings?.general?.companyName ||
+          settings?.generalSettings?.companyName ||
+          "SMJ";
+        const paddyOps = items
+          .filter((i) => i.isPaddy)
+          .map((i) => ({
+            date: new Date(payload.date),
+            type: "IN",
+            companyId: null,
+            companyName: ownBrand,
+            productTypeId: null,
+            productTypeName: "Unprocessed Paddy",
+            numBags: Number(i.numBags || 0),
+            netWeightKg: Number(i.netWeightKg || 0),
+            transactionId: existing._id,
+            remarks: `Paddy purchase - ${existing.invoiceNo}`,
+          }))
+          .filter((i) => i.netWeightKg > 0);
+        if (paddyOps.length) {
+          await StockLedger.insertMany(paddyOps);
+        }
+        for (const it of items.filter((i) => i.isPaddy)) {
+          const name = String(it.productName || "").trim();
+          if (!name) continue;
+          const existingProduct = await ProductType.findOne({
+            name: { $regex: new RegExp(`^${name}$`, "i") },
+            brand: { $regex: new RegExp(`^${ownBrand}$`, "i") },
+          });
+          if (!existingProduct) {
+            await ProductType.create({
+              name,
+              brand: ownBrand,
+              baseUnit: "KG",
+              allowableSaleUnits: ["Bag", "Ton", "KG"],
+              conversionFactors: { KG: 1, Bag: 65, Ton: 1000 },
+              pricePerKg: Number(it.salePricePerKg || 0),
+              pricePerBag: Math.round(Number(it.salePricePerKg || 0) * 65),
+              pricePerTon: Math.round(Number(it.salePricePerKg || 0) * 1000),
+            });
+          } else {
+            existingProduct.pricePerKg = Number(it.salePricePerKg || 0);
+            existingProduct.pricePerBag = Math.round(Number(it.salePricePerKg || 0) * 65);
+            existingProduct.pricePerTon = Math.round(Number(it.salePricePerKg || 0) * 1000);
+            await existingProduct.save();
+          }
+        }
       }
     }
 
@@ -697,6 +830,7 @@ exports.deleteTransaction = async (req, res) => {
     }
 
     await ManagerialStockLedger.deleteMany({ transactionId: deleted._id });
+    await StockLedger.deleteMany({ transactionId: deleted._id });
     await reverseBySource({
       sourceModule: "TRANSACTION",
       sourceRefType: deleted.type,

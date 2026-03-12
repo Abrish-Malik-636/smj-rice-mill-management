@@ -16,6 +16,16 @@ function getStoredPosition() {
   return null;
 }
 
+function clampToViewport(pos, margin = 8) {
+  if (typeof window === "undefined") return pos;
+  const maxX = Math.max(margin, window.innerWidth - 56 - margin);
+  const maxY = Math.max(margin, window.innerHeight - 56 - margin);
+  return {
+    x: Math.min(Math.max(pos.x ?? margin, margin), maxX),
+    y: Math.min(Math.max(pos.y ?? margin, margin), maxY),
+  };
+}
+
 export default function AIChatbot() {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -25,7 +35,10 @@ export default function AIChatbot() {
   const containerRef = useRef(null);
 
   const defaultPos = { x: typeof window !== "undefined" ? window.innerWidth - 80 : 0, y: typeof window !== "undefined" ? window.innerHeight - 80 : 0 };
-  const [position, setPosition] = useState(() => getStoredPosition() || defaultPos);
+  const [position, setPosition] = useState(() => {
+    const stored = getStoredPosition();
+    return clampToViewport(stored || defaultPos);
+  });
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef({ startX: 0, startY: 0, startLeft: 0, startTop: 0 });
   const didDragRef = useRef(false);
@@ -161,6 +174,15 @@ export default function AIChatbot() {
       } catch (_) {}
     }
   }, [isDragging, position]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onResize = () => {
+      setPosition((prev) => clampToViewport(prev));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // When open: position window so it opens toward screen (e.g. bottom-right button → window opens left and upward)
   const CHAT_W = 384;

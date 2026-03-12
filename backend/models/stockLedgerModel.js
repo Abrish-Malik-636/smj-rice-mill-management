@@ -34,6 +34,11 @@ const StockLedgerSchema = new mongoose.Schema(
       default: null,
     },
     gatePassNo: { type: String, default: "" },
+    transactionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Transaction",
+      default: null,
+    },
 
     remarks: { type: String, default: "" },
   },

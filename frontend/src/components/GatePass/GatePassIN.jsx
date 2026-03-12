@@ -13,14 +13,11 @@ const createBrandModalState = () => ({
   value: "",
   valueOther: "",
   deleteValue: "",
-  renameFrom: "",
-  renameTo: "",
-  renamePin: "",
-  renamePinError: "",
   productRows: [],
   draft: {
     nameSelect: "",
     nameOther: "",
+    showList: false,
     bagKg: "65",
     tonKg: "1000",
     pricePerKg: "",
@@ -361,6 +358,12 @@ export default function GatePassIN() {
 
   const validateBrandModalBeforeSave = (modal) => {
     const valueError = validateBrandValue(getBrandModalName(modal));
+    const brandName = getBrandModalName(modal);
+    const brandExists = (brandOptions || []).some(
+      (b) => normalizeText(b) === normalizeText(brandName)
+    );
+    const isNewBrand = String(modal.valueOther || "").trim().length > 0;
+    const duplicateBrandError = brandExists && isNewBrand ? "Brand already exists." : "";
     const rows = Array.isArray(modal.productRows) ? modal.productRows : [];
     const rowErrors = rows.map((row) => validateBrandRow(row));
     const hasRowErrors = rowErrors.some((e) => Object.keys(e).length > 0);
@@ -377,15 +380,13 @@ export default function GatePassIN() {
         : duplicateName || "";
 
     return {
-      isValid: !valueError && !hasRowErrors && !rowsGeneral,
-      errors: { value: valueError, rows: rowErrors, rowsGeneral },
+      isValid: !valueError && !duplicateBrandError && !hasRowErrors && !rowsGeneral,
+      errors: { value: valueError || duplicateBrandError, rows: rowErrors, rowsGeneral },
     };
   };
 
   const getDraftProductName = () =>
-    brandModal.draft?.nameSelect === OTHER_OPTION
-      ? String(brandModal.draft?.nameOther || "").trim()
-      : String(brandModal.draft?.nameSelect || "").trim();
+    String(brandModal.draft?.nameOther || "").trim();
 
   const getBrandProducts = (brandName) =>
     (productCatalog || [])
@@ -417,6 +418,9 @@ export default function GatePassIN() {
         }
       } else if (field === "nameOther") {
         draft.nameOther = sanitizeBrandText(rawValue, 80);
+        draft.showList = false;
+      } else if (field === "toggleProductList") {
+        draft.showList = !draft.showList;
       } else if (field === "bagKg" || field === "tonKg") {
         draft[field] = sanitizeIntegerText(rawValue, 5);
       } else {
@@ -505,6 +509,7 @@ export default function GatePassIN() {
     setForm((prev) => ({ ...prev, [name]: v }));
     validateField(name, v);
   };
+
 
   const saveBrandFromModal = async () => {
     const validation = validateBrandModalBeforeSave(brandModal);
@@ -965,9 +970,6 @@ export default function GatePassIN() {
         <div><span class="label">Truck No:</span><span class="value">${
           row.truckNo || "-"
         }</span></div>
-        <div><span class="label">Paddy Brand(s):</span><span class="value">${
-          paddyBrands.length ? paddyBrands.join(", ") : (row.supplier || "-")
-        }</span></div>
         <div><span class="label">Driver:</span><span class="value">${
           row.driverName || "-"
         }</span></div>
@@ -1119,6 +1121,7 @@ export default function GatePassIN() {
           </div>
         </div>
       )}
+
 
       {/* Form */}
       <form
@@ -1275,6 +1278,10 @@ export default function GatePassIN() {
                 value={items[0]?.brand ?? ""}
                 onChange={(e) => {
                   const v = e.target.value;
+                  if (v === OTHER_OPTION) {
+                    setBrandModal({ ...createBrandModalState(), open: true });
+                    return;
+                  }
                   const used = (items || [])
                     .slice(1)
                     .map((x) => String(x?.brand || "").trim())
@@ -1304,6 +1311,7 @@ export default function GatePassIN() {
                     {b}
                   </option>
                 ))}
+                <option value={OTHER_OPTION}>Other (Add New)</option>
               </select>
               {errors.supplier && (
                 <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
@@ -1360,6 +1368,10 @@ export default function GatePassIN() {
                           value={it?.brand ?? ""}
                           onChange={(e) => {
                             const v = e.target.value;
+                            if (v === OTHER_OPTION) {
+                              setBrandModal({ ...createBrandModalState(), open: true });
+                              return;
+                            }
                             const used = (items || [])
                               .map((x, i) => (i === realIdx ? "" : String(x?.brand || "").trim()))
                               .filter(Boolean);
@@ -1386,6 +1398,7 @@ export default function GatePassIN() {
                               {b}
                             </option>
                           ))}
+                          <option value={OTHER_OPTION}>Other (Add New)</option>
                         </select>
                       </div>
                       <div>
@@ -1605,6 +1618,18 @@ export default function GatePassIN() {
                       onChange={(e) =>
                         setBrandModal((prev) => {
                           const next = sanitizeBrandText(e.target.value, 100);
+                          const match = (brandOptions || []).find(
+                            (b) => normalizeText(b) === normalizeText(next)
+                          );
+                          if (match) {
+                            return {
+                              ...prev,
+                              value: match,
+                              valueOther: "",
+                              productRows: getBrandProducts(match),
+                              errors: { ...(prev.errors || {}), value: "Brand already exists." },
+                            };
+                          }
                           return {
                             ...prev,
                             valueOther: next,
@@ -1642,13 +1667,38 @@ export default function GatePassIN() {
               </div>
               <div className="col-span-12 md:col-span-6">
                 <label className="block text-xs text-gray-600 mb-1">Product Name *</label>
-                {brandModal.draft?.nameSelect !== OTHER_OPTION ? (
-                  <select
+                <div className="flex gap-2">
+                  <input
+                    type="text"
                     className={`w-full border rounded px-3 py-2 text-sm ${
                       brandModal.errors?.draft?.name ? "border-red-400 bg-red-50" : "border-gray-300"
                     }`}
-                    value={brandModal.draft?.nameSelect || ""}
-                    onChange={(e) => handleBrandDraftChange("nameSelect", e.target.value)}
+                    value={brandModal.draft?.nameOther || ""}
+                    onChange={(e) => handleBrandDraftChange("nameOther", e.target.value)}
+                    onBlur={() =>
+                      setBrandModal((prev) => ({
+                        ...prev,
+                        draft: {
+                          ...(prev.draft || {}),
+                          nameOther: toTitleCase(prev.draft?.nameOther || ""),
+                        },
+                      }))
+                    }
+                    placeholder="Enter product name"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleBrandDraftChange("toggleProductList")}
+                    className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  >
+                    List
+                  </button>
+                </div>
+                {brandModal.draft?.showList && (
+                  <select
+                    className="w-full border rounded px-3 py-2 text-sm mt-2"
+                    value=""
+                    onChange={(e) => handleBrandDraftChange("nameOther", e.target.value)}
                   >
                     <option value="">Select product</option>
                     {productNameOptions.map((name, idx) => (
@@ -1656,36 +1706,7 @@ export default function GatePassIN() {
                         {name}
                       </option>
                     ))}
-                    <option value={OTHER_OPTION}>Other</option>
                   </select>
-                ) : (
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      className={`w-full border rounded px-3 py-2 text-sm ${
-                        brandModal.errors?.draft?.name ? "border-red-400 bg-red-50" : "border-gray-300"
-                      }`}
-                      value={brandModal.draft?.nameOther || ""}
-                      onChange={(e) => handleBrandDraftChange("nameOther", e.target.value)}
-                      onBlur={() =>
-                        setBrandModal((prev) => ({
-                          ...prev,
-                          draft: {
-                            ...(prev.draft || {}),
-                            nameOther: toTitleCase(prev.draft?.nameOther || ""),
-                          },
-                        }))
-                      }
-                      placeholder="Enter product name"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleBrandDraftChange("nameSelect", "")}
-                      className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
-                    >
-                      List
-                    </button>
-                  </div>
                 )}
               </div>
               <div className="col-span-12 md:col-span-3">
@@ -1699,7 +1720,7 @@ export default function GatePassIN() {
               </div>
 
               <div className="col-span-12 md:col-span-9">
-                <label className="block text-xs text-gray-600 mb-1">Pricing per KG (PKR) *</label>
+                <label className="block text-xs text-gray-600 mb-1">Processing Pricing per KG (PKR) *</label>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -1782,158 +1803,6 @@ export default function GatePassIN() {
             {brandModal.errors?.rowsGeneral ? (
               <p className="mt-1 text-xs text-red-500">{brandModal.errors.rowsGeneral}</p>
             ) : null}
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 items-end">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Rename Brand</label>
-              <select
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-                value={brandModal.renameFrom}
-                onChange={(e) =>
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renameFrom: e.target.value,
-                  }))
-                }
-              >
-                <option value="">Select brand</option>
-                {brandOptions.map((b, idx) => (
-                  <option key={`rename-from-${b}-${idx}`} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="sm:col-span-2">
-              <label className="block text-xs text-gray-600 mb-1">New Brand Name</label>
-              <input
-                type="text"
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-                value={brandModal.renameTo}
-                onChange={(e) =>
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renameTo: sanitizeBrandText(e.target.value, 100),
-                  }))
-                }
-                onBlur={() =>
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renameTo: toTitleCase(prev.renameTo || ""),
-                  }))
-                }
-                placeholder="Enter new brand name"
-              />
-            </div>
-            <div className="relative">
-              <label className="block text-xs text-gray-600 mb-1">Admin PIN</label>
-              <input
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                className={`w-full border rounded px-3 py-2 text-sm ${
-                  brandModal.renamePinError ? "border-red-500 bg-red-50" : "border-gray-300"
-                }`}
-                value={brandModal.renamePin || ""}
-                onChange={(e) =>
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renamePin: String(e.target.value || "").replace(/\D/g, "").slice(0, 4),
-                    renamePinError: "",
-                  }))
-                }
-                placeholder="4-digit PIN"
-              />
-              {brandModal.renamePinError ? (
-                <p className="absolute left-0 top-full mt-1 text-xs text-red-500">
-                  {brandModal.renamePinError}
-                </p>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              onClick={async () => {
-                const from = String(brandModal.renameFrom || "").trim();
-                const to = toTitleCase(String(brandModal.renameTo || "").trim());
-                const pin = String(brandModal.renamePin || "").trim();
-                if (!from || !to) {
-                  toast.error("Select brand and enter new brand name.");
-                  return;
-                }
-                if (pin.length === 0) {
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renamePinError: "Admin PIN is required.",
-                  }));
-                  return;
-                }
-                if (pin.length !== 4) {
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renamePinError: "Enter complete 4-digit PIN.",
-                  }));
-                  return;
-                }
-                if (normalizeText(from) === normalizeText(to)) {
-                  toast.error("Old and new brand names are same.");
-                  return;
-                }
-                const duplicate = (brandOptions || []).some(
-                  (b) => normalizeText(b) === normalizeText(to)
-                );
-                if (duplicate) {
-                  toast.error("Brand already exists.");
-                  return;
-                }
-                setBrandModal((prev) => ({ ...prev, renaming: true }));
-                try {
-                  await api.post("/settings/rename-brand", {
-                    oldName: from,
-                    newName: to,
-                    adminPin: pin,
-                  });
-
-                  const pRes = await api.get("/product-types");
-                  setProductCatalog(pRes.data?.data || []);
-                  const refreshedBrands = Array.from(
-                    new Set(
-                      (pRes.data?.data || [])
-                        .map((r) => String(r.brand || "").trim())
-                        .filter(Boolean)
-                    )
-                  ).sort();
-                  setBrandOptions(refreshedBrands);
-
-                  if (normalizeText(form.supplier) === normalizeText(from)) {
-                    setForm((prev) => ({ ...prev, supplier: to }));
-                  }
-
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renameFrom: "",
-                    renameTo: "",
-                    renamePin: "",
-                    renamePinError: "",
-                    renaming: false,
-                  }));
-                  toast.success("Brand renamed successfully.");
-                } catch (err) {
-                  const message =
-                    err?.response?.data?.message || "Failed to rename brand.";
-                  toast.error(message);
-                  setBrandModal((prev) => ({
-                    ...prev,
-                    renaming: false,
-                    renamePinError:
-                      message === "Invalid admin PIN." ? "PIN is incorrect." : "",
-                  }));
-                }
-              }}
-              className="w-full px-3 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-60"
-              disabled={brandModal.renaming}
-            >
-              {brandModal.renaming ? "Renaming..." : "Rename"}
-            </button>
           </div>
         </div>
       </AddOptionModal>

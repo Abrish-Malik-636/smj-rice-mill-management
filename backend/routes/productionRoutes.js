@@ -13,6 +13,7 @@ router.post("/batches/:id/outputs", productionController.addOutput);
 router.patch("/batches/:id/outputs/:outputId", productionController.updateOutput);
 
 router.post("/batches/:id/complete", productionController.completeBatch);
+router.post("/batches/:id/reopen", productionController.reopenBatch);
 router.post("/batches/:id/remaining-paddy/decision", productionController.resolveRemainingPaddyDecision);
 
 router.get("/summary/today", productionController.getTodaySummary);

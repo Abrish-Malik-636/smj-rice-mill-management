@@ -128,6 +128,16 @@ exports.createBatch = async (req, res) => {
       attempts++;
     }
 
+    const settings = await SystemSettings.findOne({}).lean();
+    const ownBrand =
+      settings?.general?.companyName ||
+      settings?.generalSettings?.companyName ||
+      "SMJ";
+    const ownerType =
+      ownBrand && sourceName.toLowerCase() === String(ownBrand).trim().toLowerCase()
+        ? "SMJ"
+        : "CUSTOM";
+
     const batch = new ProductionBatch({
       batchNo,
       date,
@@ -135,6 +145,7 @@ exports.createBatch = async (req, res) => {
       paddyWeightKg: requestedKg,
       sourceCompanyId: sourceCompanyId || null,
       sourceCompanyName: sourceName,
+      ownerType,
       outputs: [],
       remarks: remarks || "",
     });
@@ -525,7 +536,7 @@ exports.addOutput = async (req, res) => {
     const saved = await batch.save();
 
     // Only post stock/journal when output is completed (immediately or via scheduler later).
-    if (output.status === "COMPLETED") {
+    if (output.status === "COMPLETED" && batch.ownerType !== "CUSTOM") {
       try {
         await StockLedger.create({
           date: output.completedAt || output.outputDate || new Date(),
@@ -654,12 +665,13 @@ exports.updateOutput = async (req, res) => {
     const saved = await batch.save();
 
     if (
-      (output.status || "COMPLETED") === "COMPLETED" && (
-      oldNet !== newNet ||
-      oldProductTypeId?.toString() !== output.productTypeId?.toString() ||
-      new Date(oldOutputDate).getTime() !==
-        new Date(output.outputDate || batch.date).getTime()
-    )) {
+      batch.ownerType !== "CUSTOM" &&
+      (output.status || "COMPLETED") === "COMPLETED" &&
+      (oldNet !== newNet ||
+        oldProductTypeId?.toString() !== output.productTypeId?.toString() ||
+        new Date(oldOutputDate).getTime() !==
+          new Date(output.outputDate || batch.date).getTime())
+    ) {
       try {
         await reverseBySource({
           sourceModule: "PRODUCTION",
@@ -748,17 +760,41 @@ exports.resolveRemainingPaddyDecision = async (req, res) => {
       return res.status(404).json({ success: false, message: "Batch not found" });
     }
 
-    const action = await SystemAction.findOne({
+    let action = await SystemAction.findOne({
       type: "PADDY_REMAINING_DECISION",
       status: "PENDING",
       batchId: id,
     });
+    let remainingKg = 0;
+    let brandName = String(batch.sourceCompanyName || "").trim() || "SMJ Own";
     if (!action) {
-      return res.status(404).json({ success: false, message: "No pending decision for this batch." });
+      // Fallback: compute remaining from batch if no pending action exists.
+      const raw = Number(batch.paddyWeightKg || 0) || 0;
+      const outKg = (batch.outputs || [])
+        .filter((o) => (o.status || "COMPLETED") === "COMPLETED")
+        .reduce((sum, o) => sum + (Number(o.netWeightKg) || 0), 0);
+      remainingKg = Math.max(0, +(raw - outKg).toFixed(3));
+      if (remainingKg <= 0) {
+        await ProductionBatch.updateOne(
+          { _id: id },
+          { $set: { batchDone: true, batchDoneAt: new Date() } }
+        );
+        return res
+          .status(200)
+          .json({ success: true, data: { remainingKg: 0 }, message: "No remaining paddy." });
+      }
+      action = await SystemAction.create({
+        type: "PADDY_REMAINING_DECISION",
+        status: "PENDING",
+        batchId: id,
+        batchNo: batch.batchNo,
+        brandName,
+        remainingPaddyKg: remainingKg,
+      });
+    } else {
+      remainingKg = Number(action.remainingPaddyKg || 0) || 0;
+      brandName = String(action.brandName || batch.sourceCompanyName || "").trim() || "SMJ Own";
     }
-
-    const remainingKg = Number(action.remainingPaddyKg || 0) || 0;
-    const brandName = String(action.brandName || batch.sourceCompanyName || "").trim() || "SMJ Own";
 
     if (decision === "RETURN_TO_STOCK" && remainingKg > 0) {
       await StockLedger.create({
@@ -780,6 +816,10 @@ exports.resolveRemainingPaddyDecision = async (req, res) => {
     action.decision = decision;
     action.resolvedAt = new Date();
     await action.save();
+    await ProductionBatch.updateOne(
+      { _id: id },
+      { $set: { batchDone: true, batchDoneAt: new Date() } }
+    );
 
     return res.json({ success: true, data: action });
   } catch (err) {
@@ -878,6 +918,41 @@ exports.completeBatch = async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Error completing batch." });
+  }
+};
+
+/**
+ * POST /api/production/batches/:id/reopen
+ * Moves a completed batch back to IN_PROCESS (admin action).
+ */
+exports.reopenBatch = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const batch = await ProductionBatch.findById(id);
+    ensureBatchSourceCompany(batch);
+
+    if (!batch)
+      return res.status(404).json({ success: false, message: "Batch not found" });
+
+    if (batch.status !== "COMPLETED") {
+      return res.status(400).json({ success: false, message: "Only completed batches can be reopened." });
+    }
+
+    batch.status = "IN_PROCESS";
+    batch.batchDone = false;
+    batch.batchDoneAt = null;
+    const saved = await batch.save();
+
+    try {
+      await SystemAction.updateMany(
+        { type: "PADDY_REMAINING_DECISION", status: "PENDING", batchId: saved._id },
+        { $set: { status: "CANCELLED", decision: "REOPENED", resolvedAt: new Date() } }
+      );
+    } catch {}
+
+    return res.json({ success: true, data: saved });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Error reopening batch." });
   }
 };
 

@@ -133,6 +133,7 @@ exports.getCurrentStock = async (req, res) => {
     }).lean();
 
     for (const b of batches) {
+      if (b.ownerType === "CUSTOM") continue;
       const outputs = b.outputs || [];
       const batchDate = b.date || b.createdAt;
       const batchDateTime = b.updatedAt || b.createdAt;

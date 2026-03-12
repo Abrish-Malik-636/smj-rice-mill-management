@@ -173,6 +173,7 @@ const buildTransactionLines = async (tx, accountsMap) => {
   const ap = accountsMap.get("2100");
   const sales = accountsMap.get("4100");
   const purchases = accountsMap.get("5100");
+  const rawInv = accountsMap.get("1300");
   const cogs = accountsMap.get("6100");
   const fgInv = accountsMap.get("1310");
 
@@ -222,9 +223,11 @@ const buildTransactionLines = async (tx, accountsMap) => {
       lines.push({ accountId: fgInv._id, debit: 0, credit: cogsTotal, partyId, partyName });
     }
   } else if (tx.type === "PURCHASE") {
-    if (purchases) {
+    const isPaddy = tx.purchaseKind === "PADDY";
+    const debitAccount = isPaddy ? rawInv : purchases;
+    if (debitAccount) {
       lines.push({
-        accountId: purchases._id,
+        accountId: debitAccount._id,
         debit: total,
         credit: 0,
         partyId,

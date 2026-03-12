@@ -1,7 +1,6 @@
-// src/pages/Production.jsx
+﻿// src/pages/Production.jsx
 import React, { useEffect, useState, useRef } from "react";
 import api from "../services/api";
-import toast, { Toaster } from "react-hot-toast";
 import {
   Factory,
   SunMedium,
@@ -15,8 +14,12 @@ import {
   Box,
   Lock,
   Edit2,
+  Clock,
 } from "lucide-react";
 import Pin4Input from "../components/Pin4Input";
+import AddOptionModal from "../components/ui/AddOptionModal";
+
+const OTHER_OPTION = "__OTHER__";
 
 function todayISODate() {
   const d = new Date();
@@ -38,6 +41,7 @@ export default function Production() {
   const [activeTab, setActiveTab] = useState("IN_PROCESS");
   const [inProcessBatches, setInProcessBatches] = useState([]);
   const [completedBatches, setCompletedBatches] = useState([]);
+  const [doneBatches, setDoneBatches] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState(null);
   const [selectedBatch, setSelectedBatch] = useState(null);
 
@@ -71,7 +75,6 @@ export default function Production() {
     durationMinutes: "0",
     durationUnit: "min",
     plannedCompleteAt: "",
-    completeNow: false,
   });
 
   // Delete completed batch confirmation
@@ -101,14 +104,36 @@ export default function Production() {
   const [zeroPaddyConfirm, setZeroPaddyConfirm] = useState(false);
   const [zeroPaddyPin, setZeroPaddyPin] = useState("");
   const [zeroingPaddy, setZeroingPaddy] = useState(false);
+  const [newProductModal, setNewProductModal] = useState({
+    open: false,
+    saving: false,
+    error: "",
+    productRows: [],
+    draft: {
+      nameOther: "",
+      showList: false,
+      bagKg: "65",
+      tonKg: "1000",
+      pricePerKg: "",
+    },
+    errors: {},
+  });
+  const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [timePicker, setTimePicker] = useState({ hour: "08", minute: "00", ampm: "AM" });
+  const [timePickerMode, setTimePickerMode] = useState("hour");
+  const [timePickerDragging, setTimePickerDragging] = useState(false);
+  const timeDialRef = useRef(null);
 
   // Slip preview (Print opens with this batch)
   const [printBatch, setPrintBatch] = useState(null);
   const [showSlip, setShowSlip] = useState(false);
   const [completeConfirmOpen, setCompleteConfirmOpen] = useState(false);
+  const [markCompleteConfirmOpen, setMarkCompleteConfirmOpen] = useState(false);
   const [deleteInProcessConfirmOpen, setDeleteInProcessConfirmOpen] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [returnedRemainingBatches, setReturnedRemainingBatches] = useState(() => new Set());
   const detailSectionRef = useRef(null);
+  const timePickerRef = useRef(null);
   const [millInfo, setMillInfo] = useState({
     name: "SMJ Rice Mill",
     address: "Mirza Virkan Road, Sheikhupura",
@@ -128,10 +153,23 @@ export default function Production() {
   const paddyCompanyOptions = Array.from(
     new Set((paddyByCompany || []).map((r) => r.companyName).filter(Boolean))
   ).sort();
+  const paddyBrandOptions = Array.from(
+    new Set(
+      (paddyByCompany || [])
+        .filter((r) => Number(r.balanceKg || 0) > 0)
+        .map((r) => r.companyName)
+        .filter(Boolean)
+    )
+  ).sort();
   const selectedSourcePaddyKg = Number(
     paddyByCompany.find((r) => r.companyName === batchForm.sourceCompanyName)
       ?.balanceKg || 0
   );
+  const ownBrandName = String(millInfo.name || "SMJ").trim();
+  const isOwnedBatch =
+    selectedBatch?.sourceCompanyName &&
+    String(selectedBatch.sourceCompanyName).trim().toLowerCase() ===
+      ownBrandName.toLowerCase();
 
   useEffect(() => {
     const onKey = (e) => {
@@ -228,6 +266,41 @@ export default function Production() {
     return `${s}s`;
   };
 
+  const buildPlannedCompleteAt = (timeStr) => {
+    if (!timeStr) return null;
+    if (timeStr.includes("T")) {
+      const d = new Date(timeStr);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const base = selectedBatch?.date ? new Date(selectedBatch.date) : new Date();
+    const [hh, mm] = String(timeStr).split(":").map((n) => Number(n || 0));
+    if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+    const d = new Date(base);
+    d.setHours(hh, mm, 0, 0);
+    if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1);
+    return d;
+  };
+
+  const setTimeFromAngle = (clientX, clientY) => {
+    const dial = timeDialRef.current;
+    if (!dial) return;
+    const rect = dial.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    angle = (angle + 90 + 360) % 360;
+    if (timePickerMode === "hour") {
+      let h = Math.round(angle / 30);
+      if (h === 0) h = 12;
+      setTimePicker((p) => ({ ...p, hour: String(h).padStart(2, "0") }));
+    } else {
+      let m = Math.round(angle / 6) % 60;
+      setTimePicker((p) => ({ ...p, minute: String(m).padStart(2, "0") }));
+    }
+  };
+
   // Auto net weight = bags * perBagWeightKg (integer)
   useEffect(() => {
     const bags = Math.floor(Number(outputForm.numBags)) || 0;
@@ -312,14 +385,25 @@ export default function Production() {
 
       const inList = inRes.data.data || [];
       const compList = completedRes.data.data || [];
+      const doneList = compList.filter((b) => b.batchDone);
+      const remainingCompleted = compList.filter((b) => !b.batchDone);
 
       setInProcessBatches(inList);
-      setCompletedBatches(compList);
+      setCompletedBatches(remainingCompleted);
+      setDoneBatches(doneList);
 
       if (!selectedBatchId) {
-        const first = inList[0] || compList[0];
+        const firstIn = inList[0];
+        const firstCompleted = remainingCompleted[0];
+        const firstDone = doneList[0];
+        const first = firstIn || firstCompleted || firstDone;
         if (first) {
-          selectBatch(first._id, first.status);
+          const tab = firstIn
+            ? "IN_PROCESS"
+            : firstCompleted
+            ? "COMPLETED"
+            : "DONE";
+          selectBatch(first._id, tab);
         }
       }
     } catch {
@@ -390,7 +474,6 @@ export default function Production() {
       if (!res.data?.success) {
         setErrorDialog({ open: true, message: res.data?.message || "Failed to create batch." });
       } else {
-        toast.success("Production batch created", { position: "bottom-center", duration: 2500 });
         setBatchForm({
           date: todayISODate(),
           sourceCompanyName: "",
@@ -416,6 +499,219 @@ export default function Production() {
     const s = String(v).replace(/[^\d]/g, "").replace(/^0+(?=\d)/, "");
     return s;
   }
+
+  const normalizeText = (value) =>
+    String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  const sanitizeBrandText = (value, max = 100) =>
+    String(value || "")
+      .replace(/[^a-zA-Z0-9\s.,&()\-]/g, "")
+      .slice(0, max);
+
+  const toTitleCase = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const sanitizeIntegerText = (value, max = 8) =>
+    String(value || "")
+      .replace(/\D/g, "")
+      .slice(0, max);
+
+  const validateBrandRow = (row = {}) => {
+    const errors = {};
+    const name = String(row.name || "").trim();
+    if (!name) errors.name = "Product name is required";
+    if (!String(row.bagKg || "").trim()) errors.bagKg = "Required";
+    if (!String(row.tonKg || "").trim()) errors.tonKg = "Required";
+    if (!String(row.pricePerKg || "").trim()) errors.pricePerKg = "Required";
+    if (!errors.bagKg && Number(row.bagKg) <= 0) errors.bagKg = "Must be greater than 0";
+    if (!errors.tonKg && Number(row.tonKg) <= 0) errors.tonKg = "Must be greater than 0";
+    return errors;
+  };
+
+  const openNewProductModal = () => {
+    const bagKg = settings.defaultBagWeightKg || 65;
+    setNewProductModal({
+      open: true,
+      saving: false,
+      error: "",
+      productRows: [],
+      draft: {
+        nameOther: "",
+        showList: false,
+        bagKg: String(bagKg),
+        tonKg: "1000",
+        pricePerKg: "",
+      },
+      errors: {},
+    });
+  };
+
+  const productNameOptions = Array.from(
+    new Set((products || []).map((p) => String(p.name || "").trim()).filter(Boolean))
+  ).sort();
+  const existingBrandProductNames = new Set(
+    (products || [])
+      .filter(
+        (p) =>
+          selectedBatch?.sourceCompanyName &&
+          normalizeText(p.brand) === normalizeText(selectedBatch.sourceCompanyName)
+      )
+      .map((p) => normalizeText(p.name))
+  );
+
+  const handleDraftChange = (field, rawValue) => {
+    setNewProductModal((prev) => {
+      const draft = { ...(prev.draft || {}) };
+      if (field === "nameOther") {
+        draft.nameOther = sanitizeBrandText(rawValue, 80);
+      } else if (field === "toggleProductList") {
+        draft.showList = !draft.showList;
+      } else if (field === "bagKg" || field === "tonKg") {
+        draft[field] = sanitizeIntegerText(rawValue, 5);
+      } else {
+        draft[field] = sanitizeIntegerText(rawValue, 8);
+      }
+      return { ...prev, draft, errors: { ...(prev.errors || {}), draft: {}, rowsGeneral: "" } };
+    });
+  };
+
+  const addDraftProductRow = () => {
+    const name = String(newProductModal.draft?.nameOther || "").trim();
+    const row = {
+      name,
+      bagKg: String(newProductModal.draft?.bagKg || "").trim(),
+      tonKg: String(newProductModal.draft?.tonKg || "").trim(),
+      pricePerKg: String(newProductModal.draft?.pricePerKg || "").trim(),
+    };
+    const rowError = validateBrandRow(row);
+    if (Object.keys(rowError).length > 0) {
+      setNewProductModal((prev) => ({
+        ...prev,
+        errors: { ...(prev.errors || {}), draft: rowError },
+      }));
+      return;
+    }
+    const brandName = String(selectedBatch?.sourceCompanyName || "").trim();
+    const existsInBrand = (products || []).some(
+      (p) =>
+        normalizeText(p.brand) === normalizeText(brandName) &&
+        normalizeText(p.name) === normalizeText(name)
+    );
+    if (existsInBrand) {
+      setNewProductModal((prev) => ({
+        ...prev,
+        errors: { ...(prev.errors || {}), draft: { name: "Product already exists." } },
+      }));
+      return;
+    }
+    const duplicate = (newProductModal.productRows || []).some(
+      (r) => normalizeText(r.name) === normalizeText(name)
+    );
+    if (duplicate) {
+      setNewProductModal((prev) => ({
+        ...prev,
+        errors: { ...(prev.errors || {}), draft: { name: "Duplicate product name." } },
+      }));
+      return;
+    }
+    setNewProductModal((prev) => ({
+      ...prev,
+      productRows: [
+        ...(prev.productRows || []),
+        {
+          ...row,
+          pricePerBag: String(
+            Math.round(Number(row.pricePerKg || 0) * Number(row.bagKg || 0))
+          ),
+          pricePerTon: String(
+            Math.round(Number(row.pricePerKg || 0) * Number(row.tonKg || 0))
+          ),
+        },
+      ],
+      draft: {
+        nameOther: "",
+        showList: false,
+        bagKg: prev.draft?.bagKg || "65",
+        tonKg: prev.draft?.tonKg || "1000",
+        pricePerKg: "",
+      },
+      errors: { ...(prev.errors || {}), draft: {}, rowsGeneral: "" },
+    }));
+  };
+
+  const saveNewProduct = async () => {
+    if (!selectedBatch?.sourceCompanyName) {
+      setNewProductModal((p) => ({ ...p, error: "Select a source brand first." }));
+      return;
+    }
+    const rows = Array.isArray(newProductModal.productRows)
+      ? newProductModal.productRows
+      : [];
+    const rowErrors = rows.map((row) => validateBrandRow(row));
+    const hasRowErrors = rowErrors.some((e) => Object.keys(e).length > 0);
+    const rowsGeneral = rows.length === 0 ? "Add at least one product." : "";
+    if (hasRowErrors || rowsGeneral) {
+      setNewProductModal((prev) => ({
+        ...prev,
+        errors: { ...(prev.errors || {}), rows: rowErrors, rowsGeneral },
+      }));
+      return;
+    }
+
+    setNewProductModal((p) => ({ ...p, saving: true, error: "" }));
+    try {
+      let firstNewId = "";
+      for (const row of rows) {
+        const pricePerKg = Number(row.pricePerKg || 0);
+        const bagKg = Math.max(1, Number(row.bagKg || 65));
+        const tonKg = Math.max(1, Number(row.tonKg || 1000));
+        const payload = {
+          name: row.name,
+          brand: selectedBatch.sourceCompanyName,
+          baseUnit: "KG",
+          allowableSaleUnits: ["Bag", "Ton", "KG"],
+          conversionFactors: { KG: 1, Bag: bagKg, Ton: tonKg },
+          pricePerKg: Math.round(pricePerKg),
+          pricePerBag: Math.round(pricePerKg * bagKg),
+          pricePerTon: Math.round(pricePerKg * tonKg),
+        };
+        const res = await api.post("/product-types", payload);
+        if (!firstNewId) firstNewId = res.data?.data?._id || "";
+      }
+      await loadMeta();
+      if (firstNewId) {
+        if (editingOutputId) {
+          setEditOutputForm((f) => ({ ...f, productTypeId: firstNewId }));
+        } else {
+          setOutputForm((f) => ({ ...f, productTypeId: firstNewId }));
+        }
+      }
+      setNewProductModal({
+        open: false,
+        saving: false,
+        error: "",
+        productRows: [],
+        draft: {
+          nameOther: "",
+          showList: false,
+          bagKg: String(settings.defaultBagWeightKg || 65),
+          tonKg: "1000",
+          pricePerKg: "",
+        },
+        errors: {},
+      });
+    } catch (err) {
+      setNewProductModal((p) => ({
+        ...p,
+        saving: false,
+        error: err?.response?.data?.message || "Failed to add product.",
+      }));
+    }
+  };
 
   async function handleSaveBatchInfo() {
     if (!selectedBatchId || !selectedBatch) return;
@@ -462,7 +758,6 @@ export default function Production() {
         await loadSummary();
         await loadPaddyStock();
         setEditingBatchInfo(false);
-        toast.success("Batch updated", { position: "bottom-center", duration: 2500 });
       }
     } catch {
       setErrorDialog({ open: true, message: "Failed to update batch." });
@@ -476,8 +771,8 @@ export default function Production() {
     if (!outputForm.productTypeId) err.outputProduct = "Select product.";
     if (!outputForm.numBags) err.outputBags = "Enter bags.";
     if (!outputForm.perBagWeightKg) err.outputPerBag = "Select product to fetch bag weight.";
-    if (!outputForm.completeNow && !outputForm.plannedCompleteAt) {
-      err.outputSchedule = "Set completion time or click Complete Now.";
+    if (!outputForm.plannedCompleteAt) {
+      err.outputSchedule = "Pick completion time.";
     }
     const currentOutputsTotal = (selectedBatch.outputs || []).reduce(
       (sum, o) => sum + (o.netWeightKg || 0),
@@ -488,12 +783,15 @@ export default function Production() {
       (Number(outputForm.perBagWeightKg) || 0);
     const newTotal = currentOutputsTotal + newNet;
     if (newTotal > (selectedBatch.paddyWeightKg || 0)) {
-      const excessKg = newTotal - (selectedBatch.paddyWeightKg || 0);
+      const remainingKg = Math.max(
+        0,
+        (selectedBatch.paddyWeightKg || 0) - currentOutputsTotal
+      );
       const perBag = Number(outputForm.perBagWeightKg) || 0;
-      const excessBags = perBag ? Math.ceil(excessKg / perBag) : 0;
+      const maxBags = perBag ? Math.floor(remainingKg / perBag) : 0;
       err.outputTotal = perBag
-        ? `Exceeds by approx ${excessBags} bags (${Math.round(excessKg)} kg).`
-        : `Exceeds by ${Math.round(excessKg)} kg.`;
+        ? `Maximum: ${maxBags} bags (${Math.round(remainingKg)} kg).`
+        : `Maximum: ${Math.round(remainingKg)} kg.`;
     }
     if (Object.keys(err).length) {
       setFieldErrors((e) => ({ ...e, ...err }));
@@ -516,9 +814,9 @@ export default function Production() {
       perBagWeightKg: Number(outputForm.perBagWeightKg),
       durationMinutes: 0,
     };
-    if (!outputForm.completeNow && outputForm.plannedCompleteAt) {
-      const d = new Date(outputForm.plannedCompleteAt);
-      if (!Number.isNaN(d.getTime())) payload.plannedCompleteAt = d.toISOString();
+    if (outputForm.plannedCompleteAt) {
+      const d = buildPlannedCompleteAt(outputForm.plannedCompleteAt);
+      if (d) payload.plannedCompleteAt = d.toISOString();
     }
     if (selectedBatch.status === "COMPLETED" && completedBatchUnlocked) {
       payload.adminPin = lastEnteredPin || settings.adminPin || "0000";
@@ -533,7 +831,6 @@ export default function Production() {
       if (!res.data?.success) {
         setErrorDialog({ open: true, message: res.data?.message || "Failed to add output." });
       } else {
-        toast.success("Output added", { position: "bottom-center", duration: 2500 });
         setSelectedBatch(res.data.data);
         setOutputForm({
           productTypeId: "",
@@ -543,7 +840,6 @@ export default function Production() {
           durationMinutes: "0",
           durationUnit: "min",
           plannedCompleteAt: "",
-          completeNow: false,
         });
         // keep output form visible
         await loadSummary();
@@ -593,7 +889,6 @@ export default function Production() {
       if (res.data?.success) {
         setSelectedBatch(res.data.data);
         setEditingOutputId(null);
-        toast.success("Output updated", { position: "bottom-center", duration: 2500 });
       } else {
         setFieldErrors((e) => ({ ...e, editOutputTotal: res.data?.message || "Failed to update output." }));
       }
@@ -609,8 +904,39 @@ export default function Production() {
       setFieldErrors((e) => ({ ...e, completeBatch: "Add at least one output before completing." }));
       return;
     }
+    const allDone = (selectedBatch.outputs || []).every(
+      (o) => (o.status || "COMPLETED") === "COMPLETED",
+    );
+    if (!allDone) {
+      setFieldErrors((e) => ({ ...e, completeBatch: "Wait for all scheduled outputs to complete." }));
+      return;
+    }
     setFieldErrors((e) => ({ ...e, completeBatch: "" }));
     setCompleteConfirmOpen(true);
+  }
+
+  async function handleMarkBatchCompleted() {
+    setMarkCompleteConfirmOpen(false);
+    if (!selectedBatchId || !selectedBatch) return;
+    setWorking(true);
+    try {
+      const res = await api.post(`/production/batches/${selectedBatchId}/complete`);
+      if (!res.data?.success) {
+        setErrorDialog({ open: true, message: res.data?.message || "Failed to complete batch." });
+        setWorking(false);
+        return;
+      }
+      setSelectedBatch(res.data.data);
+      await loadSummary();
+      await loadBatches();
+      await loadPaddyStock();
+    } catch (e) {
+      setErrorDialog({
+        open: true,
+        message: e?.response?.data?.message || "Failed to complete batch.",
+      });
+    }
+    setWorking(false);
   }
 
   async function handleCompleteBatch() {
@@ -618,19 +944,46 @@ export default function Production() {
     if (!selectedBatchId || !selectedBatch) return;
     setWorking(true);
     try {
-      const res = await api.post(
-        `/production/batches/${selectedBatchId}/complete`
-      );
-      if (!res.data?.success) {
-        setErrorDialog({ open: true, message: res.data?.message || "Failed to complete batch." });
-      } else {
-        toast.success("Batch completed; finished stock updated", { position: "bottom-center", duration: 2500 });
-        setSelectedBatch(res.data.data);
-        await loadSummary();
-        await loadBatches();
+      let batchUpdated = selectedBatch;
+      if (selectedBatch.status !== "COMPLETED") {
+        const res = await api.post(`/production/batches/${selectedBatchId}/complete`);
+        if (!res.data?.success) {
+          setErrorDialog({ open: true, message: res.data?.message || "Failed to complete batch." });
+          setWorking(false);
+          return;
+        }
+        batchUpdated = res.data.data;
       }
+      try {
+        const remRes = await api.post(`/production/batches/${selectedBatchId}/remaining-paddy/decision`, {
+          decision: "RETURN_TO_STOCK",
+        });
+        if (remRes?.data?.success === false) {
+          setErrorDialog({
+            open: true,
+            message: remRes.data?.message || "Failed to return remaining paddy.",
+          });
+        }
+      } catch (e) {
+        setErrorDialog({
+          open: true,
+          message: e?.response?.data?.message || "Failed to return remaining paddy.",
+        });
+      }
+      setReturnedRemainingBatches((prev) => {
+        const next = new Set(prev);
+        next.add(selectedBatchId);
+        return next;
+      });
+      setSelectedBatch((prev) =>
+        prev ? { ...batchUpdated, batchDone: true } : { ...batchUpdated, batchDone: true }
+      );
+      await loadSummary();
+      await loadBatches();
+      await loadPaddyStock();
+      setActiveTab("DONE");
     } catch {
-      setErrorDialog({ open: true, message: "Failed to complete batch." });
+      setErrorDialog({ open: true, message: "Failed to finalize batch." });
     }
     setWorking(false);
   }
@@ -653,7 +1006,6 @@ export default function Production() {
       if (!res.data?.success) {
         setErrorDialog({ open: true, message: res.data?.message || "Failed to delete batch." });
       } else {
-        toast.success(res.data.message || "Batch deleted", { position: "bottom-center", duration: 2500 });
         setSelectedBatchId(null);
         setSelectedBatch(null);
         setDeleteConfirmOpen(false);
@@ -685,7 +1037,6 @@ export default function Production() {
         setZeroPaddyConfirm(false);
         setZeroPaddyPin("");
         await loadPaddyStock();
-        toast.success("Paddy stock set to zero.", { position: "bottom-center", duration: 2500 });
       } else {
         setErrorDialog({ open: true, message: res.data?.message || "Failed to zero paddy stock." });
       }
@@ -700,7 +1051,20 @@ export default function Production() {
   }
 
   const currentBatchList =
-    activeTab === "IN_PROCESS" ? inProcessBatches : completedBatches;
+    activeTab === "IN_PROCESS"
+      ? inProcessBatches
+      : activeTab === "COMPLETED"
+      ? completedBatches
+      : doneBatches;
+
+  useEffect(() => {
+    const list = currentBatchList;
+    if (!list || list.length === 0) return;
+    const stillVisible = selectedBatchId && list.some((b) => b._id === selectedBatchId);
+    if (!stillVisible) {
+      selectBatch(list[0]._id, activeTab);
+    }
+  }, [activeTab, currentBatchList, selectedBatchId]);
 
   const paddyExceedNew =
     Number(batchForm.paddyWeightKg) > selectedSourcePaddyKg && batchForm.paddyWeightKg !== "";
@@ -716,18 +1080,18 @@ export default function Production() {
   const paddyExceedEdit =
     editBatchForm.paddyWeightKg !== "" && Number(editBatchForm.paddyWeightKg) > maxEditablePaddyKg;
 
-  const remainingPaddy =
-    selectedBatch && selectedBatch.paddyWeightKg != null
-      ? Math.max(
-          0,
-          (selectedBatch.paddyWeightKg || 0) -
-            (selectedBatch.totalOutputWeightKg || 0)
-        )
-      : 0;
+  const remainingPaddy = (() => {
+    if (!selectedBatch || selectedBatch.paddyWeightKg == null) return 0;
+    if (selectedBatch.batchDone || returnedRemainingBatches.has(selectedBatch._id)) return 0;
+    const plannedOut = (selectedBatch.outputs || []).reduce(
+      (sum, o) => sum + (Number(o.netWeightKg) || 0),
+      0,
+    );
+    return Math.max(0, (selectedBatch.paddyWeightKg || 0) - plannedOut);
+  })();
 
   return (
     <div className="space-y-6">
-      <Toaster position="bottom-center" toastOptions={{ duration: 2500 }} />
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -831,7 +1195,7 @@ export default function Production() {
                     : "text-gray-500"
                 }`}
               >
-                In-Process
+                In-Process ({inProcessBatches.length})
               </button>
               <button
                 onClick={() => setActiveTab("COMPLETED")}
@@ -841,12 +1205,22 @@ export default function Production() {
                     : "text-gray-500"
                 }`}
               >
-                Completed
+                Completed ({completedBatches.length})
+              </button>
+              <button
+                onClick={() => setActiveTab("DONE")}
+                className={`pb-1 ${
+                  activeTab === "DONE"
+                    ? "text-emerald-700 font-semibold border-b-2 border-emerald-700"
+                    : "text-gray-500"
+                }`}
+              >
+                Batch Done ({doneBatches.length})
               </button>
             </div>
           </div>
 
-          {/* Quick create: Date, Paddy (kg), New Batch — Enter to create */}
+          {/* Quick create: Date, Paddy (kg), New Batch â€” Enter to create */}
           <div className="p-3 border-b bg-gray-50 grid grid-cols-4 gap-2 text-xs items-start">
             <div>
               <select
@@ -863,13 +1237,9 @@ export default function Production() {
                       {batchForm.sourceCompanyName}
                     </option>
                   )}
-                {paddyByCompany.map((r, idx) => (
-                  <option
-                    key={`${r.companyName}-${idx}`}
-                    value={r.companyName}
-                    disabled={Number(r.balanceKg || 0) <= 0}
-                  >
-                    {r.companyName} ({Math.round(Number(r.balanceKg || 0))} kg)
+                {paddyBrandOptions.map((name, idx) => (
+                  <option key={`${name}-${idx}`} value={name}>
+                    {name}
                   </option>
                 ))}
               </select>
@@ -946,7 +1316,7 @@ export default function Production() {
                         ? "bg-white"
                         : "bg-gray-50"
                     }`}
-                    onClick={() => selectBatch(b._id, b.status)}
+                    onClick={() => selectBatch(b._id, activeTab)}
                   >
                     <td className="p-2">{b.batchNo}</td>
                     <td className="p-2">{b.sourceCompanyName || "-"}</td>
@@ -961,18 +1331,6 @@ export default function Production() {
                     </td>
                     <td className="p-2 text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            selectBatch(b._id, b.status);
-                            setEditingBatchInfo(true);
-                          }}
-                          className="p-1.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                          title="Edit"
-                        >
-                          <Edit2 size={14} />
-                        </button>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -1001,6 +1359,62 @@ export default function Production() {
                         >
                           <Trash2 size={14} />
                         </button>
+                        {b.status === "COMPLETED" && !b.batchDone && (() => {
+                          const remainingKg = Math.max(
+                            0,
+                            Math.round(Number(b.totalRawWeightKg || 0) - Number(b.totalOutputWeightKg || 0))
+                          );
+                          const disabled = remainingKg <= 65;
+                          return (
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (disabled) return;
+                              setSelectedBatchId(b._id);
+                              setSelectedBatch(b);
+                              setPinDialog({
+                                open: true,
+                                pin: "",
+                                purpose: "Reopen completed batch (requires PIN)",
+                                pinError: "",
+                                onSuccess: async () => {
+                                  try {
+                                    const res = await api.post(`/production/batches/${b._id}/reopen`);
+                                    if (!res.data?.success) {
+                                      setErrorDialog({ open: true, message: res.data?.message || "Failed to reopen batch." });
+                                      return;
+                                    }
+                                    setSelectedBatch(res.data.data);
+                                    await loadSummary();
+                                    await loadBatches();
+                                    await loadPaddyStock();
+                                    setActiveTab("IN_PROCESS");
+                                  } catch (err) {
+                                    setErrorDialog({
+                                      open: true,
+                                      message: err?.response?.data?.message || "Failed to reopen batch.",
+                                    });
+                                  }
+                                },
+                              });
+                            }}
+                            className={`p-1.5 rounded border ${
+                              disabled
+                                ? "border-gray-200 text-gray-300 bg-gray-50 cursor-not-allowed"
+                                : "border-amber-200 text-amber-700 hover:bg-amber-50"
+                            }`}
+                            title={
+                              disabled
+                                ? "Remaining paddy must be more than 65 kg"
+                                : "Reopen (edit)"
+                            }
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          );
+                        })()}
                         <button
                           type="button"
                           onClick={async (e) => {
@@ -1044,7 +1458,10 @@ export default function Production() {
         {/* Right: Selected batch detail placeholder (completed batch + Add Output) */}
         <div ref={detailSectionRef} className="min-h-[400px] flex flex-col order-2 lg:order-2">
           {selectedBatch ? (
-        <div className="bg-white rounded-xl shadow border p-4 space-y-4 flex-1 overflow-y-auto">
+        <div className="bg-white rounded-xl shadow border p-4 space-y-4 flex-1 overflow-y-auto relative">
+          <div className="absolute top-3 right-3 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+            Remaining: {Math.round(remainingPaddy)} kg
+          </div>
           <div className="flex justify-between items-start gap-4">
             <div>
               <div className="text-sm text-gray-500">Selected Batch</div>
@@ -1053,6 +1470,8 @@ export default function Production() {
                 Status:{" "}
                 {selectedBatch.status === "IN_PROCESS" ? (
                   <span className="text-yellow-600 font-semibold">In Process</span>
+                ) : selectedBatch.batchDone ? (
+                  <span className="text-gray-600 font-semibold">Batch Done</span>
                 ) : (
                   <span className="text-emerald-700 font-semibold">Completed</span>
                 )}
@@ -1105,12 +1524,6 @@ export default function Production() {
                 {fieldErrors.editPaddyWeightKg && (
                   <p className="text-[10px] text-red-600 mt-0.5">{fieldErrors.editPaddyWeightKg}</p>
                 )}
-              </div>
-              <div className="col-span-2">
-                <label className="block text-[11px] text-gray-500">Remaining Paddy (kg)</label>
-                <div className="border rounded px-2 py-1 w-full bg-red-50 text-red-700 font-semibold">
-                  {Math.round(remainingPaddy)} kg
-                </div>
               </div>
               <div className="col-span-5 flex flex-wrap gap-2 items-center">
                 {selectedBatch.status === "COMPLETED" && !completedBatchUnlocked && (
@@ -1204,6 +1617,10 @@ export default function Production() {
                               value={editOutputForm.productTypeId || o.productTypeId}
                               onChange={(e) => {
                                 const nextId = e.target.value;
+                                if (nextId === OTHER_OPTION) {
+                                  openNewProductModal();
+                                  return;
+                                }
                                 const product = products.find((p) => p._id === nextId);
                                 setEditOutputForm((f) => ({
                                   ...f,
@@ -1235,6 +1652,7 @@ export default function Production() {
                                 .map((p) => (
                                 <option key={p._id} value={p._id}>{p.name}</option>
                               ))}
+                              <option value={OTHER_OPTION}>Other (Add New)</option>
                             </select>
                           </td>
                           <td className="p-2">
@@ -1342,33 +1760,7 @@ export default function Production() {
                           </td>
                           <td className="p-2 text-right">{o.numBags}</td>
                           <td className="p-2 text-right">{Math.round(Number(o.netWeightKg) || 0)}</td>
-                          {(selectedBatch.status === "IN_PROCESS" || selectedBatch.status === "COMPLETED") && (
-                            <td className="p-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  // keep output form visible
-                                  setEditingOutputId(o._id);
-                                  const product = products.find((p) => p._id === o.productTypeId);
-                                  setEditOutputForm({
-                                    numBags: String(o.numBags || ""),
-                                    perBagWeightKg: product?.conversionFactors?.Bag
-                                      ? String(Math.floor(Number(product.conversionFactors.Bag)) || "")
-                                      : (o.numBags && o.netWeightKg
-                                        ? String(Math.floor(Number(o.netWeightKg) / o.numBags))
-                                        : ""),
-                                    durationMinutes: String(o.durationMinutes || "0"),
-                                    productTypeId: o.productTypeId || "",
-                                  });
-                                  setFieldErrors((e) => ({ ...e, editOutputTotal: "" }));
-                                }}
-                                className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                                disabled={selectedBatch.status === "COMPLETED" && !completedBatchUnlocked}
-                              >
-                                Edit
-                              </button>
-                            </td>
-                          )}
+                          {selectedBatch.status === "COMPLETED" && <td className="p-2"></td>}
                         </>
                       )}
                     </tr>
@@ -1406,32 +1798,32 @@ export default function Production() {
                             className="border rounded px-2 py-1 col-span-3 bg-gray-100 cursor-not-allowed"
                             placeholder="Source company"
                           />
-                          <div className="col-span-3 flex items-center justify-between rounded border border-emerald-200 bg-emerald-50 px-2 py-1">
-                            <div className="text-[11px] text-emerald-900 font-medium">Remaining Paddy</div>
-                            <div className="text-[11px] text-emerald-900 font-semibold">
-                              {Math.round(remainingPaddy)} kg
-                            </div>
-                          </div>
-                          <select
-                            value={outputForm.productTypeId}
-                            onChange={(e) => {
-                              setOutputForm((f) => ({ ...f, productTypeId: e.target.value }));
-                              setFieldErrors((e) => ({ ...e, outputProduct: "" }));
-                            }}
-                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
-                            className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputProduct ? "border-red-500 bg-red-50" : ""}`}
-                          >
-                            <option value="">Finished Product</option>
-                            {products
-                              .filter((p) =>
-                                selectedBatch.sourceCompanyName
-                                  ? p.brand === selectedBatch.sourceCompanyName
-                                  : true
-                              )
-                              .map((p) => (
-                                <option key={p._id} value={p._id}>{p.name}</option>
-                              ))}
-                          </select>
+                            <select
+                              value={outputForm.productTypeId}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === OTHER_OPTION) {
+                                  openNewProductModal();
+                                  return;
+                                }
+                                setOutputForm((f) => ({ ...f, productTypeId: v }));
+                                setFieldErrors((e) => ({ ...e, outputProduct: "" }));
+                              }}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddOutput(); } }}
+                              className={`border rounded px-2 py-1 col-span-3 ${fieldErrors.outputProduct ? "border-red-500 bg-red-50" : ""}`}
+                            >
+                              <option value="">Finished Product</option>
+                              {products
+                                .filter((p) =>
+                                  selectedBatch.sourceCompanyName
+                                    ? p.brand === selectedBatch.sourceCompanyName
+                                    : true
+                                )
+                                .map((p) => (
+                                  <option key={p._id} value={p._id}>{p.name}</option>
+                                ))}
+                              <option value={OTHER_OPTION}>Other (Add New)</option>
+                            </select>
                           {fieldErrors.outputProduct && <p className="text-[10px] text-red-600 col-span-3">{fieldErrors.outputProduct}</p>}
                           <input
                             type="number"
@@ -1462,45 +1854,43 @@ export default function Production() {
                           <div className="col-span-3">
                             <label className="block text-[11px] text-gray-500 mb-1">Schedule</label>
                             <div className="flex flex-wrap gap-2 items-center">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOutputForm((f) => ({
-                                    ...f,
-                                    completeNow: true,
-                                    plannedCompleteAt: "",
-                                  }));
-                                  setFieldErrors((e) => ({ ...e, outputSchedule: "" }));
-                                }}
-                                className={`px-2.5 py-1 rounded text-xs border ${
-                                  outputForm.completeNow
-                                    ? "bg-emerald-600 text-white border-emerald-600"
-                                    : "border-gray-300 text-gray-700 hover:bg-gray-50"
-                                }`}
-                                title="Mark this output as completed immediately (stock updates now)."
-                              >
-                                Complete Now
-                              </button>
-                              <input
-                                type="datetime-local"
-                                value={outputForm.plannedCompleteAt}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  setOutputForm((f) => ({ ...f, plannedCompleteAt: v, completeNow: false }));
-                                  setFieldErrors((e) => ({ ...e, outputSchedule: "" }));
-                                }}
-                                disabled={outputForm.completeNow}
-                                className={`border rounded px-2 py-1 ${
-                                  outputForm.completeNow ? "bg-gray-100 cursor-not-allowed" : ""
-                                }`}
-                                title="Exact time when this output should be completed and added to stock."
-                              />
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const base = outputForm.plannedCompleteAt || "08:00";
+                                    const [hhRaw, mmRaw] = base.split(":");
+                                    let hh = Number(hhRaw || 8);
+                                    const mm = String(mmRaw || "00").padStart(2, "0");
+                                    let ampm = "AM";
+                                    if (hh === 0) {
+                                      hh = 12;
+                                      ampm = "AM";
+                                    } else if (hh === 12) {
+                                      ampm = "PM";
+                                    } else if (hh > 12) {
+                                      hh -= 12;
+                                      ampm = "PM";
+                                    }
+                                    setTimePicker({
+                                      hour: String(hh).padStart(2, "0"),
+                                      minute: mm,
+                                      ampm,
+                                    });
+                                    setTimePickerOpen(true);
+                                  }}
+                                  className="flex items-center gap-2 border rounded px-2 py-1 text-xs hover:bg-gray-50"
+                                  title="Pick completion time"
+                                >
+                                  <Clock className="w-4 h-4 text-gray-400" />
+                                  {outputForm.plannedCompleteAt || "Pick time"}
+                                </button>
+                              </div>
                               <div className="text-[11px] text-gray-600">
                                 {(() => {
-                                  if (outputForm.completeNow) return "Completes now";
                                   if (!outputForm.plannedCompleteAt) return "Pick time (required)";
-                                  const target = new Date(outputForm.plannedCompleteAt);
-                                  if (Number.isNaN(target.getTime())) return "Invalid time";
+                                  const target = buildPlannedCompleteAt(outputForm.plannedCompleteAt);
+                                  if (!target) return "Invalid time";
                                   const diffMin = Math.max(0, Math.round((target.getTime() - nowTick) / (60 * 1000)));
                                   return `${diffMin} min`;
                                 })()}
@@ -1525,12 +1915,50 @@ export default function Production() {
             )}
           </div>
 
-          {selectedBatch.status === "IN_PROCESS" && (
-            <div className="flex justify-end pt-2 border-t">
-              <p className="text-xs text-gray-500 self-center">
-                Batch will auto-complete when all scheduled outputs are completed.
+          {selectedBatch.status === "COMPLETED" && (
+            <div className="flex items-center justify-between pt-2 border-t">
+              <p className="text-xs text-gray-500">
+                Batch completed. Return any remaining paddy to stock.
               </p>
+              <button
+                type="button"
+                onClick={openCompleteConfirm}
+                disabled={
+                  !(selectedBatch.outputs || []).length ||
+                  selectedBatch.batchDone ||
+                  returnedRemainingBatches.has(selectedBatch._id) ||
+                  (selectedBatch.outputs || []).some(
+                    (o) => (o.status || "COMPLETED") !== "COMPLETED",
+                  )
+                }
+                className="px-3 py-1.5 rounded text-xs bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Batch Done
+              </button>
             </div>
+          )}
+          {selectedBatch.status === "IN_PROCESS" && (
+            <div className="flex items-center justify-between pt-2 border-t">
+              <p className="text-xs text-gray-500">
+                When all scheduled outputs are completed, you can finish this batch.
+              </p>
+              <button
+                type="button"
+                onClick={() => setMarkCompleteConfirmOpen(true)}
+                disabled={
+                  !(selectedBatch.outputs || []).length ||
+                  (selectedBatch.outputs || []).some(
+                    (o) => (o.status || "COMPLETED") !== "COMPLETED",
+                  )
+                }
+                className="px-3 py-1.5 rounded text-xs bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Mark Batch Completed
+              </button>
+            </div>
+          )}
+          {fieldErrors.completeBatch && (
+            <div className="pt-1 text-[11px] text-red-600">{fieldErrors.completeBatch}</div>
           )}
         </div>
           ) : (
@@ -1541,13 +1969,13 @@ export default function Production() {
         </div>
       </div>
 
-      {/* Mark batch complete confirmation (popup instead of window.confirm) */}
+      {/* Batch done confirmation (popup instead of window.confirm) */}
       {completeConfirmOpen && selectedBatch && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Mark Batch Completed</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Batch Done</h3>
             <p className="text-sm text-gray-600 mb-4">
-              After completion this batch cannot be edited without PIN and stock will be updated. Are you sure?
+              This will finalize the batch and return any remaining paddy back to stock. Are you sure?
             </p>
             <div className="flex gap-2 justify-end">
               <button
@@ -1558,6 +1986,36 @@ export default function Production() {
               </button>
               <button
                 onClick={handleCompleteBatch}
+                disabled={working}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 text-sm"
+              >
+                {working ? "Completing..." : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {markCompleteConfirmOpen && selectedBatch && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Complete Batch</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Are you sure you don’t want to make more product? Remaining paddy:{" "}
+              <span className="font-semibold text-red-600">
+                {Math.round(remainingPaddy)} kg
+              </span>
+              .
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setMarkCompleteConfirmOpen(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleMarkBatchCompleted}
                 disabled={working}
                 className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 text-sm"
               >
@@ -1689,6 +2147,234 @@ export default function Production() {
         </div>
       )}
 
+      {/* Add new finished product (from production output) */}
+      <AddOptionModal
+        open={newProductModal.open}
+        title="Add Finished Product"
+        subtitle={selectedBatch?.sourceCompanyName ? `Brand/Trademark: ${selectedBatch.sourceCompanyName}` : "Select a batch brand first"}
+        submitLabel="Add"
+        loading={newProductModal.saving}
+        maxWidthClass="max-w-[20cm]"
+        onClose={() => setNewProductModal((p) => ({ ...p, open: false, error: "" }))}
+        onSubmit={saveNewProduct}
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-12 md:col-span-6">
+                <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+                <input
+                  type="text"
+                  readOnly
+                  value={selectedBatch?.sourceCompanyName || ""}
+                  className="w-full border rounded px-3 py-2 text-sm bg-gray-100 cursor-not-allowed"
+                  placeholder="Select a batch first"
+                />
+              </div>
+              <div className="col-span-12 md:col-span-6">
+                <label className="block text-xs text-gray-600 mb-1">Product Name *</label>
+                <div className="flex gap-2 relative">
+                  <input
+                    type="text"
+                    className={`w-full border rounded px-3 py-2 text-sm ${newProductModal.errors?.draft?.name ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                    value={newProductModal.draft?.nameOther || ""}
+                    onChange={(e) => handleDraftChange("nameOther", e.target.value)}
+                    onBlur={() =>
+                      setNewProductModal((prev) => ({
+                        ...prev,
+                        draft: {
+                          ...(prev.draft || {}),
+                          nameOther: toTitleCase(prev.draft?.nameOther || ""),
+                        },
+                      }))
+                    }
+                    placeholder="Enter product name"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleDraftChange("toggleProductList")}
+                    className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  >
+                    List
+                  </button>
+                  {newProductModal.draft?.showList && (
+                    <div className="absolute left-0 right-0 top-full mt-1 border rounded bg-white max-h-40 overflow-y-auto shadow z-10">
+                      {productNameOptions.length === 0 ? (
+                        <div className="px-2 py-2 text-xs text-gray-500">No products</div>
+                      ) : (
+                        <>
+                          {productNameOptions.filter((name) => !existingBrandProductNames.has(normalizeText(name))).length > 0 && (
+                            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400">Available</div>
+                          )}
+                          {productNameOptions
+                            .filter((name) => !existingBrandProductNames.has(normalizeText(name)))
+                            .map((name, idx) => (
+                              <button
+                                key={`prod-name-available-${name}-${idx}`}
+                                type="button"
+                                onClick={() => {
+                                  handleDraftChange("nameOther", name);
+                                  handleDraftChange("toggleProductList");
+                                }}
+                                className="w-full text-left px-2 py-1 text-sm hover:bg-gray-50"
+                              >
+                                {name}
+                              </button>
+                            ))}
+                          {productNameOptions.filter((name) => existingBrandProductNames.has(normalizeText(name))).length > 0 && (
+                            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400 border-t">
+                              Already Added
+                            </div>
+                          )}
+                          {productNameOptions
+                            .filter((name) => existingBrandProductNames.has(normalizeText(name)))
+                            .map((name, idx) => (
+                              <button
+                                key={`prod-name-added-${name}-${idx}`}
+                                type="button"
+                                disabled
+                                className="w-full text-left px-2 py-1 text-sm text-gray-400 cursor-not-allowed bg-gray-50"
+                                title="Already added for this brand"
+                              >
+                                {name}
+                              </button>
+                            ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {newProductModal.errors?.draft?.name ? (
+                  <p className="mt-1 text-xs text-red-500">{newProductModal.errors.draft.name}</p>
+                ) : null}
+              </div>
+              <div className="col-span-12 md:col-span-3">
+                <label className="block text-xs text-gray-600 mb-1">Base Unit</label>
+                <input
+                  type="text"
+                  value="KG"
+                  readOnly
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-gray-100 text-gray-600"
+                />
+              </div>
+
+              <div className="col-span-12 md:col-span-9">
+                <label className="block text-xs text-gray-600 mb-1">Processing Pricing per KG (PKR) *</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className={`w-full border rounded px-3 py-2 text-sm ${newProductModal.errors?.draft?.pricePerKg ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                  value={newProductModal.draft?.pricePerKg || ""}
+                  onChange={(e) =>
+                    setNewProductModal((prev) => ({
+                      ...prev,
+                      draft: {
+                        ...(prev.draft || {}),
+                        pricePerKg: sanitizeIntegerText(e.target.value, 8),
+                      },
+                      errors: { ...(prev.errors || {}), draft: {} },
+                    }))
+                  }
+                  placeholder="Required"
+                />
+              </div>
+
+              <div className="col-span-12">
+                <label className="block text-xs text-gray-600 mb-1">
+                  Conversion Factor (1 unit = ? KG) - editable
+                </label>
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span>1 Bag =</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className={`w-24 border rounded px-2 py-1 ${newProductModal.errors?.draft?.bagKg ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                    value={newProductModal.draft?.bagKg || ""}
+                    onChange={(e) => handleDraftChange("bagKg", e.target.value)}
+                  />
+                  <span>KG</span>
+                  <span>1 Ton =</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className={`w-24 border rounded px-2 py-1 ${newProductModal.errors?.draft?.tonKg ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                    value={newProductModal.draft?.tonKg || ""}
+                    onChange={(e) => handleDraftChange("tonKg", e.target.value)}
+                  />
+                  <span>KG</span>
+                  <button
+                    type="button"
+                    onClick={addDraftProductRow}
+                    className="ml-auto px-3 py-2 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    + Add Product
+                  </button>
+                </div>
+                {Object.values(newProductModal.errors?.draft || {}).length > 0 ? (
+                  <p className="mt-1 text-xs text-red-500">Please fill all required product fields.</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-600 mb-1">Existing Products</div>
+            <div className="rounded border border-gray-200 p-2 min-h-[44px]">
+              {((products || []).filter((p) =>
+                selectedBatch?.sourceCompanyName
+                  ? normalizeText(p.brand) === normalizeText(selectedBatch.sourceCompanyName)
+                  : true
+              )).length === 0 ? (
+                <div className="text-xs text-gray-400">No products for this brand yet.</div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(products || [])
+                    .filter((p) =>
+                      selectedBatch?.sourceCompanyName
+                        ? normalizeText(p.brand) === normalizeText(selectedBatch.sourceCompanyName)
+                        : true
+                    )
+                    .map((p, idx) => (
+                      <div
+                        key={`existing-prod-${p._id || idx}`}
+                        className="inline-flex items-center px-2 py-1 rounded bg-gray-100 text-gray-700 text-xs"
+                      >
+                        {p.name}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="rounded border border-gray-200 p-2 min-h-[44px]">
+              {(newProductModal.productRows || []).length === 0 ? (
+                <div className="text-xs text-gray-400">No products added yet.</div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {(newProductModal.productRows || []).map((row, idx) => (
+                    <div
+                      key={`prod-pill-${idx}`}
+                      className="inline-flex items-center px-2 py-1 rounded bg-emerald-100 text-emerald-800 text-xs"
+                    >
+                      <span>{row.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {newProductModal.errors?.rowsGeneral ? (
+              <p className="mt-1 text-xs text-red-500">{newProductModal.errors.rowsGeneral}</p>
+            ) : null}
+          </div>
+        </div>
+        <div className="text-[11px] text-gray-500">
+          Prices are stored per KG and auto-calculated for bag/ton.
+        </div>
+        <div className="text-[11px] text-red-600 min-h-[16px]">
+          {newProductModal.error || ""}
+        </div>
+      </AddOptionModal>
+
       {/* Error dialog */}
       {errorDialog.open && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1701,6 +2387,139 @@ export default function Production() {
                 className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-sm"
               >
                 OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom time picker (AM/PM) */}
+      {timePickerOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-xs w-full mx-4 p-5">
+            <div className="text-sm font-semibold text-gray-900 mb-3">Set Completion Time</div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-semibold text-emerald-700">
+                {timePicker.hour}:{timePicker.minute} {timePicker.ampm}
+              </div>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setTimePickerMode("hour")}
+                  className={`px-2 py-1 rounded text-xs border ${
+                    timePickerMode === "hour" ? "bg-emerald-600 text-white border-emerald-600" : "border-gray-300"
+                  }`}
+                >
+                  Hour
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimePickerMode("minute")}
+                  className={`px-2 py-1 rounded text-xs border ${
+                    timePickerMode === "minute" ? "bg-emerald-600 text-white border-emerald-600" : "border-gray-300"
+                  }`}
+                >
+                  Min
+                </button>
+              </div>
+            </div>
+            <div className="flex justify-center">
+              <div
+                ref={timeDialRef}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  setTimePickerDragging(true);
+                  setTimeFromAngle(e.clientX, e.clientY);
+                }}
+                onPointerMove={(e) => {
+                  if (!timePickerDragging) return;
+                  setTimeFromAngle(e.clientX, e.clientY);
+                }}
+                onPointerUp={() => setTimePickerDragging(false)}
+                onPointerLeave={() => setTimePickerDragging(false)}
+                className="relative w-44 h-44 rounded-full border border-emerald-200 bg-emerald-50 select-none"
+              >
+                <div
+                  className="absolute left-1/2 top-1/2 h-16 w-0.5 bg-emerald-700 origin-bottom"
+                  style={{
+                    transform: `translate(-50%, -100%) rotate(${
+                      timePickerMode === "hour"
+                        ? (Number(timePicker.hour) % 12) * 30
+                        : Number(timePicker.minute) * 6
+                    }deg)`,
+                  }}
+                />
+                <div className="absolute left-1/2 top-1/2 w-2 h-2 bg-emerald-700 rounded-full -translate-x-1/2 -translate-y-1/2" />
+                {(timePickerMode === "hour"
+                  ? Array.from({ length: 12 }, (_, i) => i + 1)
+                  : Array.from({ length: 12 }, (_, i) => i * 5)
+                ).map((val) => {
+                  const angle = ((timePickerMode === "hour" ? val : val / 5) * 30 - 90) * (Math.PI / 180);
+                  const r = 72;
+                  const x = 88 + r * Math.cos(angle);
+                  const y = 88 + r * Math.sin(angle);
+                  return (
+                    <div
+                      key={`dial-${val}`}
+                      className="absolute text-[11px] text-gray-700"
+                      style={{ left: x, top: y, transform: "translate(-50%, -50%)" }}
+                      onClick={() =>
+                        timePickerMode === "hour"
+                          ? setTimePicker((p) => ({ ...p, hour: String(val).padStart(2, "0") }))
+                          : setTimePicker((p) => ({ ...p, minute: String(val).padStart(2, "0") }))
+                      }
+                    >
+                      {String(val).padStart(2, "0")}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button
+                type="button"
+                onClick={() => setTimePicker((p) => ({ ...p, ampm: "AM" }))}
+                className={`flex-1 px-2 py-1 rounded text-xs border ${
+                  timePicker.ampm === "AM" ? "bg-emerald-600 text-white border-emerald-600" : "border-gray-300"
+                }`}
+              >
+                AM
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimePicker((p) => ({ ...p, ampm: "PM" }))}
+                className={`flex-1 px-2 py-1 rounded text-xs border ${
+                  timePicker.ampm === "PM" ? "bg-emerald-600 text-white border-emerald-600" : "border-gray-300"
+                }`}
+              >
+                PM
+              </button>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setTimePickerOpen(false)}
+                className="px-3 py-2 rounded border border-gray-300 text-gray-700 text-sm hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  let hh = Number(timePicker.hour || 8);
+                  const mm = String(timePicker.minute || "00").padStart(2, "0");
+                  if (timePicker.ampm === "AM") {
+                    if (hh === 12) hh = 0;
+                  } else if (hh < 12) {
+                    hh += 12;
+                  }
+                  const hhStr = String(hh).padStart(2, "0");
+                  const next = `${hhStr}:${mm}`;
+                  setOutputForm((f) => ({ ...f, plannedCompleteAt: next }));
+                  setFieldErrors((e) => ({ ...e, outputSchedule: "" }));
+                  setTimePickerOpen(false);
+                }}
+                className="px-3 py-2 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+              >
+                Set Time
               </button>
             </div>
           </div>

@@ -113,7 +113,15 @@ const MENU = [
   },
 ];
 
-export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, onLogout }) {
+export default function Sidebar({
+  isOpen,
+  toggleSidebar,
+  userName,
+  userEmail,
+  companyName,
+  companyAddress,
+  onLogout,
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [openMenu, setOpenMenu] = useState(null);
@@ -163,9 +171,11 @@ export default function Sidebar({ isOpen, toggleSidebar, userName, userEmail, on
 
               {isOpen && (
                 <div>
-                  <h1 className="text-lg font-bold">SMJ Rice Mill</h1>
+                  <h1 className="text-lg font-bold">
+                    {companyName || "SMJ Rice Mill"}
+                  </h1>
                   <p className="text-xs text-emerald-200">
-                    Mirza Virkan Road, Sheikhupura
+                    {companyAddress || "Mirza Virkan Road, Sheikhupura"}
                   </p>
                 </div>
               )}

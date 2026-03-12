@@ -82,23 +82,33 @@ export default function SystemSettings() {
     setSettings((s) => ({ ...s, [k]: v }));
   };
 
+  const [generalSaveMsg, setGeneralSaveMsg] = useState("");
   const saveSettings = async (payload) => {
     setLoading(true);
+    setGeneralSaveMsg("");
     try {
       await api.put("/settings", payload);
-      toast.success("Settings saved");
       window.dispatchEvent(new Event("smj-settings-updated"));
+      setGeneralSaveMsg("Saved");
+      return true;
     } catch (err) {
-      toast.error("Error saving settings");
+      setGeneralSaveMsg(err?.response?.data?.message || "Error saving settings");
+      return false;
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveGeneral = async () => {
-    const payload = { ...settings };
-    delete payload.loginPassword;
-    delete payload.adminPin;
+    const payload = {
+      companyName: settings.companyName || "",
+      shortName: settings.shortName || "",
+      address: settings.address || "",
+      phone: settings.phone || "",
+      email: settings.email || "",
+      defaultCurrency: settings.defaultCurrency || "",
+      logoUrl: settings.logoUrl || "",
+    };
     await saveSettings(payload);
   };
 
@@ -416,6 +426,11 @@ export default function SystemSettings() {
                 <Save size={16} /> {loading ? "Saving..." : "Save"}
               </button>
             </div>
+            {generalSaveMsg && (
+              <div className={`pt-2 text-xs ${generalSaveMsg === "Saved" ? "text-emerald-700" : "text-red-600"}`}>
+                {generalSaveMsg}
+              </div>
+            )}
           </>
         )}
 

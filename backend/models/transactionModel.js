@@ -40,6 +40,10 @@ const TransactionItemSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isPaddy: {
+      type: Boolean,
+      default: false,
+    },
     rate: {
       type: Number,
       required: true,
@@ -54,6 +58,14 @@ const TransactionItemSchema = new mongoose.Schema(
       type: Number,
       min: 0,
     },
+    productName: {
+      type: String,
+      trim: true,
+    },
+    salePricePerKg: {
+      type: Number,
+      min: 0,
+    },
   },
   { _id: false }
 );
@@ -64,6 +76,11 @@ const TransactionSchema = new mongoose.Schema(
       type: String,
       enum: ["PURCHASE", "SALE"],
       required: true,
+    },
+    purchaseKind: {
+      type: String,
+      enum: ["MANAGERIAL", "PADDY"],
+      default: "MANAGERIAL",
     },
 
     invoiceNo: {

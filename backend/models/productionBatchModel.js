@@ -48,6 +48,8 @@ const ProductionBatchSchema = new mongoose.Schema(
       enum: ["IN_PROCESS", "COMPLETED"],
       default: "IN_PROCESS",
     },
+    batchDone: { type: Boolean, default: false },
+    batchDoneAt: { type: Date, default: null },
 
     // Raw paddy (kg) for this batch
     paddyWeightKg: { type: Number, required: true, min: 0 },
@@ -57,6 +59,11 @@ const ProductionBatchSchema = new mongoose.Schema(
       default: null,
     },
     sourceCompanyName: { type: String, required: true, trim: true },
+    ownerType: {
+      type: String,
+      enum: ["SMJ", "CUSTOM"],
+      default: "SMJ",
+    },
 
     // Aggregates for reporting
     totalRawWeightKg: { type: Number, default: 0 },

@@ -485,7 +485,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
   const exportColumns = [
     { key: "brand", label: "Brand / Trademark" },
     { key: "product", label: "Product" },
-    { key: "pricePerKg", label: "Price/KG (PKR)" },
+    { key: "pricePerKg", label: "Processing Price/KG (PKR)" },
     { key: "pricePerBag", label: "Price/Bag (PKR)" },
     { key: "pricePerTon", label: "Price/Ton (PKR)" },
   ];
@@ -638,7 +638,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
           <input type="text" value="KG" readOnly className="border p-2 rounded text-sm w-full bg-gray-100 text-gray-600" />
         </div>
         <div className="col-span-2">
-          <label className="block text-xs text-gray-600 mb-1">Pricing per KG (PKR)</label>
+          <label className="block text-xs text-gray-600 mb-1">Processing Pricing per KG (PKR)</label>
           <input
             type="number"
             name="pricePerKg"
@@ -760,7 +760,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Pricing per KG (PKR)</label>
+              <label className="block text-xs text-gray-600 mb-1">Processing Pricing per KG (PKR)</label>
               <input type="number" name="pricePerKg" value={formData.pricePerKg} onChange={(e) => handlePriceKgChange(e.target.value)} className="border p-2 rounded text-sm w-full border-gray-300" />
             </div>
             <div>
