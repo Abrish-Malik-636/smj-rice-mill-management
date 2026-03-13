@@ -59,6 +59,11 @@ const companySchema = new mongoose.Schema(
       minlength: [5, "Address must be at least 5 characters"],
       maxlength: [200, "Address must not exceed 200 characters"],
     },
+    partyType: {
+      type: String,
+      enum: ["CUSTOMER", "WHOLESELLER"],
+      default: "CUSTOMER",
+    },
   },
   { timestamps: true }
 );

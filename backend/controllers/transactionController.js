@@ -197,6 +197,7 @@ function validatePayload(body) {
   }
 
   const purchaseKind = body.purchaseKind === "PADDY" ? "PADDY" : "MANAGERIAL";
+  const saleKind = body.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ";
 
   // Items-level checks
   for (let i = 0; i < body.items.length; i++) {
@@ -264,7 +265,12 @@ exports.createTransaction = async (req, res) => {
       ? payload.purchaseKind === "PADDY"
         ? "PADDY"
         : "MANAGERIAL"
-      : existing.purchaseKind || "MANAGERIAL";
+      : "MANAGERIAL";
+    const saleKind = payload.saleKind
+      ? payload.saleKind === "CUSTOM"
+        ? "CUSTOM"
+        : "SMJ"
+      : "SMJ";
 
     // Resolve product names (production items only)
     const productIds = items
@@ -336,6 +342,7 @@ exports.createTransaction = async (req, res) => {
     const doc = new Transaction({
       type: payload.type, // PURCHASE or SALE
       purchaseKind,
+      saleKind,
       invoiceNo,
       date: new Date(payload.date),
       companyId: payload.companyId || null,
@@ -658,6 +665,7 @@ exports.updateTransaction = async (req, res) => {
     // Items & totals
     const { items, totalAmount } = computeItemAmounts(payload.items);
     const purchaseKind = payload.purchaseKind === "PADDY" ? "PADDY" : "MANAGERIAL";
+    const saleKind = payload.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ";
 
     const productIds = items
       .filter((i) => i.productTypeId)
@@ -717,6 +725,7 @@ exports.updateTransaction = async (req, res) => {
       payload.paymentMethod || existing.paymentMethod || "CASH";
     existing.dueDate = dueDate;
     existing.purchaseKind = purchaseKind;
+    existing.saleKind = saleKind;
     existing.items = items;
     existing.totalAmount = totalAmount;
     existing.partialPaid = finalPaid;

@@ -6,7 +6,14 @@ import ConfirmDialog from "../ui/ConfirmDialog";
 import DataTable from "../ui/DataTable";
 import AddOptionModal from "../ui/AddOptionModal";
 
-export default function CompanyManager({ tableOnly = false, editInModal = false }) {
+export default function CompanyManager({
+  tableOnly = false,
+  editInModal = false,
+  filterIds = null,
+  titleOverride = "Customers",
+  emptyMessageOverride = "No customers found",
+  searchPlaceholderOverride = "Search customers...",
+}) {
   const [companies, setCompanies] = useState([]);
   const [formData, setFormData] = useState({
     name: "",
@@ -302,12 +309,16 @@ export default function CompanyManager({ tableOnly = false, editInModal = false 
       )}
 
       <DataTable
-        title="Customers"
+        title={titleOverride}
         columns={tableColumns}
-        data={companies}
+        data={
+          Array.isArray(filterIds)
+            ? companies.filter((c) => filterIds.includes(String(c._id)))
+            : companies
+        }
         idKey="_id"
-        searchPlaceholder="Search customers..."
-        emptyMessage="No customers found"
+        searchPlaceholder={searchPlaceholderOverride}
+        emptyMessage={emptyMessageOverride}
         deleteAll={{
           description: "This will permanently delete ALL customers from the database.",
           onConfirm: async (adminPin) => {

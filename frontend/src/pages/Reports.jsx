@@ -19,6 +19,7 @@ const REPORT_TABS = [
   { key: "daybook", label: "Day Book" },
   { key: "ledger", label: "Ledger" },
   { key: "customers", label: "Customer Report" },
+  { key: "wholesellers", label: "Wholeseller Report" },
   { key: "brands", label: "Brand Report" },
 ];
 
@@ -44,6 +45,7 @@ export default function Reports() {
   const [endDate, setEndDate] = useState("");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [partyBuckets, setPartyBuckets] = useState({ customers: [], wholesalers: [] });
 
   useEffect(() => {
     const tab = searchParams.get("tab");
@@ -211,6 +213,22 @@ export default function Reports() {
     loadReport();
   }, [activeTab, params]);
 
+  useEffect(() => {
+    const loadPartyBuckets = async () => {
+      if (activeTab !== "customers" && activeTab !== "wholesellers") return;
+      try {
+        const res = await api.get("/companies");
+        const list = res.data?.data || [];
+        const customers = list.filter((c) => c.partyType === "CUSTOMER").map((c) => String(c._id));
+        const wholesalers = list.filter((c) => c.partyType === "WHOLESELLER").map((c) => String(c._id));
+        setPartyBuckets({ customers, wholesalers });
+      } catch {
+        setPartyBuckets({ customers: [], wholesalers: [] });
+      }
+    };
+    loadPartyBuckets();
+  }, [activeTab]);
+
   const columns = useMemo(() => {
     if (activeTab === "stock") {
       return [
@@ -370,7 +388,23 @@ export default function Reports() {
 
       <div className="bg-white rounded-lg shadow-sm p-4">
         {activeTab === "customers" ? (
-          <CompanyManager tableOnly editInModal />
+          <CompanyManager
+            tableOnly
+            editInModal
+            filterIds={partyBuckets.customers}
+            titleOverride="Customers"
+            emptyMessageOverride="No customers found"
+            searchPlaceholderOverride="Search customers..."
+          />
+        ) : activeTab === "wholesellers" ? (
+          <CompanyManager
+            tableOnly
+            editInModal
+            filterIds={partyBuckets.wholesalers}
+            titleOverride="Wholesellers"
+            emptyMessageOverride="No wholesellers found"
+            searchPlaceholderOverride="Search wholesellers..."
+          />
         ) : activeTab === "brands" ? (
           <ProductManager tableOnly editInModal />
         ) : (

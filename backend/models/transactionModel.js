@@ -82,6 +82,11 @@ const TransactionSchema = new mongoose.Schema(
       enum: ["MANAGERIAL", "PADDY"],
       default: "MANAGERIAL",
     },
+    saleKind: {
+      type: String,
+      enum: ["SMJ", "CUSTOM"],
+      default: "SMJ",
+    },
 
     invoiceNo: {
       type: String,

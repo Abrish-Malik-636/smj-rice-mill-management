@@ -1,5 +1,5 @@
 // src/pages/Financial.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   CreditCard,
@@ -13,7 +13,6 @@ import {
   Printer,
   Lock,
 } from "lucide-react";
-import toast, { Toaster } from "react-hot-toast";
 import api from "../services/api";
 import Pin4Input from "../components/Pin4Input";
 import AddOptionModal from "../components/ui/AddOptionModal";
@@ -177,6 +176,10 @@ export default function Financial() {
   const [saleForm, setSaleForm] = useState({ ...emptyForm });
   const [saleItems, setSaleItems] = useState([makeEmptySaleItem()]);
   const [saleEditingId, setSaleEditingId] = useState(null);
+  const [saleKind, setSaleKind] = useState("SMJ");
+  const [saleCustomerMode, setSaleCustomerMode] = useState("EXISTING");
+  const [saleCustomerListOpen, setSaleCustomerListOpen] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [saleList, setSaleList] = useState([]);
   const [saleTotal, setSaleTotal] = useState(0);
   const [salePage, setSalePage] = useState(1);
@@ -233,8 +236,7 @@ export default function Financial() {
   `;
 
   // Load masters + stock
-  useEffect(() => {
-    const loadMasters = async () => {
+  const loadMasters = async () => {
       try {
         const [cRes, pRes] = await Promise.all([
           api.get("/companies"),
@@ -244,13 +246,19 @@ export default function Financial() {
         setProducts(pRes.data.data || []);
       } catch (err) {
         console.error("Error loading masters:", err);
-        toast.error("Failed to load master data");
       }
-    };
+  };
 
+  useEffect(() => {
     loadMasters();
     loadStockBalances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onFocus = () => loadMasters();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
 
   useEffect(() => {
@@ -327,7 +335,6 @@ export default function Financial() {
       }
     } catch (err) {
       console.error("Error loading transactions:", err);
-      toast.error("Failed to load transactions");
     } finally {
       if (type === "PURCHASE") setPurchaseLoading(false);
       if (type === "SALE") setSaleLoading(false);
@@ -358,6 +365,7 @@ export default function Financial() {
       phone: String(quickCustomer.phone || "").trim(),
       email: String(quickCustomer.email || "").trim().toLowerCase(),
       address: String(quickCustomer.address || "").trim(),
+      partyType: saleKind === "SMJ" ? "WHOLESELLER" : "CUSTOMER",
     };
     const touchedAll = {
       name: true,
@@ -384,19 +392,78 @@ export default function Financial() {
       if (created?._id) {
         setSaleForm((prev) => ({ ...prev, companyId: created._id }));
       }
-      toast.success("Customer added.");
       closeQuickCustomerModal();
+      return created;
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to add customer");
+      setSaveError(err?.response?.data?.message || "Failed to add customer");
+      return null;
     } finally {
       setQuickCustomerSaving(false);
     }
   };
 
+  const ensureSaleCompany = async () => {
+    const payload = {
+      name: String(quickCustomer.name || "").trim(),
+      phone: String(quickCustomer.phone || "").trim(),
+      email: String(quickCustomer.email || "").trim().toLowerCase(),
+      address: String(quickCustomer.address || "").trim(),
+    };
+    const touchedAll = {
+      name: true,
+      phone: true,
+      email: true,
+      address: true,
+    };
+    const validationErrors = Object.keys(touchedAll).reduce((acc, field) => {
+      const msg = validateQuickCustomerField(field, payload[field]);
+      if (msg) acc[field] = msg;
+      return acc;
+    }, {});
+    setQuickCustomerTouched(touchedAll);
+    setQuickCustomerErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      return null;
+    }
+    const match = companies.find((c) => {
+      const nameMatch = String(c.name || "").trim().toLowerCase() === payload.name.toLowerCase();
+      const emailMatch = payload.email && String(c.email || "").trim().toLowerCase() === payload.email;
+      const phoneMatch = payload.phone && String(c.phone || "").trim() === payload.phone;
+      return nameMatch || emailMatch || phoneMatch;
+    });
+    if (match?._id) {
+      setSaleForm((prev) => ({ ...prev, companyId: match._id }));
+      return match;
+    }
+    return saveQuickCustomer();
+  };
+
   // Helpers
   const handleFormChange = (type, field, value) => {
-    if (type === "SALE" && field === "companyId" && value === OTHER_OPTION) {
-      setQuickCustomerModal(true);
+    if (type === "SALE" && field === "companyId") {
+      if (value === OTHER_OPTION) {
+        setSaleCustomerMode("NEW");
+        setSaleForm((f) => ({ ...f, companyId: "" }));
+        setQuickCustomer({ ...emptyQuickCustomer });
+        setQuickCustomerErrors({});
+        setQuickCustomerTouched({});
+        return;
+      }
+      setSaleCustomerMode("EXISTING");
+      setSaleForm((f) => ({ ...f, companyId: value }));
+      const match = companies.find((c) => String(c._id) === String(value));
+      if (match) {
+        setQuickCustomer({
+          name: match.name || "",
+          phone: match.phone || "",
+          email: match.email || "",
+          address: match.address || "",
+        });
+      }
+      setFormErrors((prev) => ({
+        ...prev,
+        sale: { ...prev.sale, companyId: "" },
+      }));
       return;
     }
     const errorKey = type === "PURCHASE" ? "purchase" : "sale";
@@ -698,12 +765,18 @@ const computePaidRemaining = (form, total) => {
       nextErrors[formKey].date = "Date is required";
       isValid = false;
     }
-    if (type === "SALE" && !form.companyId) {
-      nextErrors[formKey].companyId = "Please select a customer";
+    if (type === "SALE" && saleCustomerMode !== "NEW" && !form.companyId) {
+      nextErrors[formKey].companyId = `Please select a ${saleKind === "SMJ" ? "wholeseller" : "customer"}`;
       isValid = false;
     }
+    if (type === "SALE" && saleCustomerMode === "NEW") {
+      if (!String(quickCustomer.name || "").trim()) {
+        nextErrors[formKey].companyId = `Enter ${saleKind === "SMJ" ? "wholeseller" : "customer"} name`;
+        isValid = false;
+      }
+    }
 
-    if (type === "SALE") {
+    if (type === "SALE" && saleKind === "CUSTOM") {
       items.forEach((it, idx) => {
         if (!it.brand) {
           nextErrors[itemKey][idx] = {
@@ -745,8 +818,16 @@ const computePaidRemaining = (form, total) => {
         }
         return !row.itemName && !row.quantity && !row.rate;
       }
+      if (saleKind === "CUSTOM") {
+        return (
+          !row.brand &&
+          !row.productTypeId &&
+          !row.numBags &&
+          !row.perBagWeightKg &&
+          !row.rate
+        );
+      }
       return (
-        !row.brand &&
         !row.productTypeId &&
         !row.numBags &&
         !row.perBagWeightKg &&
@@ -840,7 +921,7 @@ const computePaidRemaining = (form, total) => {
     }
 
     // Extra validation for SALE: cannot sell more than stock
-    if (type === "SALE" && stockBalances.length && form.companyId) {
+    if (type === "SALE" && stockBalances.length) {
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
         const net = computeNetWeightKg(it);
@@ -917,6 +998,7 @@ const computePaidRemaining = (form, total) => {
         netWeightKg: net,
         rate: Number(it.rate || 0),
         rateType: it.rateType || "per_kg",
+        ...(saleKind === "CUSTOM" ? { brand: it.brand } : {}),
       };
     });
 
@@ -929,6 +1011,7 @@ const computePaidRemaining = (form, total) => {
       dueDate: form.paymentStatus === "PAID" ? null : form.dueDate || null,
       remarks: "",
       purchaseKind: type === "PURCHASE" ? purchaseKind : undefined,
+      saleKind: type === "SALE" ? saleKind : undefined,
       items: mappedItems,
       partialPaid: computePaidRemaining(form, total).paid,
     };
@@ -943,12 +1026,34 @@ const computePaidRemaining = (form, total) => {
     } else {
       setSaleForm({ ...emptyForm });
       setSaleItems([makeEmptySaleItem()]);
+      setSaleKind("SMJ");
       setSaleEditingId(null);
+      setSaleCustomerMode("NEW");
+      setQuickCustomer({ ...emptyQuickCustomer });
+      setQuickCustomerErrors({});
+      setQuickCustomerTouched({});
     }
   };
 
   const handleSubmit = async (type, e) => {
     e.preventDefault();
+    setSaveError("");
+    if (type === "SALE" && saleCustomerMode === "NEW") {
+      const missingDetails =
+        !String(quickCustomer.phone || "").trim() ||
+        !String(quickCustomer.email || "").trim() ||
+        !String(quickCustomer.address || "").trim();
+      if (missingDetails) {
+        setQuickCustomerModal(true);
+        return;
+      }
+      const created = await ensureSaleCompany();
+      if (!created) return;
+      setSaleCustomerMode("EXISTING");
+    }
+    if (type === "SALE" && !saleForm.companyId && saleCustomerMode !== "NEW") {
+      return;
+    }
     if (!validateForm(type)) return;
 
     const payload = buildPayload(type);
@@ -959,10 +1064,10 @@ const computePaidRemaining = (form, total) => {
     try {
       if (isEditing) {
         await api.put(`/transactions/${editingId}`, payload);
-        toast.success(`${type === "PURCHASE" ? "Purchase" : "Sale"} updated`);
+        setSaveError("");
       } else {
         await api.post("/transactions", payload);
-        toast.success(`${type === "PURCHASE" ? "Purchase" : "Sale"} saved`);
+        setSaveError("");
       }
       resetForm(type);
       fetchTransactions(type, 1);
@@ -983,15 +1088,15 @@ const computePaidRemaining = (form, total) => {
               purchaseItemOptions: nextItems,
             });
             setPurchaseItemOptions(nextItems);
-          } catch (e) {
-            toast.error("Failed to update purchase dropdowns");
-          }
+            } catch (e) {
+              setSaveError("Failed to update purchase dropdowns");
+            }
         }
       }
     } catch (err) {
       console.error("Save transaction error:", err);
       const msg = err?.response?.data?.message || "Failed to save transaction";
-      toast.error(msg);
+      setSaveError(msg);
     }
   };
 
@@ -1011,8 +1116,8 @@ const computePaidRemaining = (form, total) => {
       partialPaid: txn.partialPaid != null ? String(txn.partialPaid) : "",
     };
 
-    const items = (txn.items || []).map((it) => {
-      if (type === "PURCHASE" && txn.purchaseKind === "PADDY") {
+      const items = (txn.items || []).map((it) => {
+        if (type === "PURCHASE" && txn.purchaseKind === "PADDY") {
         return {
           isPaddy: true,
           netWeightKg: it.netWeightKg != null ? String(it.netWeightKg) : "",
@@ -1029,13 +1134,13 @@ const computePaidRemaining = (form, total) => {
         };
       }
 
-      const product = products.find(
-        (p) => String(p._id) === String(it.productTypeId),
-      );
-      return {
-        brand: product?.brand || "",
-        productTypeId: it.productTypeId || "",
-        numBags:
+        const product = products.find(
+          (p) => String(p._id) === String(it.productTypeId),
+        );
+        return {
+          brand: it.brand || product?.brand || "",
+          productTypeId: it.productTypeId || "",
+          numBags:
           it.numBags !== null && it.numBags !== undefined
             ? String(it.numBags)
             : "",
@@ -1063,8 +1168,21 @@ const computePaidRemaining = (form, total) => {
       setPurchaseEditingId(txn._id);
     } else {
       setSaleForm(form);
+      setSaleKind(txn.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ");
       setSaleItems(items.length ? items : [makeEmptySaleItem()]);
       setSaleEditingId(txn._id);
+      const match = companies.find((c) => String(c._id) === String(txn.companyId));
+      if (match) {
+        setSaleCustomerMode("EXISTING");
+        setQuickCustomer({
+          name: match.name || "",
+          phone: match.phone || "",
+          email: match.email || "",
+          address: match.address || "",
+        });
+      } else {
+        setSaleCustomerMode("NEW");
+      }
     }
   };
 
@@ -1075,13 +1193,13 @@ const computePaidRemaining = (form, total) => {
     setDeleting(true);
     try {
       await api.delete(`/transactions/${deleteTarget._id}`);
-      toast.success("Transaction deleted");
+      setSaveError("");
       fetchTransactions(deleteTarget.type, 1);
       loadStockBalances();
       setDeleteTarget(null);
     } catch (err) {
       console.error("Delete transaction error:", err);
-      toast.error("Failed to delete transaction");
+      setSaveError("Failed to delete transaction");
     } finally {
       setDeleting(false);
     }
@@ -1096,7 +1214,7 @@ const computePaidRemaining = (form, total) => {
         setPrintSettings(res.data.data || null);
       } catch (err) {
         console.error("Error loading settings for print:", err);
-        toast.error("Failed to load settings for print");
+        setSaveError("Failed to load settings for print");
       } finally {
         setLoadingSettings(false);
       }
@@ -1187,7 +1305,7 @@ const computePaidRemaining = (form, total) => {
         {/* Row 1: Date + Customer */}
         <div
           className={`grid grid-cols-1 ${
-            type === "PURCHASE" ? "md:grid-cols-1" : "md:grid-cols-4"
+            type === "PURCHASE" ? "md:grid-cols-1" : "md:grid-cols-1"
           } gap-3`}
         >
           <div className="col-span-1 md:col-span-1">
@@ -1289,32 +1407,160 @@ const computePaidRemaining = (form, total) => {
           </div>
         )}
 
+        {type === "SALE" && null}
+        </div>
+
         {type === "SALE" && (
-          <div className="col-span-1 md:col-span-3">
-            <label className="text-xs text-gray-600 flex items-center gap-1">
-              Customer <span className="text-red-500">*</span>
-            </label>
-              <select
-                className="w-full border p-2 rounded text-sm"
-                value={form.companyId}
-                onChange={(e) =>
-                  handleFormChange(type, "companyId", e.target.value)
-                }
-              >
-                <option value="">Select customer</option>
-                {companies.map((c) => (
-                  <option key={c._id} value={c._id}>
-                    {c.name}
-                  </option>
-                ))}
-                <option value={OTHER_OPTION}>Other (Add New)</option>
-              </select>
-              <div className="min-h-[14px] text-[11px] text-red-600">
-                {fieldErrors.companyId || ""}
+          <div className="grid grid-cols-1 md:grid-cols-1 gap-2">
+            <div>
+              <div className="text-xs text-gray-600 mb-1">Sales Type</div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSaleKind("SMJ")}
+                  className={`rounded-lg border px-3 py-2 text-sm text-left ${
+                    saleKind === "SMJ"
+                      ? "border-emerald-500 bg-emerald-50 text-emerald-800"
+                      : "border-gray-300 hover:bg-gray-50"
+                  }`}
+                >
+                  <div className="font-semibold">SMJ Sales</div>
+                  <div className="text-[11px] text-gray-500">Wholesaler</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSaleKind("CUSTOM")}
+                  className={`rounded-lg border px-3 py-2 text-sm text-left ${
+                    saleKind === "CUSTOM"
+                      ? "border-emerald-500 bg-emerald-50 text-emerald-800"
+                      : "border-gray-300 hover:bg-gray-50"
+                  }`}
+                >
+                  <div className="font-semibold">Custom Milling</div>
+                  <div className="text-[11px] text-gray-500">Customer</div>
+                </button>
               </div>
             </div>
-          )}
-        </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <div>
+              <label className="text-xs text-gray-600 flex items-center gap-1">
+                {saleKind === "SMJ" ? "Wholeseller Name" : "Customer Name"}{" "}
+                <span className="text-red-500">*</span>
+              </label>
+              {saleCustomerMode === "EXISTING" ? (
+                <select
+                  className="w-full border p-2 rounded text-sm"
+                  value={form.companyId}
+                  onChange={(e) => handleFormChange(type, "companyId", e.target.value)}
+                >
+                  <option value="">
+                    {saleKind === "SMJ" ? "Select wholeseller" : "Select customer"}
+                  </option>
+                  {(saleKind === "SMJ" ? wholesellerOptions : customerOptions).map((c) => (
+                    <option key={c._id} value={c._id}>
+                      {c.name}
+                    </option>
+                  ))}
+                  <option value={OTHER_OPTION}>Add New</option>
+                </select>
+              ) : (
+                // smj-list-field: input + List button dropdown style (typing mode)
+                <div className="flex gap-2 relative smj-list-field">
+                  <input
+                    className={`w-full border p-2 rounded text-sm ${fieldErrors.companyId ? "border-red-400 bg-red-50" : "border-gray-300"}`}
+                    value={quickCustomer.name}
+                    onChange={(e) => setQuickCustomer((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder={saleKind === "SMJ" ? "Wholeseller name" : "Customer name"}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSaleCustomerListOpen((v) => !v)}
+                    className="px-3 py-2 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                  >
+                    List
+                  </button>
+                  {saleCustomerListOpen && (
+                    <div className="absolute left-0 right-0 top-full mt-1 border rounded bg-white max-h-48 overflow-y-auto shadow z-10">
+                      {(saleKind === "SMJ" ? wholesellerOptions : customerOptions).length === 0 ? (
+                        <div className="px-2 py-2 text-xs text-gray-500">No records</div>
+                      ) : (
+                        (saleKind === "SMJ" ? wholesellerOptions : customerOptions).map((c) => (
+                          <button
+                            key={c._id}
+                            type="button"
+                            onClick={() => {
+                              setSaleCustomerMode("EXISTING");
+                              setSaleForm((f) => ({ ...f, companyId: c._id }));
+                              setQuickCustomer({
+                                name: c.name || "",
+                                phone: c.phone || "",
+                                email: c.email || "",
+                                address: c.address || "",
+                              });
+                              setSaleCustomerListOpen(false);
+                            }}
+                            className="w-full text-left px-2 py-1 text-sm hover:bg-gray-50"
+                          >
+                            {c.name}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+                <div className="min-h-[14px] text-[11px] text-red-600">
+                  {fieldErrors.companyId || ""}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-600 flex items-center gap-1">
+                  Phone <span className="text-red-500">*</span>
+                </label>
+                <input
+                  className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.phone ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
+                  value={quickCustomer.phone}
+                  onChange={(e) => handleQuickCustomerChange("phone", e.target.value)}
+                  placeholder="03XX-XXXXXXX"
+                  readOnly={saleCustomerMode === "EXISTING"}
+                />
+                <div className="min-h-[14px] text-[11px] text-red-600">
+                  {saleCustomerMode === "NEW" ? quickCustomerErrors.phone : ""}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-600 flex items-center gap-1">
+                  Email <span className="text-red-500">*</span>
+                </label>
+                <input
+                  className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.email ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
+                  value={quickCustomer.email}
+                  onChange={(e) => handleQuickCustomerChange("email", e.target.value)}
+                  placeholder="example@email.com"
+                  readOnly={saleCustomerMode === "EXISTING"}
+                />
+                <div className="min-h-[14px] text-[11px] text-red-600">
+                  {saleCustomerMode === "NEW" ? quickCustomerErrors.email : ""}
+                </div>
+              </div>
+              <div className="md:col-span-3">
+                <label className="text-xs text-gray-600 flex items-center gap-1">
+                  Address <span className="text-red-500">*</span>
+                </label>
+                <input
+                  className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.address ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
+                  value={quickCustomer.address}
+                  onChange={(e) => handleQuickCustomerChange("address", e.target.value)}
+                  placeholder="Address"
+                  readOnly={saleCustomerMode === "EXISTING"}
+                />
+                <div className="min-h-[14px] text-[11px] text-red-600">
+                  {saleCustomerMode === "NEW" ? quickCustomerErrors.address : ""}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Items table */}
         {type === "PURCHASE" ? (
@@ -1549,7 +1795,9 @@ const computePaidRemaining = (form, total) => {
               <table className="w-full table-fixed text-xs">
                 <thead className="bg-emerald-100 text-emerald-800">
                   <tr>
-                    <th className="p-2 text-left">Brand</th>
+                    {saleKind === "CUSTOM" && (
+                      <th className="p-2 text-left">Brand</th>
+                    )}
                     <th className="p-2 text-left">Product</th>
                     <th className="p-2 text-left">Rate Type</th>
                     <th className="p-2 text-right">Qty</th>
@@ -1570,35 +1818,39 @@ const computePaidRemaining = (form, total) => {
                     // Stock-aware product options for SALE
                     let productOptions = products;
                     let brandOptions = [];
-                    if (type === "SALE" && stockBalances.length) {
-                      // Only consider rows that represent finished products (exclude Unprocessed Paddy / null productTypeId).
-                      const inStockRows = stockBalances.filter(
-                        (b) =>
-                          b &&
-                          b.productTypeId &&
-                          Number(b.balanceKg || 0) > 0 &&
-                          String(b.productTypeName || "")
-                            .toLowerCase()
-                            .trim() !== "unprocessed paddy",
-                      );
+    if (type === "SALE" && stockBalances.length) {
+      // Only consider rows that represent finished products (exclude Unprocessed Paddy / null productTypeId).
+      const inStockRows = stockBalances.filter(
+        (b) =>
+          b &&
+          b.productTypeId &&
+          Number(b.balanceKg || 0) > 0 &&
+          String(b.productTypeName || "")
+            .toLowerCase()
+            .trim() !== "unprocessed paddy",
+      );
 
-                      // Brands come from stock rows (companyName is used as brand/trademark in /stock/current).
-                      brandOptions = Array.from(
-                        new Set(
-                          inStockRows
-                            .map((r) => String(r.companyName || "").trim())
-                            .filter(Boolean),
-                        ),
-                      ).sort();
+      // Brands come from stock rows (companyName is used as brand/trademark in /stock/current).
+      if (saleKind === "CUSTOM") {
+        brandOptions = Array.from(
+          new Set(
+            inStockRows
+              .map((r) => String(r.companyName || "").trim())
+              .filter(Boolean),
+          ),
+        ).sort();
+      }
 
-                      const selectedBrand = String(it.brand || "").trim();
-                      const allowedIds = new Set(
-                        inStockRows
-                          .filter((r) =>
-                            selectedBrand ? String(r.companyName || "").trim() === selectedBrand : true,
-                          )
-                          .map((r) => String(r.productTypeId)),
-                      );
+      const selectedBrand = String(it.brand || "").trim();
+      const allowedIds = new Set(
+        inStockRows
+          .filter((r) =>
+            saleKind === "CUSTOM"
+              ? (selectedBrand ? String(r.companyName || "").trim() === selectedBrand : true)
+              : true,
+          )
+          .map((r) => String(r.productTypeId)),
+      );
 
                       const availableProducts = products.filter((p) =>
                         allowedIds.has(String(p._id)),
@@ -1637,34 +1889,36 @@ const computePaidRemaining = (form, total) => {
 
                     return (
                       <tr key={idx} className="border-t align-top">
-                        <td className="p-2">
-                          {type === "SALE" ? (
-                            <select
-                              className="border p-1 rounded w-full"
-                              value={it.brand}
-                              onChange={(e) =>
-                                handleItemChange(
-                                  type,
-                                  idx,
-                                  "brand",
-                                  e.target.value,
-                                )
-                              }
-                            >
-                              <option value="">Select brand</option>
-                              {brandOptions.map((b, i) => (
-                                <option key={`${b}-${i}`} value={b}>
-                                  {b}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                          <div className="min-h-[14px] text-[10px] text-red-600">
-                            {itemErrors?.[idx]?.brand || ""}
-                          </div>
-                        </td>
+                        {saleKind === "CUSTOM" && (
+                          <td className="p-2">
+                            {type === "SALE" ? (
+                              <select
+                                className="border p-1 rounded w-full"
+                                value={it.brand}
+                                onChange={(e) =>
+                                  handleItemChange(
+                                    type,
+                                    idx,
+                                    "brand",
+                                    e.target.value,
+                                  )
+                                }
+                              >
+                                <option value="">Select brand</option>
+                                {brandOptions.map((b, i) => (
+                                  <option key={`${b}-${i}`} value={b}>
+                                    {b}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                            <div className="min-h-[14px] text-[10px] text-red-600">
+                              {itemErrors?.[idx]?.brand || ""}
+                            </div>
+                          </td>
+                        )}
                         <td className="p-2">
                           <select
                             className="border p-1 rounded w-full"
@@ -1929,7 +2183,9 @@ const computePaidRemaining = (form, total) => {
 
         {/* Buttons */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1 text-xs text-gray-600"></div>
+          <div className="flex items-center gap-1 text-xs text-red-600 min-h-[16px]">
+            {saveError || ""}
+          </div>
           <div className="flex gap-2">
             {isEditing && (
               <button
@@ -2009,6 +2265,9 @@ const computePaidRemaining = (form, total) => {
                 <th className="p-2 text-left">Date</th>
                 <th className="p-2 text-left">Invoice #</th>
                 {type === "SALE" && (
+                  <th className="p-2 text-left">Sale Type</th>
+                )}
+                {type === "SALE" && (
                   <th className="p-2 text-left">Customer</th>
                 )}
                 <th className="p-2 text-left">Items</th>
@@ -2051,6 +2310,11 @@ const computePaidRemaining = (form, total) => {
                     <tr className="border-t hover:bg-gray-50">
                       <td className="p-2">{dateStr}</td>
                       <td className="p-2">{t.invoiceNo}</td>
+                    {type === "SALE" && (
+                      <td className="p-2">
+                        {t.saleKind === "CUSTOM" ? "Custom Milling" : "SMJ Sales"}
+                      </td>
+                    )}
                     {type === "SALE" && (
                       <td className="p-2">{t.companyName}</td>
                     )}
@@ -2147,6 +2411,18 @@ const computePaidRemaining = (form, total) => {
     );
   };
 
+  const saleCompanyBuckets = useMemo(() => {
+    const wholesalers = companies.filter((c) => c.partyType === "WHOLESELLER");
+    const customers = companies.filter((c) => c.partyType === "CUSTOMER");
+    return {
+      wholesalers,
+      customers,
+    };
+  }, [companies]);
+
+  const wholesellerOptions = saleCompanyBuckets.wholesalers;
+  const customerOptions = saleCompanyBuckets.customers;
+
   const tabs = [
     {
       key: "sale",
@@ -2163,7 +2439,6 @@ const computePaidRemaining = (form, total) => {
   return (
     <div className="space-y-6">
       <style>{printStyles}</style>
-      <Toaster position="top-center" />
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-2 border-b border-emerald-200">
@@ -2438,6 +2713,12 @@ const computePaidRemaining = (form, total) => {
                   <span className="font-semibold">Type: </span>
                   {printTxn.type}
                 </div>
+                {printTxn.type !== "PURCHASE" && (
+                  <div>
+                    <span className="font-semibold">Sale Type: </span>
+                    {printTxn.saleKind === "CUSTOM" ? "Custom Milling" : "SMJ Sales"}
+                  </div>
+                )}
                 {printTxn.type !== "PURCHASE" && (
                   <div>
                     <span className="font-semibold">Customer: </span>
