@@ -39,13 +39,6 @@ const systemSettingsSchema = new mongoose.Schema(
     purchaseCategoryOptions: { type: [String], default: [] },
     transporterOptions: { type: [String], default: [] },
     brandOptions: { type: [String], default: [] },
-    // HR settings
-    hrMonthlyWorkingDays: { type: Number, default: 30, min: 1 },
-    hrWorkingHoursPerDay: { type: Number, default: 8, min: 1 },
-    hrOvertimeRate: { type: Number, default: 1.5, min: 1 },
-    hrAllowPaidLeave: { type: Boolean, default: true },
-    hrAllowUnpaidLeave: { type: Boolean, default: true },
-    hrAdvanceDeductionMode: { type: String, default: "FULL" },
     // Notifications / alerts schedule
     alertsEnabled: { type: Boolean, default: true },
     alertsWorkStart: { type: String, default: "09:00" },

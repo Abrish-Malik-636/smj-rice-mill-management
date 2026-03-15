@@ -114,19 +114,19 @@ function validateQuickCustomerField(field, rawValue) {
     return "";
   }
   if (field === "phone") {
-    if (!value) return "Phone number is required";
+    if (!value) return ""; // optional
     if (!QUICK_CUSTOMER_PHONE_REGEX.test(value)) {
       return "Phone format must be 03XX-XXXXXXX";
     }
     return "";
   }
   if (field === "email") {
-    if (!value) return "Email is required";
+    if (!value) return ""; // optional
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
     return validEmail ? "" : "Enter a valid email address";
   }
   if (field === "address") {
-    if (!value) return "Address is required";
+    if (!value) return ""; // optional
     if (value.length < 5) return "Address must be at least 5 characters";
     return "";
   }
@@ -139,7 +139,8 @@ export default function Financial() {
   const [activeTab, setActiveTab] = useState("sale");
 
   // Masters
-  const [companies, setCompanies] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [wholesellers, setWholesellers] = useState([]);
   const [products, setProducts] = useState([]);
   const [purchaseItemOptions, setPurchaseItemOptions] = useState([]);
   const [purchaseCategoryOptions, setPurchaseCategoryOptions] = useState(DEFAULT_PURCHASE_CATEGORIES);
@@ -237,16 +238,18 @@ export default function Financial() {
 
   // Load masters + stock
   const loadMasters = async () => {
-      try {
-        const [cRes, pRes] = await Promise.all([
-          api.get("/companies"),
-          api.get("/product-types"),
-        ]);
-        setCompanies(cRes.data.data || []);
-        setProducts(pRes.data.data || []);
-      } catch (err) {
-        console.error("Error loading masters:", err);
-      }
+    try {
+      const [custRes, wholeRes, pRes] = await Promise.all([
+        api.get("/customers"),
+        api.get("/wholesellers"),
+        api.get("/product-types"),
+      ]);
+      setCustomers(custRes.data?.data || []);
+      setWholesellers(wholeRes.data?.data || []);
+      setProducts(pRes.data?.data || []);
+    } catch (err) {
+      console.error("Error loading masters:", err);
+    }
   };
 
   useEffect(() => {
@@ -365,7 +368,6 @@ export default function Financial() {
       phone: String(quickCustomer.phone || "").trim(),
       email: String(quickCustomer.email || "").trim().toLowerCase(),
       address: String(quickCustomer.address || "").trim(),
-      partyType: saleKind === "SMJ" ? "WHOLESELLER" : "CUSTOMER",
     };
     const touchedAll = {
       name: true,
@@ -385,10 +387,10 @@ export default function Financial() {
     }
     setQuickCustomerSaving(true);
     try {
-      const res = await api.post("/companies", payload);
+      const res = await api.post("/customers", payload);
       const created = res.data?.data;
-      const cRes = await api.get("/companies");
-      setCompanies(cRes.data?.data || []);
+      // refresh masters so dropdowns include it
+      await loadMasters();
       if (created?._id) {
         setSaleForm((prev) => ({ ...prev, companyId: created._id }));
       }
@@ -425,7 +427,8 @@ export default function Financial() {
     if (Object.keys(validationErrors).length > 0) {
       return null;
     }
-    const match = companies.find((c) => {
+    const list = saleKind === "SMJ" ? wholesellers : customers;
+    const match = list.find((c) => {
       const nameMatch = String(c.name || "").trim().toLowerCase() === payload.name.toLowerCase();
       const emailMatch = payload.email && String(c.email || "").trim().toLowerCase() === payload.email;
       const phoneMatch = payload.phone && String(c.phone || "").trim() === payload.phone;
@@ -434,6 +437,20 @@ export default function Financial() {
     if (match?._id) {
       setSaleForm((prev) => ({ ...prev, companyId: match._id }));
       return match;
+    }
+    // Persist into the correct table based on saleKind
+    if (saleKind === "SMJ") {
+      try {
+        const res = await api.post("/wholesellers", payload);
+        const created = res.data?.data;
+        await loadMasters();
+        if (created?._id) setSaleForm((prev) => ({ ...prev, companyId: created._id }));
+        closeQuickCustomerModal();
+        return created;
+      } catch (err) {
+        setSaveError(err?.response?.data?.message || "Failed to add wholeseller");
+        return null;
+      }
     }
     return saveQuickCustomer();
   };
@@ -451,7 +468,9 @@ export default function Financial() {
       }
       setSaleCustomerMode("EXISTING");
       setSaleForm((f) => ({ ...f, companyId: value }));
-      const match = companies.find((c) => String(c._id) === String(value));
+      const match = (saleKind === "SMJ" ? wholesellers : customers).find(
+        (c) => String(c._id) === String(value)
+      );
       if (match) {
         setQuickCustomer({
           name: match.name || "",
@@ -772,6 +791,12 @@ const computePaidRemaining = (form, total) => {
     if (type === "SALE" && saleCustomerMode === "NEW") {
       if (!String(quickCustomer.name || "").trim()) {
         nextErrors[formKey].companyId = `Enter ${saleKind === "SMJ" ? "wholeseller" : "customer"} name`;
+        // Also show inline error under the name field (user expects line error, not silent).
+        setQuickCustomerErrors((prev) => ({
+          ...prev,
+          name: `${saleKind === "SMJ" ? "Wholeseller" : "Customer"} name is required`,
+        }));
+        setQuickCustomerTouched((prev) => ({ ...prev, name: true }));
         isValid = false;
       }
     }
@@ -1038,25 +1063,33 @@ const computePaidRemaining = (form, total) => {
   const handleSubmit = async (type, e) => {
     e.preventDefault();
     setSaveError("");
+    let resolvedSaleCompanyId = "";
     if (type === "SALE" && saleCustomerMode === "NEW") {
-      const missingDetails =
-        !String(quickCustomer.phone || "").trim() ||
-        !String(quickCustomer.email || "").trim() ||
-        !String(quickCustomer.address || "").trim();
-      if (missingDetails) {
-        setQuickCustomerModal(true);
-        return;
-      }
       const created = await ensureSaleCompany();
       if (!created) return;
-      setSaleCustomerMode("EXISTING");
+      resolvedSaleCompanyId = String(created._id || "");
+      // Keep UI state updated, but rely on resolvedSaleCompanyId for this submit.
+      if (resolvedSaleCompanyId) {
+        setSaleForm((prev) => ({ ...prev, companyId: resolvedSaleCompanyId }));
+        setSaleCustomerMode("EXISTING");
+      }
     }
     if (type === "SALE" && !saleForm.companyId && saleCustomerMode !== "NEW") {
+      setSaveError(`Please select a ${saleKind === "SMJ" ? "wholeseller" : "customer"}.`);
+      validateForm(type);
       return;
     }
-    if (!validateForm(type)) return;
+    if (!validateForm(type)) {
+      setSaveError("Please fill all required fields highlighted in red.");
+      return;
+    }
 
     const payload = buildPayload(type);
+    if (type === "SALE") {
+      // Ensure backend always receives a company reference.
+      if (resolvedSaleCompanyId) payload.companyId = resolvedSaleCompanyId;
+      if (!payload.companyId) payload.companyName = String(quickCustomer.name || "").trim();
+    }
     const isEditing =
       type === "PURCHASE" ? !!purchaseEditingId : !!saleEditingId;
     const editingId = type === "PURCHASE" ? purchaseEditingId : saleEditingId;
@@ -1094,7 +1127,7 @@ const computePaidRemaining = (form, total) => {
         }
       }
     } catch (err) {
-      console.error("Save transaction error:", err);
+      console.error("Save transaction error:", err?.response?.data || err);
       const msg = err?.response?.data?.message || "Failed to save transaction";
       setSaveError(msg);
     }
@@ -1107,7 +1140,7 @@ const computePaidRemaining = (form, total) => {
       date: txn.date
         ? new Date(txn.date).toISOString().slice(0, 10)
         : todayISO(),
-      companyId: txn.companyId || "",
+      companyId: txn.partyRefId || txn.companyId || "",
       paymentStatus: txn.paymentStatus || "PAID",
       paymentMethod: txn.paymentMethod || "CASH",
       dueDate: txn.dueDate
@@ -1168,10 +1201,14 @@ const computePaidRemaining = (form, total) => {
       setPurchaseEditingId(txn._id);
     } else {
       setSaleForm(form);
-      setSaleKind(txn.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ");
+      const kind = txn.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ";
+      setSaleKind(kind);
       setSaleItems(items.length ? items : [makeEmptySaleItem()]);
       setSaleEditingId(txn._id);
-      const match = companies.find((c) => String(c._id) === String(txn.companyId));
+      const partyId = txn.partyRefId || txn.companyId || "";
+      const match = (kind === "SMJ" ? wholesellers : customers).find(
+        (c) => String(c._id) === String(partyId)
+      );
       if (match) {
         setSaleCustomerMode("EXISTING");
         setQuickCustomer({
@@ -1515,7 +1552,7 @@ const computePaidRemaining = (form, total) => {
               </div>
               <div>
                 <label className="text-xs text-gray-600 flex items-center gap-1">
-                  Phone <span className="text-red-500">*</span>
+                  Phone
                 </label>
                 <input
                   className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.phone ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
@@ -1530,7 +1567,7 @@ const computePaidRemaining = (form, total) => {
               </div>
               <div>
                 <label className="text-xs text-gray-600 flex items-center gap-1">
-                  Email <span className="text-red-500">*</span>
+                  Email
                 </label>
                 <input
                   className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.email ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
@@ -1545,7 +1582,7 @@ const computePaidRemaining = (form, total) => {
               </div>
               <div className="md:col-span-3">
                 <label className="text-xs text-gray-600 flex items-center gap-1">
-                  Address <span className="text-red-500">*</span>
+                  Address
                 </label>
                 <input
                   className={`w-full border p-2 rounded text-sm ${quickCustomerErrors.address ? "border-red-400 bg-red-50" : ""} ${saleCustomerMode === "EXISTING" ? "bg-gray-100 cursor-not-allowed" : ""}`}
@@ -1815,25 +1852,38 @@ const computePaidRemaining = (form, total) => {
                     const tonKg =
                       Number(product?.conversionFactors?.Ton || 1000) || 1000;
 
-                    // Stock-aware product options for SALE
-                    let productOptions = products;
-                    let brandOptions = [];
-    if (type === "SALE" && stockBalances.length) {
-      // Only consider rows that represent finished products (exclude Unprocessed Paddy / null productTypeId).
-      const inStockRows = stockBalances.filter(
-        (b) =>
-          b &&
-          b.productTypeId &&
-          Number(b.balanceKg || 0) > 0 &&
-          String(b.productTypeName || "")
-            .toLowerCase()
-            .trim() !== "unprocessed paddy",
-      );
+                     // Stock-aware product options for SALE
+                     let productOptions = products;
+                     let brandOptions = [];
+                     let groupedBalanceById = null;
+                     if (type === "SALE" && stockBalances.length) {
+                       // Only consider rows that represent finished products (exclude Unprocessed Paddy / null productTypeId).
+                       const baseRows = stockBalances.filter(
+                         (b) =>
+                           b &&
+                           b.productTypeId &&
+                           Number(b.balanceKg || 0) > 0 &&
+                           String(b.productTypeName || "")
+                             .toLowerCase()
+                             .trim() !== "unprocessed paddy",
+                       );
 
-      // Brands come from stock rows (companyName is used as brand/trademark in /stock/current).
-      if (saleKind === "CUSTOM") {
-        brandOptions = Array.from(
-          new Set(
+                       // For SMJ sales, only allow selling Mill's own stock (settings.companyName).
+                       const ownBrand = String(settings?.companyName || "SMJ").trim().toLowerCase();
+                       const inStockRows =
+                         saleKind === "SMJ"
+                           ? baseRows.filter(
+                               (r) =>
+                                 String(r.companyName || "")
+                                   .trim()
+                                   .toLowerCase() === ownBrand,
+                             )
+                           : baseRows;
+
+                       // Brands come from stock rows (companyName is used as brand/trademark in /stock/current).
+                       if (saleKind === "CUSTOM") {
+                         brandOptions = Array.from(
+                           new Set(
             inStockRows
               .map((r) => String(r.companyName || "").trim())
               .filter(Boolean),
@@ -1841,27 +1891,74 @@ const computePaidRemaining = (form, total) => {
         ).sort();
       }
 
-      const selectedBrand = String(it.brand || "").trim();
-      const allowedIds = new Set(
-        inStockRows
-          .filter((r) =>
-            saleKind === "CUSTOM"
-              ? (selectedBrand ? String(r.companyName || "").trim() === selectedBrand : true)
-              : true,
-          )
-          .map((r) => String(r.productTypeId)),
-      );
+                       const selectedBrand = String(it.brand || "").trim();
+                       const allowedIds = new Set(
+                         inStockRows
+                           .filter((r) =>
+                             saleKind === "CUSTOM"
+                               ? (selectedBrand ? String(r.companyName || "").trim() === selectedBrand : true)
+                               : true,
+                           )
+                           .map((r) => String(r.productTypeId)),
+                       );
 
-                      const availableProducts = products.filter((p) =>
-                        allowedIds.has(String(p._id)),
-                      );
+                      const availableProducts = products.filter((p) => allowedIds.has(String(p._id)));
 
-                      productOptions = availableProducts;
-                    }
+                      // For SMJ sales, we don't pick a brand; show each product name once and
+                      // show combined stock across all brands/batches for that product name.
+                      if (saleKind === "SMJ") {
+                        const normName = (s) => String(s || "").trim().toLowerCase();
+                        const rowsByName = new Map();
+                        for (const r of inStockRows) {
+                          const key = normName(r.productTypeName);
+                          if (!key) continue;
+                          const prev = rowsByName.get(key) || {
+                            name: String(r.productTypeName || "").trim(),
+                            totalKg: 0,
+                            bestId: null,
+                            bestKg: -1,
+                          };
+                          const kg = Number(r.balanceKg || 0);
+                          prev.totalKg += kg;
+                          if (kg > prev.bestKg) {
+                            prev.bestKg = kg;
+                            prev.bestId = String(r.productTypeId);
+                            prev.name = String(r.productTypeName || "").trim() || prev.name;
+                          }
+                          rowsByName.set(key, prev);
+                        }
 
-                    const balance =
-                      type === "SALE" && it.productTypeId
-                        ? getStockBalance(it.productTypeId)
+                        const picked = Array.from(rowsByName.values())
+                          .filter((x) => x.bestId && x.totalKg > 0)
+                          .sort((a, b) => a.name.localeCompare(b.name));
+
+                        groupedBalanceById = new Map();
+                        for (const g of picked) {
+                          groupedBalanceById.set(String(g.bestId), Number(g.totalKg || 0));
+                        }
+
+                        productOptions = picked
+                          .map((g) => {
+                            // Find product doc for rateType defaults etc; if missing, still show option.
+                            const pDoc = availableProducts.find((p) => String(p._id) === String(g.bestId));
+                            return {
+                              _id: g.bestId,
+                              name: g.name,
+                              __stockKg: Number(g.totalKg || 0),
+                              conversionFactors: pDoc?.conversionFactors,
+                              brand: pDoc?.brand || "",
+                            };
+                          });
+                      } else {
+                        productOptions = availableProducts;
+                      }
+                     }
+
+                     const balance =
+                       type === "SALE" && it.productTypeId
+                        ? (saleKind === "SMJ" && groupedBalanceById
+                            ? Number(groupedBalanceById.get(String(it.productTypeId)) || 0)
+                            : getStockBalance(it.productTypeId))
                         : null;
                     const netKg = Number(it.netWeightKg || 0);
                     const unitKg =
@@ -1939,7 +2036,7 @@ const computePaidRemaining = (form, total) => {
                             </option>
                             {productOptions.map((p) => (
                               <option key={p._id} value={p._id}>
-                                {p.name}
+                                {p.__stockKg != null ? `${p.name} (${Math.round(Number(p.__stockKg) || 0)} kg)` : p.name}
                               </option>
                             ))}
                           </select>
@@ -2411,17 +2508,8 @@ const computePaidRemaining = (form, total) => {
     );
   };
 
-  const saleCompanyBuckets = useMemo(() => {
-    const wholesalers = companies.filter((c) => c.partyType === "WHOLESELLER");
-    const customers = companies.filter((c) => c.partyType === "CUSTOMER");
-    return {
-      wholesalers,
-      customers,
-    };
-  }, [companies]);
-
-  const wholesellerOptions = saleCompanyBuckets.wholesalers;
-  const customerOptions = saleCompanyBuckets.customers;
+  const wholesellerOptions = wholesellers;
+  const customerOptions = customers;
 
   const tabs = [
     {
@@ -2865,16 +2953,18 @@ const computePaidRemaining = (form, total) => {
 
       <AddOptionModal
         open={quickCustomerModal}
-        title="Add New Customer"
-        subtitle="This customer will be available immediately in the dropdown."
+        title={saleKind === "SMJ" ? "Add New Wholeseller" : "Add New Customer"}
+        subtitle="This record will be available immediately in the dropdown."
         onClose={closeQuickCustomerModal}
         onSubmit={saveQuickCustomer}
-        submitLabel="Add Customer"
+        submitLabel={saleKind === "SMJ" ? "Add Wholeseller" : "Add Customer"}
         loading={quickCustomerSaving}
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="sm:col-span-2">
-            <label className="block text-xs text-gray-600 mb-1">Customer Name *</label>
+            <label className="block text-xs text-gray-600 mb-1">
+              {saleKind === "SMJ" ? "Wholeseller Name" : "Customer Name"} *
+            </label>
             <input
               type="text"
               className={`w-full rounded px-3 py-2 text-sm border ${
@@ -2883,7 +2973,7 @@ const computePaidRemaining = (form, total) => {
                   : "border-gray-300"
               }`}
               value={quickCustomer.name}
-              placeholder="Customer Name *"
+              placeholder={saleKind === "SMJ" ? "Wholeseller Name *" : "Customer Name *"}
               onChange={(e) => handleQuickCustomerChange("name", e.target.value)}
             />
             {quickCustomerTouched.name && quickCustomerErrors.name ? (
@@ -2894,7 +2984,7 @@ const computePaidRemaining = (form, total) => {
             ) : null}
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Phone (03XX-XXXXXXX) *</label>
+            <label className="block text-xs text-gray-600 mb-1">Phone (03XX-XXXXXXX)</label>
             <input
               type="text"
               className={`w-full rounded px-3 py-2 text-sm border ${
@@ -2903,7 +2993,7 @@ const computePaidRemaining = (form, total) => {
                   : "border-gray-300"
               }`}
               value={quickCustomer.phone}
-              placeholder="Phone (03XX-XXXXXXX) *"
+              placeholder="Phone (03XX-XXXXXXX)"
               onChange={(e) => handleQuickCustomerChange("phone", e.target.value)}
             />
             {quickCustomerTouched.phone && quickCustomerErrors.phone ? (
@@ -2914,7 +3004,7 @@ const computePaidRemaining = (form, total) => {
             ) : null}
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Email *</label>
+            <label className="block text-xs text-gray-600 mb-1">Email</label>
             <input
               type="email"
               className={`w-full rounded px-3 py-2 text-sm border ${
@@ -2923,7 +3013,7 @@ const computePaidRemaining = (form, total) => {
                   : "border-gray-300"
               }`}
               value={quickCustomer.email}
-              placeholder="Email *"
+              placeholder="Email"
               onChange={(e) => handleQuickCustomerChange("email", e.target.value)}
             />
             {quickCustomerTouched.email && quickCustomerErrors.email ? (
@@ -2934,7 +3024,7 @@ const computePaidRemaining = (form, total) => {
             ) : null}
           </div>
           <div className="sm:col-span-2">
-            <label className="block text-xs text-gray-600 mb-1">Address *</label>
+            <label className="block text-xs text-gray-600 mb-1">Address</label>
             <input
               type="text"
               className={`w-full rounded px-3 py-2 text-sm border ${
@@ -2943,7 +3033,7 @@ const computePaidRemaining = (form, total) => {
                   : "border-gray-300"
               }`}
               value={quickCustomer.address}
-              placeholder="Address *"
+              placeholder="Address"
               onChange={(e) => handleQuickCustomerChange("address", e.target.value)}
             />
             {quickCustomerTouched.address && quickCustomerErrors.address ? (

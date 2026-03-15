@@ -9,12 +9,6 @@ const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ExpenseEntry = require("../models/expenseEntryModel");
-const HRJob = require("../models/hrJobModel");
-const HREmployee = require("../models/hrEmployeeModel");
-const HRApplicant = require("../models/hrApplicantModel");
-const HRLeave = require("../models/hrLeaveModel");
-const HRAdvance = require("../models/hrAdvanceModel");
-const HRPayroll = require("../models/hrPayrollModel");
 const NotificationReminder = require("../models/notificationReminderModel");
 const AIChat = require("../models/AIChat");
 const JournalLine = require("../models/journalLineModel");
@@ -30,12 +24,6 @@ const MODEL_MAP = {
   stockLedgers: StockLedger,
   managerialStockLedgers: ManagerialStockLedger,
   expenseEntries: ExpenseEntry,
-  hrJobs: HRJob,
-  hrEmployees: HREmployee,
-  hrApplicants: HRApplicant,
-  hrLeaves: HRLeave,
-  hrAdvances: HRAdvance,
-  hrPayrolls: HRPayroll,
   notificationReminders: NotificationReminder,
   journalLines: JournalLine,
   aiChats: AIChat,
@@ -98,4 +86,3 @@ exports.purge = async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to delete all records." });
   }
 };
-

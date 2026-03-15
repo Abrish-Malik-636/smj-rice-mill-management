@@ -109,6 +109,23 @@ const TransactionSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // SALE parties are stored separately from Company (customers/wholesellers).
+    // We keep companyId/companyName for backward compatibility and PURCHASE flows.
+    partyType: {
+      type: String,
+      enum: ["CUSTOMER", "WHOLESELLER"],
+      default: null,
+    },
+    partyRefId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    partyName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
     paymentStatus: {
       type: String,
       enum: ["PAID", "UNPAID", "PARTIAL"],
@@ -164,5 +181,6 @@ const TransactionSchema = new mongoose.Schema(
 
 TransactionSchema.index({ type: 1, date: 1 });
 TransactionSchema.index({ companyId: 1, date: 1 });
+TransactionSchema.index({ partyType: 1, partyRefId: 1, date: 1 });
 
 module.exports = mongoose.model("Transaction", TransactionSchema);

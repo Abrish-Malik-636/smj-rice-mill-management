@@ -14,12 +14,6 @@ const Transaction = require("../models/transactionModel");
 const ManagerialStock = require("../models/managerialStockModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ExpenseEntry = require("../models/expenseEntryModel");
-const HRJob = require("../models/hrJobModel");
-const HREmployee = require("../models/hrEmployeeModel");
-const HRApplicant = require("../models/hrApplicantModel");
-const HRLeave = require("../models/hrLeaveModel");
-const HRAdvance = require("../models/hrAdvanceModel");
-const HRPayroll = require("../models/hrPayrollModel");
 const NotificationReminder = require("../models/notificationReminderModel");
 const AIChat = require("../models/AIChat");
 const SystemAction = require("../models/systemActionModel");
@@ -42,12 +36,6 @@ const COLLECTIONS = [
   { key: "stockLedgers", model: StockLedger },
   { key: "managerialStockLedgers", model: ManagerialStockLedger },
   { key: "expenseEntries", model: ExpenseEntry },
-  { key: "hrJobs", model: HRJob },
-  { key: "hrEmployees", model: HREmployee },
-  { key: "hrApplicants", model: HRApplicant },
-  { key: "hrLeaves", model: HRLeave },
-  { key: "hrAdvances", model: HRAdvance },
-  { key: "hrPayrolls", model: HRPayroll },
   { key: "notificationReminders", model: NotificationReminder },
   { key: "aiChats", model: AIChat },
   { key: "systemActions", model: SystemAction },
@@ -94,12 +82,6 @@ exports.saveSettings = async (req, res) => {
       payload.stockStatusLowKg !== undefined ||
       payload.managerialStockStatusExtremeLowQty !== undefined ||
       payload.managerialStockStatusLowQty !== undefined ||
-      payload.hrMonthlyWorkingDays !== undefined ||
-      payload.hrWorkingHoursPerDay !== undefined ||
-      payload.hrOvertimeRate !== undefined ||
-      payload.hrAllowPaidLeave !== undefined ||
-      payload.hrAllowUnpaidLeave !== undefined ||
-      payload.hrAdvanceDeductionMode !== undefined ||
       newAdminPin !== null;
     if (needsPin) {
       const settings = await SystemSettings.findOne({}).select("adminPin").lean();

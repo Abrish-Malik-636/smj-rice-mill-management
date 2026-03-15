@@ -178,17 +178,21 @@ exports.createGatePass = async (req, res) => {
     }
 
     if (body.type === "OUT") {
-      if (!body.customer || String(body.customer).trim() === "") {
-        return res.status(400).json({
-          success: false,
-          message: "Customer is required for OUT gate pass.",
-        });
-      }
       if (!invoiceIds.length) {
         return res.status(400).json({
           success: false,
           message: "Invoice is required for OUT gate pass.",
         });
+      }
+
+      // Auto-derive customer from the selected sale invoice(s) to avoid user retyping.
+      // We still keep `customer` on GatePass for display/printing, but it's not user-entered anymore.
+      if (!body.customer || String(body.customer).trim() === "") {
+        try {
+          const first = await Transaction.findById(invoiceIds[0]).lean().select("companyName partyName");
+          const name = String(first?.partyName || first?.companyName || "").trim();
+          if (name) body.customer = name;
+        } catch {}
       }
     }
 

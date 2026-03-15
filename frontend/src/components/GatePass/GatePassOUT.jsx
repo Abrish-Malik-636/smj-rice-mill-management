@@ -5,12 +5,10 @@ import api from "../../services/api";
 import DataTable from "../ui/DataTable";
 
 export default function GatePassOUT() {
-  const [companies, setCompanies] = useState([]);
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
   const [form, setForm] = useState({
     truckNo: "",
-    customer: "",
     driverName: "",
     driverContact: "",
     freightCharges: "",
@@ -55,12 +53,6 @@ export default function GatePassOUT() {
     return "";
   };
 
-  const validateCustomer = (v) => {
-    if (!v || v.trim() === "") return "Customer is required.";
-    if (!nameRegex.test(v)) return "Customer: letters and spaces only.";
-    return "";
-  };
-
   const validateDriverName = (v) =>
     !v ? "Driver name is required." : nameRegex.test(v) ? "" : "Driver name: letters and spaces only.";
 
@@ -73,7 +65,6 @@ export default function GatePassOUT() {
   const validateField = (name, value) => {
     let msg = "";
     if (name === "truckNo") msg = validateTruckNo(value);
-    if (name === "customer") msg = validateCustomer(value);
     if (name === "driverName") msg = validateDriverName(value);
     if (name === "driverContact") msg = validateDriverContact(value);
     if (name === "freightCharges") msg = value ? "" : "Freight charges are required.";
@@ -83,14 +74,12 @@ export default function GatePassOUT() {
 
   const validateForm = () => {
     const e1 = validateTruckNo(form.truckNo);
-    const e2 = validateCustomer(form.customer);
     const e3 = validateDriverName(form.driverName);
     const e4 = validateDriverContact(form.driverContact);
     const e5 = form.freightCharges ? "" : "Freight charges are required.";
 
     const newErr = {};
     if (e1) newErr.truckNo = e1;
-    if (e2) newErr.customer = e2;
     if (e3) newErr.driverName = e3;
     if (e4) newErr.driverContact = e4;
     if (e5) newErr.freightCharges = e5;
@@ -137,17 +126,6 @@ export default function GatePassOUT() {
       } catch {}
     };
     loadSettings();
-  }, []);
-
-  // Load companies for customer dropdown
-  useEffect(() => {
-    const loadCompanies = async () => {
-      try {
-        const res = await api.get("/companies");
-        setCompanies(res.data.data || []);
-      } catch {}
-    };
-    loadCompanies();
   }, []);
 
   const fetchInvoices = async () => {
@@ -233,10 +211,6 @@ export default function GatePassOUT() {
     const companyNames = Array.from(
       new Set(selectedInvoices.map((i) => String(i.companyName || "").trim()).filter(Boolean))
     );
-    if (companyNames.length > 1) {
-      toast.error("Selected invoices must belong to the same customer.");
-      return;
-    }
 
     const payload = {
       ...form,
@@ -244,14 +218,19 @@ export default function GatePassOUT() {
       invoiceIds: selectedInvoices.map((i) => i._id),
       invoiceId: selectedInvoices[0]?._id,
       invoiceNo: selectedInvoices[0]?.invoiceNo,
-      items: selectedInvoices.flatMap((inv) => (inv?.items || [])).map((it) => ({
-        itemType: it.productTypeName,
+      invoiceNos: selectedInvoices.map((i) => i.invoiceNo).filter(Boolean),
+      // For multi-invoice, customer may differ; keep header generic and rely on per-invoice details in print.
+      customer: companyNames.length === 1 ? companyNames[0] : "Multiple",
+      items: selectedInvoices
+        .flatMap((inv) => inv?.items || [])
+        .map((it) => ({
+        itemType: String(it.productTypeName || it.itemName || "Item").trim(),
         stockType: "Production",
         customItemName: "",
-        quantity: it.netWeightKg || 0,
+        quantity: Number(it.netWeightKg ?? it.quantity ?? 0) || 0,
         unit: "kg",
-        rate: it.rate || 0,
-        amount: it.amount || 0,
+        rate: Number(it.rate || 0) || 0,
+        amount: Number(it.amount || 0) || 0,
       })),
       freightCharges: form.freightCharges
         ? Number(form.freightCharges)
@@ -281,7 +260,6 @@ export default function GatePassOUT() {
       // Reset form
       setForm({
         truckNo: "",
-        customer: "",
         driverName: "",
         driverContact: "",
         freightCharges: "",
@@ -292,7 +270,11 @@ export default function GatePassOUT() {
       fetchRows();
       fetchInvoices();
     } catch (err) {
-      toast.error(err.message || "Unable to save.");
+      const msg =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Unable to save.";
+      toast.error(msg);
       document.getElementById("gatepass-out-form")?.scrollIntoView({
         behavior: "smooth",
         block: "start",
@@ -307,7 +289,6 @@ export default function GatePassOUT() {
     }
     setForm({
       truckNo: row.truckNo || "",
-      customer: row.customer || "",
       driverName: row.driverName || "",
       driverContact: row.driverContact || "",
       freightCharges: row.freightCharges ? String(row.freightCharges) : "",
@@ -377,6 +358,22 @@ export default function GatePassOUT() {
       ? `<img src="${logo}" style="height:50px;margin-right:12px;" alt="logo" />`
       : `<div style="width:50px;height:50px;background:#d1fae5;color:#047857;display:inline-flex;align-items:center;justify-content:center;font-weight:700;margin-right:12px;border-radius:8px;font-size:20px;">GP</div>`;
 
+    const ids = Array.isArray(row.invoiceIds) && row.invoiceIds.length
+      ? row.invoiceIds
+      : (row.invoiceId ? [row.invoiceId] : []);
+    const invoices = (ids || [])
+      .map((id) => salesInvoices.find((t) => String(t._id) === String(id)))
+      .filter(Boolean);
+
+    const invNos = invoices.map((i) => i.invoiceNo).filter(Boolean);
+    const distinctCustomers = Array.from(
+      new Set(invoices.map((i) => String(i.companyName || "").trim()).filter(Boolean)),
+    );
+    const customerName =
+      distinctCustomers.length > 1
+        ? "Multiple"
+        : String(row.customer || distinctCustomers[0] || "").trim();
+
     let itemsHtml = "";
     if (row.items && row.items.length > 0) {
       itemsHtml = row.items
@@ -400,6 +397,45 @@ export default function GatePassOUT() {
         })
         .join("");
     }
+
+    const invoiceDetailsHtml = invoices.length
+      ? invoices
+          .map((inv) => {
+            const invItems = Array.isArray(inv.items) ? inv.items : [];
+            const invItemsHtml = invItems
+              .map((it) => {
+                const name = String(it.productTypeName || it.itemName || "Item").trim();
+                const qty = Math.round(Number(it.netWeightKg || it.quantity || 0));
+                return `<tr>
+                  <td style="border:1px solid #ddd;padding:6px;">${name}</td>
+                  <td style="border:1px solid #ddd;padding:6px;text-align:right;">${qty} kg</td>
+                </tr>`;
+              })
+              .join("");
+
+            return `
+              <div style="margin-top:14px;">
+                <div style="font-size:12px;font-weight:700;color:#065f46;margin-bottom:6px;">
+                  Invoice ${inv.invoiceNo || "-"}
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+                  <div><span class="label">Customer:</span> <span class="value">${String(inv.companyName || "").trim() || "-"}</span></div>
+                  <div><span class="label">Date:</span> <span class="value">${inv.date ? new Date(inv.date).toLocaleDateString() : "-"}</span></div>
+                </div>
+                <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:11px;">
+                  <thead>
+                    <tr>
+                      <th style="background:#f0fdf4;color:#065f46;padding:6px;border:1px solid #ddd;text-align:left;">Item</th>
+                      <th style="background:#f0fdf4;color:#065f46;padding:6px;border:1px solid #ddd;text-align:right;">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>${invItemsHtml || `<tr><td colspan="2" style="border:1px solid #ddd;padding:6px;color:#6b7280;">No items</td></tr>`}</tbody>
+                </table>
+              </div>
+            `;
+          })
+          .join("")
+      : `<div style="margin-top:14px;font-size:11px;color:#6b7280;">No invoice details available.</div>`;
 
     const html = `
       <html><head><title>Gate Pass ${row.gatePassNo || ""}</title>
@@ -435,14 +471,11 @@ export default function GatePassOUT() {
         <div><span class="label">Date:</span><span class="value">${
           row.createdAt ? new Date(row.createdAt).toLocaleDateString() : "-"
         }</span></div>
-        <div><span class="label">Invoice No:</span><span class="value">${
-          row.invoiceNo || "-"
-        }</span></div>
         <div><span class="label">Truck No:</span><span class="value">${
           row.truckNo || "-"
         }</span></div>
         <div><span class="label">Customer:</span><span class="value">${
-          row.customer || "-"
+          customerName || "-"
         }</span></div>
         <div><span class="label">Driver:</span><span class="value">${
           row.driverName || "-"
@@ -467,6 +500,11 @@ export default function GatePassOUT() {
           </tr>
         </tfoot>
       </table>
+
+      <div style="margin-top:10px;">
+        <div style="font-size:12px;font-weight:700;color:#065f46;">Invoice Details</div>
+        ${invoiceDetailsHtml}
+      </div>
 
       <div class="footer">
         <div>Authorized Signature: _________________</div>
@@ -502,11 +540,6 @@ export default function GatePassOUT() {
           .filter(Boolean);
         return list.length ? Array.from(new Set(list)).join(", ") : "-";
       },
-    },
-    {
-      key: "customer",
-      label: "Customer",
-      filterOptions: Array.from(new Set(rows.map((r) => r.customer).filter(Boolean))),
     },
     { key: "driverName", label: "Driver" },
     {
@@ -704,25 +737,6 @@ export default function GatePassOUT() {
             )}
           </div>
 
-          {/* Customer (from invoice) */}
-          <div id="field-customer">
-            <label className="block text-sm font-medium mb-1">
-              Customer <span className="text-red-500">*</span>
-            </label>
-            <input
-              name="customer"
-              value={form.customer}
-              onChange={handleChange}
-              className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                errors.customer ? "border-red-500" : "border-gray-300"
-              }`}
-              placeholder="Enter customer"
-            />
-            {errors.customer && (
-              <p className="text-xs text-red-500 mt-1">{errors.customer}</p>
-            )}
-          </div>
-
           {/* Driver Name */}
           <div id="field-driverName">
             <label className="block text-sm font-medium mb-1">
@@ -823,14 +837,13 @@ export default function GatePassOUT() {
             <button
               type="button"
               onClick={() => {
-                setEditingId(null);
-                setForm({
-                  truckNo: "",
-                  customer: "",
-                  driverName: "",
-                  driverContact: "",
-                  freightCharges: "",
-                });
+                  setEditingId(null);
+                  setForm({
+                    truckNo: "",
+                    driverName: "",
+                    driverContact: "",
+                    freightCharges: "",
+                  });
                 setSelectedInvoiceIds([]);
                 setErrors({});
               }}

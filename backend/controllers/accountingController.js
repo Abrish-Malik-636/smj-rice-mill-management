@@ -1,7 +1,5 @@
 const Transaction = require("../models/transactionModel");
 const ExpenseEntry = require("../models/expenseEntryModel");
-const HRPayroll = require("../models/hrPayrollModel");
-const HRAdvance = require("../models/hrAdvanceModel");
 const Account = require("../models/accountModel");
 const JournalEntry = require("../models/journalEntryModel");
 const JournalLine = require("../models/journalLineModel");
@@ -44,13 +42,10 @@ const isBankMethod = (method) => {
 exports.getDaybook = async (req, res) => {
   try {
     const { start, end } = parseRange(req);
-    const [sales, purchases, expenses, payrolls, advances] =
-      await Promise.all([
+    const [sales, purchases, expenses] = await Promise.all([
       Transaction.find({ type: "SALE", date: { $lte: end } }).lean(),
       Transaction.find({ type: "PURCHASE", date: { $lte: end } }).lean(),
       ExpenseEntry.find({ date: { $lte: end } }).lean(),
-      HRPayroll.find({ createdAt: { $lte: end } }).lean(),
-      HRAdvance.find({ date: { $lte: end } }).lean(),
     ]);
 
     const allEntries = [];
@@ -95,29 +90,7 @@ exports.getDaybook = async (req, res) => {
         paymentMethod: e.paymentMethod || "CASH",
       });
     });
-    payrolls.forEach((p) => {
-      if (p.status !== "Paid") return;
-      allEntries.push({
-        date: p.createdAt,
-        type: "Payroll",
-        party: p.employeeName || "Employee",
-        description: `${p.month}/${p.year}`,
-        inflow: 0,
-        outflow: Number(p.netPay || 0),
-        paymentMethod: "CASH",
-      });
-    });
-    advances.forEach((a) => {
-      allEntries.push({
-        date: a.date,
-        type: "Advance",
-        party: a.employeeName || "Employee",
-        description: a.note || "-",
-        inflow: 0,
-        outflow: Number(a.amount || 0),
-        paymentMethod: "CASH",
-      });
-    });
+    // HR & Payroll module removed; no payroll/advances in daybook anymore.
 
     allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
@@ -301,23 +274,16 @@ exports.getLedger = async (req, res) => {
 exports.getCashSummary = async (req, res) => {
   try {
     const { start, end } = parseRange(req);
-    const [sales, purchases, expenses, payrolls, advances] = await Promise.all([
+    const [sales, purchases, expenses] = await Promise.all([
       Transaction.find({ type: "SALE", date: { $gte: start, $lte: end } }).lean(),
       Transaction.find({ type: "PURCHASE", date: { $gte: start, $lte: end } }).lean(),
       ExpenseEntry.find({ date: { $gte: start, $lte: end } }).lean(),
-      HRPayroll.find({ createdAt: { $gte: start, $lte: end } }).lean(),
-      HRAdvance.find({ date: { $gte: start, $lte: end } }).lean(),
     ]);
 
     const inflow = sales.reduce((sum, t) => sum + paidAmount(t), 0);
     const outPurch = purchases.reduce((sum, t) => sum + paidAmount(t), 0);
     const outExp = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    const outPayroll = payrolls.reduce(
-      (sum, p) => sum + (p.status === "Paid" ? Number(p.netPay || 0) : 0),
-      0
-    );
-    const outAdv = advances.reduce((sum, a) => sum + Number(a.amount || 0), 0);
-    const outflow = outPurch + outExp + outPayroll + outAdv;
+    const outflow = outPurch + outExp;
     res.json({
       success: true,
       data: { inflow, outflow, cashInHand: inflow - outflow },

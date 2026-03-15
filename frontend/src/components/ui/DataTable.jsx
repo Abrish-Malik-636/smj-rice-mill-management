@@ -372,11 +372,13 @@ export default function DataTable({
                     className="border border-gray-300 rounded px-2 py-1.5 text-sm min-w-[120px]"
                   >
                     <option value="">All</option>
-                    {col.filterOptions.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
+                    {Array.from(new Set((col.filterOptions || []).map((v) => String(v))))
+                      .filter((v) => v.trim() !== "")
+                      .map((opt, idx) => (
+                        <option key={`${opt}-${idx}`} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
                   </select>
                 </div>
               )

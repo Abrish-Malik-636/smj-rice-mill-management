@@ -63,7 +63,6 @@ exports.createCompany = async (req, res) => {
       email: req.body.email?.trim().toLowerCase(),
       phone: req.body.phone?.trim(),
       address: req.body.address?.trim(),
-      partyType: req.body.partyType || "CUSTOMER",
     };
 
     const company = await Company.create(companyData);
@@ -101,7 +100,7 @@ exports.updateCompany = async (req, res) => {
     if (updateData.email) updateData.email = updateData.email.trim().toLowerCase();
     if (updateData.phone) updateData.phone = updateData.phone.trim();
     if (updateData.address) updateData.address = updateData.address.trim();
-    if (updateData.partyType) updateData.partyType = updateData.partyType.trim();
+    delete updateData.partyType;
 
     const updated = await Company.findByIdAndUpdate(req.params.id, updateData, {
       new: true,

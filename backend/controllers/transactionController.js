@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const Transaction = require("../models/transactionModel");
 const GatePass = require("../models/gatePassModel");
 const Company = require("../models/companyModel");
+const Customer = require("../models/customerModel");
+const Wholeseller = require("../models/wholesellerModel");
 const ProductType = require("../models/productTypeModel");
 const SystemSettings = require("../models/systemSettingsModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
@@ -12,6 +14,53 @@ const {
   postTransactionEntry,
   reverseBySource,
 } = require("../services/accountingJournalService");
+
+function escapeRegex(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function resolveSaleParty(payload) {
+  const saleKind = payload.saleKind === "CUSTOM" ? "CUSTOM" : "SMJ";
+  const Model = saleKind === "CUSTOM" ? Customer : Wholeseller;
+  const partyType = saleKind === "CUSTOM" ? "CUSTOMER" : "WHOLESELLER";
+
+  // Frontend historically used "companyId"; for SALE we treat it as partyRefId.
+  const id = payload.companyId;
+  if (id && mongoose.isValidObjectId(id)) {
+    const doc = await Model.findById(id).lean();
+    if (doc) {
+      return {
+        partyType,
+        partyRefId: doc._id,
+        partyName: doc.name,
+      };
+    }
+  }
+
+  const name = String(payload.companyName || "").trim();
+  if (!name) {
+    return null;
+  }
+
+  // Upsert by name (case-insensitive) so next time it appears in dropdown.
+  const existing = await Model.findOne({
+    name: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
+  }).lean();
+  if (existing) {
+    return {
+      partyType,
+      partyRefId: existing._id,
+      partyName: existing.name,
+    };
+  }
+
+  const created = await Model.create({ name });
+  return {
+    partyType,
+    partyRefId: created._id,
+    partyName: created.name,
+  };
+}
 
 async function ensureManagerialItem(item) {
   const name = item.itemName ? String(item.itemName).trim() : "";
@@ -172,8 +221,13 @@ function validatePayload(body) {
     return 'Field "type" must be "PURCHASE" or "SALE".';
   }
 
-  if (body.type === "SALE" && !body.companyId) {
-    return 'Field "companyId" is required for sales.';
+  if (body.type === "SALE") {
+    // For SALE we accept either a selected party id (sent as companyId) or a typed name (companyName).
+    const hasId = !!body.companyId;
+    const name = String(body.companyName || "").trim();
+    if (!hasId && !name) {
+      return 'Field "companyId" (or "companyName") is required for sales.';
+    }
   }
 
   if (!Array.isArray(body.items) || body.items.length === 0) {
@@ -244,19 +298,24 @@ exports.createTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: validationMsg });
     }
 
-    // Company check (required for SALE, optional for PURCHASE)
+    // Company / Party resolution:
+    // - PURCHASE: optional Company reference (legacy behavior)
+    // - SALE: resolve Customer/Wholeseller based on saleKind; do NOT require Company.
     let company = null;
-    if (payload.companyId) {
+    let party = null;
+    if (payload.type === "SALE") {
+      party = await resolveSaleParty(payload);
+      if (!party) {
+        return res.status(400).json({
+          success: false,
+          message: 'Field "companyId" (or "companyName") is required for sales.',
+        });
+      }
+    } else if (payload.companyId) {
       company = await Company.findById(payload.companyId).lean();
       if (!company) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Invalid companyId" });
+        return res.status(400).json({ success: false, message: "Invalid companyId" });
       }
-    } else if (payload.type === "SALE") {
-      return res
-        .status(400)
-        .json({ success: false, message: "companyId is required for sales." });
     }
 
     // Compute item amounts
@@ -345,8 +404,14 @@ exports.createTransaction = async (req, res) => {
       saleKind,
       invoiceNo,
       date: new Date(payload.date),
-      companyId: payload.companyId || null,
-      companyName: company?.name || payload.companyName || "Purchase",
+      companyId: payload.type === "PURCHASE" ? payload.companyId || null : null,
+      companyName:
+        payload.type === "SALE"
+          ? party?.partyName || String(payload.companyName || "").trim()
+          : company?.name || payload.companyName || "Purchase",
+      partyType: payload.type === "SALE" ? party?.partyType || null : null,
+      partyRefId: payload.type === "SALE" ? party?.partyRefId || null : null,
+      partyName: payload.type === "SALE" ? party?.partyName || "" : "",
       paymentStatus: payStatus,
       paymentMethod: payload.paymentMethod || "CASH",
       dueDate,
@@ -646,20 +711,30 @@ exports.updateTransaction = async (req, res) => {
       return res.status(400).json({ success: false, message: validationMsg });
     }
 
-    // Company (required for SALE, optional for PURCHASE)
+    // Company / Party update:
+    // - PURCHASE keeps legacy companyId
+    // - SALE uses Customer/Wholeseller and ignores Company
     let company = null;
+    let party = null;
     const companyId = payload.companyId || existing.companyId || null;
-    if (companyId) {
+    if (existing.type === "SALE") {
+      party = await resolveSaleParty({
+        ...payload,
+        saleKind: payload.saleKind || existing.saleKind,
+        companyId: payload.companyId || existing.partyRefId || null,
+        companyName: payload.companyName || existing.partyName || existing.companyName || "",
+      });
+      if (!party) {
+        return res.status(400).json({
+          success: false,
+          message: 'Field "companyId" (or "companyName") is required for sales.',
+        });
+      }
+    } else if (companyId) {
       company = await Company.findById(companyId).lean();
       if (!company) {
-        return res
-          .status(400)
-          .json({ success: false, message: "Invalid companyId" });
+        return res.status(400).json({ success: false, message: "Invalid companyId" });
       }
-    } else if (existing.type === "SALE") {
-      return res
-        .status(400)
-        .json({ success: false, message: "companyId is required for sales." });
     }
 
     // Items & totals
@@ -718,8 +793,14 @@ exports.updateTransaction = async (req, res) => {
         : 0;
 
     existing.date = new Date(payload.date);
-    existing.companyId = companyId;
-    existing.companyName = company?.name || payload.companyName || "Purchase";
+    existing.companyId = existing.type === "PURCHASE" ? companyId : null;
+    existing.companyName =
+      existing.type === "SALE"
+        ? party?.partyName || String(payload.companyName || "").trim()
+        : company?.name || payload.companyName || "Purchase";
+    existing.partyType = existing.type === "SALE" ? party?.partyType || null : null;
+    existing.partyRefId = existing.type === "SALE" ? party?.partyRefId || null : null;
+    existing.partyName = existing.type === "SALE" ? party?.partyName || "" : "";
     existing.paymentStatus = payStatus;
     existing.paymentMethod =
       payload.paymentMethod || existing.paymentMethod || "CASH";

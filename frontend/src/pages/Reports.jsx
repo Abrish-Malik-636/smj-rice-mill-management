@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import DataTable from "../components/ui/DataTable";
 import api from "../services/api";
-import CompanyManager from "../components/MasterData/CompanyManager";
 import ProductManager from "../components/MasterData/ProductManager";
 
 const REPORT_TABS = [
@@ -45,6 +44,7 @@ export default function Reports() {
   const [endDate, setEndDate] = useState("");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Kept for backward compatibility; customers/wholesellers now load from dedicated tables.
   const [partyBuckets, setPartyBuckets] = useState({ customers: [], wholesalers: [] });
 
   useEffect(() => {
@@ -217,19 +217,50 @@ export default function Reports() {
     const loadPartyBuckets = async () => {
       if (activeTab !== "customers" && activeTab !== "wholesellers") return;
       try {
-        const res = await api.get("/companies");
-        const list = res.data?.data || [];
-        const customers = list.filter((c) => c.partyType === "CUSTOMER").map((c) => String(c._id));
-        const wholesalers = list.filter((c) => c.partyType === "WHOLESELLER").map((c) => String(c._id));
-        setPartyBuckets({ customers, wholesalers });
+        if (activeTab === "customers") {
+          const res = await api.get("/customers");
+          const list = res.data?.data || [];
+          setRows(
+            list.map((c) => ({
+              id: c._id,
+              name: c.name || "-",
+              phone: c.phone || "-",
+              email: c.email || "-",
+              address: c.address || "-",
+              updatedAt: c.updatedAt || c.createdAt,
+            }))
+          );
+        } else {
+          const res = await api.get("/wholesellers");
+          const list = res.data?.data || [];
+          setRows(
+            list.map((c) => ({
+              id: c._id,
+              name: c.name || "-",
+              phone: c.phone || "-",
+              email: c.email || "-",
+              address: c.address || "-",
+              updatedAt: c.updatedAt || c.createdAt,
+            }))
+          );
+        }
       } catch {
-        setPartyBuckets({ customers: [], wholesalers: [] });
+        setRows([]);
       }
     };
     loadPartyBuckets();
   }, [activeTab]);
 
   const columns = useMemo(() => {
+    if (activeTab === "customers" || activeTab === "wholesellers") {
+      return [
+        { key: "name", label: "Name" },
+        { key: "phone", label: "Phone" },
+        { key: "email", label: "Email" },
+        { key: "address", label: "Address" },
+        { key: "updatedAt", label: "Updated", render: (v) => fmtDate(v) },
+      ];
+    }
     if (activeTab === "stock") {
       return [
         { key: "stockType", label: "Stock Type" },
@@ -387,25 +418,7 @@ export default function Reports() {
       </div>
 
       <div className="bg-white rounded-lg shadow-sm p-4">
-        {activeTab === "customers" ? (
-          <CompanyManager
-            tableOnly
-            editInModal
-            filterIds={partyBuckets.customers}
-            titleOverride="Customers"
-            emptyMessageOverride="No customers found"
-            searchPlaceholderOverride="Search customers..."
-          />
-        ) : activeTab === "wholesellers" ? (
-          <CompanyManager
-            tableOnly
-            editInModal
-            filterIds={partyBuckets.wholesalers}
-            titleOverride="Wholesellers"
-            emptyMessageOverride="No wholesellers found"
-            searchPlaceholderOverride="Search wholesellers..."
-          />
-        ) : activeTab === "brands" ? (
+        {activeTab === "brands" ? (
           <ProductManager tableOnly editInModal />
         ) : (
           loading ? (
