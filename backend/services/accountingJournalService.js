@@ -7,6 +7,7 @@ const DEFAULT_COA = [
   { code: "1100", name: "Cash", type: "ASSET", subType: "CASH", isControl: true },
   { code: "1110", name: "Bank", type: "ASSET", subType: "BANK", isControl: true },
   { code: "1200", name: "Accounts Receivable", type: "ASSET", subType: "AR", isControl: true },
+  { code: "1400", name: "Employee Advances", type: "ASSET", subType: "HR_ADVANCE", isControl: true },
   { code: "1300", name: "Raw Paddy Inventory", type: "ASSET", subType: "INVENTORY_RAW", isControl: true },
   { code: "1310", name: "Finished Goods Inventory", type: "ASSET", subType: "INVENTORY_FINISHED", isControl: true },
   { code: "2100", name: "Accounts Payable", type: "LIABILITY", subType: "AP", isControl: true },

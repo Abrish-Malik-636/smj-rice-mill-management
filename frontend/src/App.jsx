@@ -12,6 +12,7 @@ import MasterData from "./pages/MasterData";
 import AccountingFinance from "./pages/AccountingFinance";
 import Reports from "./pages/Reports";
 import AIChatbot from "./components/AI/AIChatbot";
+import HR from "./pages/HR";
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/notifications" element={<Notifications />} />
           <Route path="/accounting-finance" element={<AccountingFinance />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/hr" element={<HR />} />
           <Route path="/masterdata" element={<MasterData />} />
         </Routes>
         <AIChatbot />

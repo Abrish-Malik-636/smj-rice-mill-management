@@ -39,6 +39,20 @@ const systemSettingsSchema = new mongoose.Schema(
     purchaseCategoryOptions: { type: [String], default: [] },
     transporterOptions: { type: [String], default: [] },
     brandOptions: { type: [String], default: [] },
+    // HR
+    hrDepartments: {
+      type: [String],
+      default: [
+        "Administration",
+        "Milling / Production",
+        "Labour",
+        "Packing",
+        "Loading",
+        "Accounts",
+        "Security",
+        "Others",
+      ],
+    },
     // Notifications / alerts schedule
     alertsEnabled: { type: Boolean, default: true },
     alertsWorkStart: { type: String, default: "09:00" },

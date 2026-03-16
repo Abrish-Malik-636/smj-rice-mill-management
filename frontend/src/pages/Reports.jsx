@@ -10,6 +10,7 @@ const REPORT_TABS = [
   { key: "production", label: "Production Report" },
   { key: "sales", label: "Sales Report" },
   { key: "purchases", label: "Purchase Report" },
+  { key: "hr", label: "HR Reports" },
   { key: "pl", label: "Profit & Loss" },
   { key: "trial", label: "Trial Balance" },
   { key: "balance", label: "Balance Sheet" },
@@ -44,6 +45,8 @@ export default function Reports() {
   const [endDate, setEndDate] = useState("");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [hrSubTab, setHrSubTab] = useState("employees");
+  const [hrRows, setHrRows] = useState([]);
   // Kept for backward compatibility; customers/wholesellers now load from dedicated tables.
   const [partyBuckets, setPartyBuckets] = useState({ customers: [], wholesalers: [] });
 
@@ -65,6 +68,38 @@ export default function Reports() {
   const loadReport = async () => {
     try {
       setLoading(true);
+      if (activeTab === "hr") {
+        // HR reports are not range-based for now; keep UX simple.
+        const endpoint =
+          hrSubTab === "employees"
+            ? "/hr/reports/employees"
+            : hrSubTab === "advanceBalances"
+              ? "/hr/reports/advance-balances"
+              : hrSubTab === "payrollSummary"
+                ? "/hr/reports/payroll-summary"
+                : "/hr/reports/employees";
+        const res = await api.get(endpoint);
+        const data = res.data?.data || [];
+        if (hrSubTab === "payrollSummary") {
+          setHrRows(
+            data.map((r) => ({
+              __rowId: `${r.year}-${r.month}`,
+              ...r,
+            }))
+          );
+        } else if (hrSubTab === "advanceBalances") {
+          setHrRows(
+            data.map((r) => ({
+              __rowId: String(r.employeeId || r._id || ""),
+              ...r,
+            }))
+          );
+        } else {
+          setHrRows(data);
+        }
+        setRows([]);
+        return;
+      }
       if (activeTab === "customers" || activeTab === "brands") {
         setRows([]);
         return;
@@ -210,6 +245,11 @@ export default function Reports() {
   };
 
   useEffect(() => {
+    if (activeTab === "hr") loadReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, hrSubTab]);
+
+  useEffect(() => {
     loadReport();
   }, [activeTab, params]);
 
@@ -345,28 +385,64 @@ export default function Reports() {
 
   const title = REPORT_TABS.find((t) => t.key === activeTab)?.label || "Report";
 
+  const hrColumns = useMemo(() => {
+    if (hrSubTab === "advanceBalances") {
+      return [
+        { key: "employeeCode", label: "Employee ID" },
+        { key: "employeeName", label: "Employee" },
+        { key: "department", label: "Department" },
+        { key: "totalAdvance", label: "Total Advance", render: (v) => fmt(v) },
+        { key: "remainingBalance", label: "Remaining", render: (v) => fmt(v) },
+      ];
+    }
+    if (hrSubTab === "payrollSummary") {
+      return [
+        { key: "year", label: "Year" },
+        { key: "month", label: "Month" },
+        { key: "count", label: "Employees" },
+        { key: "totalNet", label: "Total Net Salary", render: (v) => fmt(v) },
+      ];
+    }
+    return [
+      { key: "employeeId", label: "Employee ID" },
+      { key: "name", label: "Employee Name" },
+      { key: "department", label: "Department" },
+      { key: "designation", label: "Designation" },
+      { key: "salaryType", label: "Salary Type" },
+      { key: "basicSalary", label: "Basic Salary", render: (v) => fmt(v) },
+      { key: "status", label: "Status" },
+    ];
+  }, [hrSubTab]);
+
   return (
     <div className="p-4 md:p-6 space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {REPORT_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => {
-              setActiveTab(tab.key);
-              setSearchParams({ tab: tab.key });
-            }}
-            className={`px-3 py-1.5 rounded-full text-sm border ${
-              activeTab === tab.key
-                ? "bg-emerald-600 text-white border-emerald-600"
-                : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="border-b border-emerald-200">
+        <div className="flex flex-wrap gap-2">
+          {REPORT_TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setActiveTab(tab.key);
+                  setSearchParams({ tab: tab.key });
+                }}
+                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                  ${
+                    isActive
+                      ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+                      : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
+                  }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
+      {activeTab !== "hr" && (
       <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-wrap items-end gap-3">
         <label className="text-sm">
           <span className="block text-gray-600 mb-1">Range</span>
@@ -416,10 +492,51 @@ export default function Reports() {
           </>
         )}
       </div>
+      )}
 
       <div className="bg-white rounded-lg shadow-sm p-4">
         {activeTab === "brands" ? (
           <ProductManager tableOnly editInModal />
+        ) : activeTab === "hr" ? (
+          <>
+            <div className="border-b border-emerald-200 mb-3">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: "employees", label: "Employee List" },
+                  { key: "advanceBalances", label: "Advance Balance" },
+                  { key: "payrollSummary", label: "Monthly Payroll Summary" },
+                ].map((t) => {
+                  const isActive = hrSubTab === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setHrSubTab(t.key)}
+                      className={`px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                        ${
+                          isActive
+                            ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+                            : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
+                        }`}
+                    >
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {loading ? (
+              <div className="text-sm text-gray-500">Loading hr reports...</div>
+            ) : (
+              <DataTable
+                title="HR Reports"
+                columns={hrColumns}
+                data={hrRows}
+                idKey={hrSubTab === "employees" ? "_id" : "__rowId"}
+                emptyMessage="No data found."
+              />
+            )}
+          </>
         ) : (
           loading ? (
           <div className="text-sm text-gray-500">Loading {title.toLowerCase()}...</div>

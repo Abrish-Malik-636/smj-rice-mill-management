@@ -33,6 +33,7 @@ export default function MainLayout({ children }) {
     "/stock-managerial": "Stock Management",
     "/accounting-finance": "Accounting & Finance",
     "/reports": "Reports",
+    "/hr": "HR & Payroll",
     "/notifications": "Notifications & Alerts",
     "/masterdata": "System Settings",
   };
@@ -330,7 +331,8 @@ export default function MainLayout({ children }) {
           "4": "/stock",
           "5": "/accounting-finance",
           "6": "/reports",
-          "7": "/notifications",
+          "7": "/hr",
+          "8": "/notifications",
           "0": "/masterdata",
         };
         if (map[key]) {

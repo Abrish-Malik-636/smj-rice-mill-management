@@ -97,6 +97,11 @@ const MENU = [
     ],
   },
   {
+    name: "HR & Payroll",
+    icon: <User size={18} />,
+    path: "/hr",
+  },
+  {
     name: "Notifications & Alerts",
     icon: <ShieldAlert size={18} />,
     path: "/notifications",

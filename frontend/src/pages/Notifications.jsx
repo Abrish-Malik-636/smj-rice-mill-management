@@ -439,29 +439,30 @@ export default function Notifications() {
     <div className="p-4 md:p-6 space-y-4">
       {loading && <span className="text-xs text-gray-400">Loading data...</span>}
 
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => setActiveTab("reminders")}
-          className={`px-3 py-2 rounded-lg text-sm border ${
-            activeTab === "reminders"
-              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-              : "border-gray-200 bg-white text-gray-600"
-          }`}
-        >
-          Notifications
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("alerts")}
-          className={`px-3 py-2 rounded-lg text-sm border ${
-            activeTab === "alerts"
-              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-              : "border-gray-200 bg-white text-gray-600"
-          }`}
-        >
-          Alerts
-        </button>
+      <div className="border-b border-emerald-200">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { key: "reminders", label: "Notifications" },
+            { key: "alerts", label: "Alerts" },
+          ].map((t) => {
+            const isActive = activeTab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActiveTab(t.key)}
+                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                  ${
+                    isActive
+                      ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+                      : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
+                  }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {activeTab === "reminders" ? (
