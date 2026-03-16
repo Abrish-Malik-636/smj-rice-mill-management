@@ -12,6 +12,8 @@ import {
   Download,
   FileText,
   Printer,
+  Factory,
+  Boxes,
 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 import Pin4Input from "../components/Pin4Input";
@@ -568,8 +570,8 @@ export default function Stock({ initialTab = "production" }) {
       <div className="border-b border-emerald-200">
         <div className="flex gap-4">
           {[
-            { label: "Production Stock", value: "production" },
-            { label: "Managerial Stock", value: "managerial" },
+            { label: "Production Stock", value: "production", icon: <Factory size={16} /> },
+            { label: "Managerial Stock", value: "managerial", icon: <Boxes size={16} /> },
           ].map((t) => {
             const isActive = activeTab === t.value;
             return (
@@ -586,6 +588,7 @@ export default function Stock({ initialTab = "production" }) {
                       : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
                   }`}
               >
+                {t.icon}
                 <span>{t.label}</span>
               </button>
             );

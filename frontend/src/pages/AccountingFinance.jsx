@@ -1,21 +1,33 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
-import { Plus, RotateCcw } from "lucide-react";
+import {
+  Plus,
+  RotateCcw,
+  BookOpen,
+  BookCopy,
+  FileText,
+  Scale,
+  TrendingUp,
+  Landmark,
+  HandCoins,
+  ListTree,
+  Receipt,
+} from "lucide-react";
 import api from "../services/api";
 import DataTable from "../components/ui/DataTable";
 
 const TABS = [
-  { key: "daybook", label: "Day Book" },
-  { key: "ledger", label: "Ledger" },
-  { key: "journal", label: "Journal" },
-  { key: "trial", label: "Trial Balance" },
-  { key: "pl", label: "Profit & Loss" },
-  { key: "balance", label: "Balance Sheet" },
-  { key: "receivables", label: "Outstanding Receivables" },
-  { key: "payables", label: "Outstanding Payables" },
-  { key: "accounts", label: "Accounts" },
-  { key: "expenses", label: "Expenses" },
+  { key: "daybook", label: "Day Book", icon: <BookOpen size={16} /> },
+  { key: "ledger", label: "Ledger", icon: <BookCopy size={16} /> },
+  { key: "journal", label: "Journal", icon: <FileText size={16} /> },
+  { key: "trial", label: "Trial Balance", icon: <Scale size={16} /> },
+  { key: "pl", label: "Profit & Loss", icon: <TrendingUp size={16} /> },
+  { key: "balance", label: "Balance Sheet", icon: <Landmark size={16} /> },
+  { key: "receivables", label: "Outstanding Receivables", icon: <HandCoins size={16} /> },
+  { key: "payables", label: "Outstanding Payables", icon: <HandCoins size={16} /> },
+  { key: "accounts", label: "Accounts", icon: <ListTree size={16} /> },
+  { key: "expenses", label: "Expenses", icon: <Receipt size={16} /> },
 ];
 
 const RANGE_OPTIONS = [
@@ -236,24 +248,31 @@ export default function AccountingFinance() {
   };
 
   const tabs = (
-    <div className="flex flex-wrap gap-2">
-      {TABS.map((tab) => (
-        <button
-          key={tab.key}
-          type="button"
-          onClick={() => {
-            setActiveTab(tab.key);
-            setSearchParams({ tab: tab.key });
-          }}
-          className={`px-3 py-1.5 rounded-full text-sm border ${
-            activeTab === tab.key
-              ? "bg-emerald-600 text-white border-emerald-600"
-              : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"
-          }`}
-        >
-          {tab.label}
-        </button>
-      ))}
+    <div className="border-b border-emerald-200">
+      <div className="flex flex-wrap gap-2">
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => {
+                setActiveTab(tab.key);
+                setSearchParams({ tab: tab.key });
+              }}
+              className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                ${
+                  isActive
+                    ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
+                    : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
+                }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 
@@ -320,7 +339,7 @@ export default function AccountingFinance() {
   );
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="space-y-4">
       {tabs}
       {filters}
 

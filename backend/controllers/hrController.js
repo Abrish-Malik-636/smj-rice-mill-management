@@ -49,6 +49,35 @@ function computeNet({ basicSalary, overtime, bonus, allowances, deductions, adva
   return Math.max(0, round2(net));
 }
 
+function computeTotalsFromItems({ earnings, deductions }) {
+  const e = Array.isArray(earnings) ? earnings : [];
+  const d = Array.isArray(deductions) ? deductions : [];
+  const totalEarnings = round2(e.reduce((s, it) => s + Number(it?.amount || 0), 0));
+  const totalDeductions = round2(d.reduce((s, it) => s + Number(it?.amount || 0), 0));
+  const netPay = Math.max(0, round2(totalEarnings - totalDeductions));
+  return { totalEarnings, totalDeductions, netPay };
+}
+
+function defaultEarnings({ basicSalary }) {
+  const base = round2(Number(basicSalary || 0));
+  return [
+    { key: "basic", title: "Basic", amount: base },
+    { key: "incentive", title: "Incentive", amount: 0 },
+    { key: "overtime", title: "Overtime", amount: 0 },
+    { key: "bonus", title: "Bonus", amount: 0 },
+    { key: "other", title: "Other", amount: 0 },
+  ];
+}
+
+function defaultDeductions() {
+  return [
+    { key: "advance", title: "Advance / Loan", amount: 0 },
+    { key: "pf", title: "Provident Fund", amount: 0 },
+    { key: "tax", title: "Professional Tax", amount: 0 },
+    { key: "other", title: "Other Deduction", amount: 0 },
+  ];
+}
+
 async function applyAdvanceDeduction({ employeeId, amount, payrollId }) {
   let remaining = Number(amount || 0);
   if (!remaining || remaining <= 0) return { usedAdvanceIds: [], usedAmount: 0 };
@@ -253,12 +282,102 @@ exports.createAdvance = async (req, res) => {
   }
 };
 
+exports.updateAdvance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+    const body = req.body || {};
+    const existing = await HRAdvance.findById(id);
+    if (!existing) return res.status(404).json({ success: false, message: "Advance not found." });
+
+    const date = body.date ? new Date(body.date) : existing.date;
+    const paymentMethod = body.paymentMethod
+      ? (String(body.paymentMethod || "CASH").toUpperCase() === "BANK" ? "BANK" : "CASH")
+      : existing.paymentMethod;
+    const note = body.note != null ? String(body.note || "").trim() : existing.note;
+
+    let amount = existing.amount;
+    if (body.amount != null) {
+      const nextAmount = Number(body.amount || 0);
+      if (!nextAmount || nextAmount <= 0) {
+        return res.status(400).json({ success: false, message: "Advance amount must be > 0." });
+      }
+      amount = round2(nextAmount);
+    }
+
+    const used = round2(Number(existing.amount || 0) - Number(existing.remainingBalance || 0));
+    const remaining = Math.max(0, round2(amount - used));
+    const status = remaining > 0 ? "OPEN" : "SETTLED";
+
+    existing.date = date;
+    existing.paymentMethod = paymentMethod;
+    existing.note = note;
+    existing.amount = amount;
+    existing.remainingBalance = remaining;
+    existing.status = status;
+    await existing.save();
+
+    await ensureDefaultAccounts();
+    const map = await getAccountsMap();
+    const advAcc = map.get("1400");
+    const payAcc = map.get(paymentMethod === "BANK" ? "1110" : "1100");
+    if (advAcc && payAcc) {
+      await reverseBySource({ sourceModule: "HR", sourceRefType: "ADVANCE", sourceRefId: existing._id, reason: "Edit" });
+      const emp = await HREmployee.findById(existing.employeeId).lean();
+      const partyId = emp ? String(emp._id) : String(existing.employeeId);
+      const partyName = emp?.name || existing.employeeName || "Employee";
+      await postJournalEntry({
+        date,
+        sourceModule: "HR",
+        sourceRefType: "ADVANCE",
+        sourceRefId: existing._id,
+        narration: `Employee advance ${partyName}`,
+        lines: [
+          { accountId: advAcc._id, debit: existing.amount, credit: 0, partyId, partyName },
+          { accountId: payAcc._id, debit: 0, credit: existing.amount, partyId, partyName },
+        ],
+      });
+    }
+
+    res.json({ success: true, data: existing });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e?.message || "Failed to update advance." });
+  }
+};
+
+exports.deleteAdvance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+    const doc = await HRAdvance.findById(id);
+    if (!doc) return res.status(404).json({ success: false, message: "Advance not found." });
+
+    const used = round2(Number(doc.amount || 0) - Number(doc.remainingBalance || 0));
+    if (used > 0) {
+      return res.status(400).json({ success: false, message: "Cannot delete an advance that has been used in payroll." });
+    }
+
+    await reverseBySource({ sourceModule: "HR", sourceRefType: "ADVANCE", sourceRefId: doc._id, reason: "Delete" });
+    await HRAdvance.deleteOne({ _id: doc._id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e?.message || "Failed to delete advance." });
+  }
+};
+
 // Payroll
 exports.listPayrolls = async (req, res) => {
   try {
     const q = {};
     if (req.query.year) q.year = Number(req.query.year);
     if (req.query.month) q.month = Number(req.query.month);
+    if (req.query.employeeId && mongoose.isValidObjectId(req.query.employeeId)) {
+      q.employeeId = req.query.employeeId;
+    }
     const rows = await HRPayroll.find(q).sort({ year: -1, month: -1, createdAt: -1 }).lean();
     res.json({ success: true, data: rows });
   } catch (e) {
@@ -298,6 +417,12 @@ exports.generatePayrolls = async (req, res) => {
         deductions: 0,
         advanceDeduction: 0,
       });
+      const earnings = defaultEarnings({ basicSalary });
+      const deductionsItems = defaultDeductions();
+      const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({
+        earnings,
+        deductions: deductionsItems,
+      });
       // eslint-disable-next-line no-await-in-loop
       const doc = await HRPayroll.create({
         employeeId: emp._id,
@@ -314,6 +439,11 @@ exports.generatePayrolls = async (req, res) => {
         deductions: 0,
         advanceDeduction: 0,
         netSalary: round2(netSalary),
+        earnings,
+        deductionsItems,
+        totalEarnings,
+        totalDeductions,
+        netPay,
         paymentDate: null,
         paymentMethod: "CASH",
         status: "DRAFT",
@@ -326,6 +456,75 @@ exports.generatePayrolls = async (req, res) => {
       success: true,
       data: { month, year, createdCount: created.length, skippedCount: skipped.length, created },
     });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e?.message || "Failed to generate payroll." });
+  }
+};
+
+exports.generatePayrollForEmployee = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const employeeId = body.employeeId;
+    const month = Number(body.month);
+    const year = Number(body.year);
+    if (!employeeId || !mongoose.isValidObjectId(employeeId)) {
+      return res.status(400).json({ success: false, message: "Employee is required." });
+    }
+    if (!month || month < 1 || month > 12) {
+      return res.status(400).json({ success: false, message: "Month must be 1..12." });
+    }
+    if (!year || year < 2000) {
+      return res.status(400).json({ success: false, message: "Year is required." });
+    }
+
+    const emp = await HREmployee.findById(employeeId).lean();
+    if (!emp) return res.status(400).json({ success: false, message: "Invalid employee." });
+    const exists = await HRPayroll.findOne({ employeeId: emp._id, month, year }).lean();
+    if (exists) return res.json({ success: true, data: exists, created: false });
+
+    const basicSalary = Number(emp.basicSalary || 0);
+    const netSalary = computeNet({
+      basicSalary,
+      overtime: 0,
+      bonus: 0,
+      allowances: 0,
+      deductions: 0,
+      advanceDeduction: 0,
+    });
+    const earnings = defaultEarnings({ basicSalary });
+    const deductionsItems = defaultDeductions();
+    const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({
+      earnings,
+      deductions: deductionsItems,
+    });
+
+    const doc = await HRPayroll.create({
+      employeeId: emp._id,
+      employeeCode: emp.employeeId || "",
+      employeeName: emp.name || "",
+      department: emp.department || "",
+      designation: "",
+      month,
+      year,
+      basicSalary: round2(basicSalary),
+      overtime: 0,
+      bonus: 0,
+      allowances: 0,
+      deductions: 0,
+      advanceDeduction: 0,
+      netSalary: round2(netSalary),
+      earnings,
+      deductionsItems,
+      totalEarnings,
+      totalDeductions,
+      netPay,
+      status: "DRAFT",
+      paymentDate: null,
+      paymentMethod: "",
+      advanceIds: [],
+    });
+
+    res.status(201).json({ success: true, data: doc, created: true });
   } catch (e) {
     res.status(400).json({ success: false, message: e?.message || "Failed to generate payroll." });
   }
@@ -347,11 +546,18 @@ exports.payPayroll = async (req, res) => {
     const emp = await HREmployee.findById(doc.employeeId).lean();
     if (!emp) return res.status(400).json({ success: false, message: "Invalid employee." });
 
+    const incomingEarnings = Array.isArray(body.earnings) ? body.earnings : null;
+    const incomingDeductions = Array.isArray(body.deductionsItems) ? body.deductionsItems : null;
+
+    // Backward compatibility: if UI sends old fields, fold them into items.
     const overtime = Number(body.overtime || 0);
     const bonus = Number(body.bonus || 0);
     const allowances = Number(body.allowances || 0);
     const deductions = Number(body.deductions || 0);
-    const requestedAdvanceDeduction = Number(body.advanceDeduction || 0);
+    const requestedAdvanceDeduction =
+      incomingDeductions
+        ? Number(incomingDeductions.find((d) => String(d?.key) === "advance")?.amount || 0)
+        : Number(body.advanceDeduction || 0);
 
     const { usedAdvanceIds, usedAmount } = await applyAdvanceDeduction({
       employeeId: emp._id,
@@ -362,15 +568,55 @@ exports.payPayroll = async (req, res) => {
     const basicSalary = Number(doc.basicSalary || emp.basicSalary || 0);
     const netSalary = computeNet({ basicSalary, overtime, bonus, allowances, deductions, advanceDeduction });
 
+    const earnings =
+      incomingEarnings ||
+      (Array.isArray(doc.earnings) && doc.earnings.length ? doc.earnings : defaultEarnings({ basicSalary }));
+    let deductionsItems =
+      incomingDeductions ||
+      (Array.isArray(doc.deductionsItems) && doc.deductionsItems.length ? doc.deductionsItems : defaultDeductions());
+
+    // Normalize amounts and ensure advance deduction equals the actually used amount.
+    deductionsItems = deductionsItems.map((it) => {
+      const key = String(it?.key || "").trim();
+      const title = String(it?.title || "").trim();
+      const amt = round2(Number(it?.amount || 0));
+      if (key === "advance") return { key, title: title || "Advance / Loan", amount: round2(advanceDeduction) };
+      return { key, title, amount: Math.max(0, amt) };
+    });
+    const safeEarnings = earnings.map((it) => ({
+      key: String(it?.key || "").trim(),
+      title: String(it?.title || "").trim(),
+      amount: Math.max(0, round2(Number(it?.amount || 0))),
+    }));
+
+    const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({
+      earnings: safeEarnings,
+      deductions: deductionsItems,
+    });
+
     const paymentMethod = String(body.paymentMethod || "CASH").toUpperCase() === "BANK" ? "BANK" : "CASH";
     const paymentDate = body.paymentDate ? new Date(body.paymentDate) : new Date();
 
-    doc.overtime = round2(overtime);
-    doc.bonus = round2(bonus);
-    doc.allowances = round2(allowances);
-    doc.deductions = round2(deductions);
-    doc.advanceDeduction = round2(advanceDeduction);
-    doc.netSalary = round2(netSalary);
+    // Keep legacy numeric fields in sync for downstream accounting/reporting.
+    const advOnly = round2(advanceDeduction);
+    doc.basicSalary = round2(Number(safeEarnings.find((x) => x.key === "basic")?.amount || doc.basicSalary || 0));
+    doc.overtime = round2(Number(safeEarnings.find((x) => x.key === "overtime")?.amount || 0));
+    doc.bonus = round2(Number(safeEarnings.find((x) => x.key === "bonus")?.amount || 0));
+    // Treat the rest of earnings as allowances bucket.
+    doc.allowances = round2(
+      safeEarnings
+        .filter((x) => !["basic", "overtime", "bonus"].includes(String(x.key || "")))
+        .reduce((s, x) => s + Number(x.amount || 0), 0)
+    );
+    doc.deductions = round2(Math.max(0, totalDeductions - advOnly));
+    doc.advanceDeduction = advOnly;
+    // Use flexible computed netPay as primary.
+    doc.netSalary = round2(netPay);
+    doc.earnings = safeEarnings;
+    doc.deductionsItems = deductionsItems;
+    doc.totalEarnings = totalEarnings;
+    doc.totalDeductions = totalDeductions;
+    doc.netPay = netPay;
     doc.paymentDate = paymentDate;
     doc.paymentMethod = paymentMethod;
     doc.status = "PAID";
@@ -406,6 +652,24 @@ exports.payPayroll = async (req, res) => {
     res.json({ success: true, data: saved });
   } catch (e) {
     res.status(400).json({ success: false, message: e?.message || "Failed to pay payroll." });
+  }
+};
+
+exports.deletePayroll = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+    const doc = await HRPayroll.findById(id);
+    if (!doc) return res.status(404).json({ success: false, message: "Payroll not found." });
+    if (doc.status !== "DRAFT") {
+      return res.status(400).json({ success: false, message: "Only DRAFT payrolls can be deleted." });
+    }
+    await HRPayroll.deleteOne({ _id: doc._id });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e?.message || "Failed to delete payroll." });
   }
 };
 

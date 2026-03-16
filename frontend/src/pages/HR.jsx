@@ -1,13 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Save, Trash2, Wand2, CreditCard } from "lucide-react";
+import { Save, Trash2, Wand2, CreditCard, Users, Wallet, Edit2, Printer } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../services/api";
 import DataTable from "../components/ui/DataTable";
 
 const TABS = [
-  { key: "advances", label: "Advances" },
-  { key: "payroll", label: "Payroll" },
-  { key: "employees", label: "Employees" },
+  { key: "payroll", label: "Payroll", icon: <Wallet size={16} /> },
+  { key: "employees", label: "Employees", icon: <Users size={16} /> },
 ];
 
 const emptyEmployee = {
@@ -71,12 +70,8 @@ const emptyAdvance = {
 const emptyPayroll = {
   month: new Date().getMonth() + 1,
   year: new Date().getFullYear(),
-  basicSalary: "",
-  overtime: "",
-  bonus: "",
-  allowances: "",
-  deductions: "",
-  advanceDeduction: "",
+  earnings: [],
+  deductionsItems: [],
   paymentDate: "",
   paymentMethod: "CASH",
 };
@@ -84,15 +79,61 @@ const emptyPayroll = {
 const num = (v) => (v === "" || v == null ? 0 : Number(v || 0) || 0);
 const round2 = (n) => Number((Number(n || 0)).toFixed(2));
 
-function computeNet(p) {
-  const net =
-    num(p.basicSalary) +
-    num(p.overtime) +
-    num(p.bonus) +
-    num(p.allowances) -
-    num(p.deductions) -
-    num(p.advanceDeduction);
-  return Math.max(0, round2(net));
+function computeTotalsFromItems({ earnings, deductionsItems }) {
+  const e = Array.isArray(earnings) ? earnings : [];
+  const d = Array.isArray(deductionsItems) ? deductionsItems : [];
+  const totalEarnings = round2(e.reduce((s, it) => s + num(it?.amount), 0));
+  const totalDeductions = round2(d.reduce((s, it) => s + num(it?.amount), 0));
+  const netPay = Math.max(0, round2(totalEarnings - totalDeductions));
+  return { totalEarnings, totalDeductions, netPay };
+}
+
+const EARNINGS_PRESETS = [
+  "Basic",
+  "Incentive",
+  "Overtime",
+  "Bonus",
+  "Other",
+];
+const DEDUCTION_PRESETS = [
+  "Advance / Loan",
+  "Provident Fund",
+  "Professional Tax",
+  "Other Deduction",
+];
+const NEW_OPT = "__NEW__";
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function makeDefaultEarnings(basicSalary) {
+  return [
+    { key: "basic", title: "Basic", amount: String(Math.round(num(basicSalary))) },
+    { key: "incentive", title: "Incentive", amount: "" },
+    { key: "overtime", title: "Overtime", amount: "" },
+    { key: "bonus", title: "Bonus", amount: "" },
+    { key: "other", title: "Other", amount: "" },
+  ];
+}
+
+function makeDefaultDeductions(openAdvance) {
+  return [
+    { key: "advance", title: "Advance / Loan", amount: openAdvance ? String(Math.round(num(openAdvance))) : "" },
+    { key: "pf", title: "Provident Fund", amount: "" },
+    { key: "tax", title: "Professional Tax", amount: "" },
+    { key: "other", title: "Other Deduction", amount: "" },
+  ];
 }
 
 export default function HR() {
@@ -113,12 +154,14 @@ export default function HR() {
   const [advanceForm, setAdvanceForm] = useState({ ...emptyAdvance });
   const [advanceSaving, setAdvanceSaving] = useState(false);
   const [advanceErrors, setAdvanceErrors] = useState({});
+  const [advanceEditingId, setAdvanceEditingId] = useState(null);
 
   const [payrollForm, setPayrollForm] = useState({ ...emptyPayroll });
   const [payrollSaving, setPayrollSaving] = useState(false);
   const [payrollErrors, setPayrollErrors] = useState({});
   const [payrollGenerating, setPayrollGenerating] = useState(false);
   const [payTarget, setPayTarget] = useState(null);
+  const [expandedEmployeeId, setExpandedEmployeeId] = useState(null);
 
   const employeeOptions = useMemo(
     () =>
@@ -149,6 +192,18 @@ export default function HR() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  useEffect(() => {
+    // Keep payrolls in sync with selected month/year in payroll tab.
+    const month = Number(payrollForm.month);
+    const year = Number(payrollForm.year);
+    if (!month || !year) return;
+    api
+      .get("/hr/payrolls", { params: { month, year } })
+      .then((res) => setPayrolls(res.data?.data || []))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payrollForm.month, payrollForm.year]);
 
 
   const getEmployeeFieldState = (field, value) => {
@@ -296,15 +351,177 @@ export default function HR() {
         date: advanceForm.date || new Date().toISOString().slice(0, 10),
         amount: num(advanceForm.amount),
       };
-      const res = await api.post("/hr/advances", payload);
-      toast.success("Advance saved");
+      if (advanceEditingId) {
+        const res = await api.put(`/hr/advances/${advanceEditingId}`, payload);
+        toast.success("Advance updated");
+        setAdvances((prev) => prev.map((a) => (a._id === advanceEditingId ? res.data.data : a)));
+        setAdvanceEditingId(null);
+      } else {
+        const res = await api.post("/hr/advances", payload);
+        toast.success("Advance saved");
+        setAdvances((prev) => [res.data.data, ...prev]);
+      }
       setAdvanceForm({ ...emptyAdvance });
       setAdvanceErrors({});
-      setAdvances((prev) => [res.data.data, ...prev]);
     } catch (err) {
       toast.error(err?.response?.data?.message || "Failed to save advance");
     } finally {
       setAdvanceSaving(false);
+    }
+  };
+
+  const deleteAdvance = async (row) => {
+    if (!row?._id) return;
+    // eslint-disable-next-line no-alert
+    if (!confirm("Delete this advance permanently?")) return;
+    try {
+      await api.delete(`/hr/advances/${row._id}`);
+      toast.success("Advance deleted");
+      setAdvances((prev) => prev.filter((a) => a._id !== row._id));
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to delete advance");
+    }
+  };
+
+  const printPayrollSlip = async (row) => {
+    try {
+      const s = await api.get("/settings");
+      const data = s.data?.data || {};
+      const general = data.general || data.generalSettings || data;
+      const companyName = general.companyName || general.millName || "SMJ Rice Mill";
+      const address = general.address || general.companyAddress || "";
+      const phone = general.phone || general.companyPhone || "";
+      const logoUrl = general.logoUrl || general.logo || "";
+
+      const earnings = Array.isArray(row.earnings) && row.earnings.length
+        ? row.earnings
+        : makeDefaultEarnings(row.basicSalary).map((x) => ({ ...x, amount: num(x.amount) }));
+      const deductionsItems = Array.isArray(row.deductionsItems) && row.deductionsItems.length
+        ? row.deductionsItems
+        : makeDefaultDeductions(row.advanceDeduction).map((x) => ({ ...x, amount: num(x.amount) }));
+
+      const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({ earnings, deductionsItems });
+      const lastTwo = (payrolls || [])
+        .filter((p) => String(p.employeeId) === String(row.employeeId) && p.status === "PAID")
+        .sort((a, b) => new Date(b.paymentDate || b.createdAt || 0) - new Date(a.paymentDate || a.createdAt || 0))
+        .filter((p) => String(p._id) !== String(row._id))
+        .slice(0, 2);
+
+      const html = `
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Payroll Slip</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    body { font-family: Arial, sans-serif; color: #0f172a; }
+    .hdr { display:flex; gap:12px; align-items:center; border-bottom: 2px solid #10b981; padding-bottom:10px; }
+    .logo { width:48px; height:48px; object-fit:contain; }
+    h1 { font-size:16px; margin:0; }
+    .muted { color:#475569; font-size:11px; margin-top:2px; }
+    .box { border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:12px; }
+    .row { display:flex; justify-content:space-between; gap:12px; font-size:12px; }
+    .row + .row { margin-top:6px; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .tbl { width:100%; border-collapse: collapse; font-size:12px; }
+    .tbl th, .tbl td { border:1px solid #e2e8f0; padding:8px; text-align:left; }
+    .tbl th { background:#f8fafc; }
+    .tot { margin-top: 10px; display:flex; justify-content: space-between; font-size:12px; }
+    .tot b { font-size: 13px; }
+    .ft { margin-top:14px; border-top:1px solid #e2e8f0; padding-top:8px; font-size:11px; color:#475569; }
+    .sig { margin-top: 18px; display:flex; justify-content: space-between; gap: 18px; }
+    .sig .line { margin-top: 34px; border-top: 1px solid #0f172a; padding-top: 6px; font-size: 11px; color: #334155; }
+  </style>
+</head>
+<body>
+  <div class="hdr">
+    ${logoUrl ? `<img class="logo" src="${logoUrl}" />` : ""}
+    <div>
+      <h1>${companyName}</h1>
+      <div class="muted">${address ? address + " | " : ""}${phone ? phone : ""}</div>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="row"><div><b>Employee:</b> ${row.employeeName || "-"}</div><div><b>Month:</b> ${row.month || "-"} / ${row.year || "-"}</div></div>
+    <div class="row"><div><b>Department:</b> ${row.department || "-"}</div><div><b>Status:</b> ${row.status || "-"}</div></div>
+    <div class="row"><div><b>Payment Date:</b> ${row.paymentDate ? new Date(row.paymentDate).toLocaleDateString() : "-"}</div><div><b>Method:</b> ${row.paymentMethod || "-"}</div></div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Earnings</div>
+      <table class="tbl">
+        <thead><tr><th>Title</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${earnings
+            .filter((x) => String(x.title || "").trim())
+            .map((x) => `<tr><td>${String(x.title)}</td><td>${Math.round(Number(x.amount||0))}</td></tr>`)
+            .join("")}
+          <tr><td><b>Total Earnings</b></td><td><b>${Math.round(totalEarnings)}</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Deductions</div>
+      <table class="tbl">
+        <thead><tr><th>Title</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${deductionsItems
+            .filter((x) => String(x.title || "").trim())
+            .map((x) => `<tr><td>${String(x.title)}</td><td>${Math.round(Number(x.amount||0))}</td></tr>`)
+            .join("")}
+          <tr><td><b>Total Deductions</b></td><td><b>${Math.round(totalDeductions)}</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="tot">
+    <div><b>Net Pay</b></div>
+    <div><b>${Math.round(netPay)}</b></div>
+  </div>
+
+  <div class="box">
+    <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Last 2 Months Paid</div>
+    <table class="tbl">
+      <thead><tr><th>Month</th><th>Paid Date</th><th>Net Pay</th></tr></thead>
+      <tbody>
+        ${
+          lastTwo.length
+            ? lastTwo
+                .map((p) => `<tr><td>${p.month}/${p.year}</td><td>${p.paymentDate ? new Date(p.paymentDate).toLocaleDateString() : "-"}</td><td>${Math.round(Number(p.netPay ?? p.netSalary ?? 0))}</td></tr>`)
+                .join("")
+            : `<tr><td colspan="3">-</td></tr>`
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <div class="sig">
+    <div style="flex:1;"><div class="line">Employer Signature</div></div>
+    <div style="flex:1;"><div class="line">Employee Signature</div></div>
+  </div>
+
+  <div class="ft">
+    This payroll slip is system generated.
+  </div>
+</body>
+</html>`;
+
+      const w = window.open("", "_blank");
+      if (!w) {
+        toast.error("Popup blocked. Allow popups to print.");
+        return;
+      }
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+      w.print();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to print slip");
     }
   };
 
@@ -329,27 +546,58 @@ export default function HR() {
     }
   };
 
+  const generatePayrollForEmployee = async (emp) => {
+    const nextErr = {};
+    if (!payrollForm.month || payrollForm.month < 1 || payrollForm.month > 12) nextErr.month = "Month must be 1..12";
+    if (!payrollForm.year) nextErr.year = "Year is required";
+    setPayrollErrors(nextErr);
+    if (Object.keys(nextErr).length) return;
+    if (!emp?._id) return;
+
+    setPayrollGenerating(true);
+    try {
+      const payload = { employeeId: String(emp._id), month: Number(payrollForm.month), year: Number(payrollForm.year) };
+      const res = await api.post("/hr/payrolls/generate-one", payload);
+      if (res.data?.created) toast.success("Payroll generated");
+      else toast.success("Payroll already exists");
+      const p = await api.get("/hr/payrolls", { params: { month: payload.month, year: payload.year } });
+      setPayrolls(p.data?.data || []);
+      return res.data?.data || null;
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to generate payroll");
+      return null;
+    } finally {
+      setPayrollGenerating(false);
+    }
+  };
+
   const payPayroll = async () => {
     if (!payTarget?._id) return toast.error("Select a payroll row to pay");
     const nextErr = {};
-    if (num(payrollForm.advanceDeduction) < 0) nextErr.advanceDeduction = "Cannot be negative";
+    if ((payrollForm.earnings || []).some((x) => num(x.amount) < 0)) nextErr.earnings = "Earnings cannot be negative";
+    if ((payrollForm.deductionsItems || []).some((x) => num(x.amount) < 0)) nextErr.deductionsItems = "Deductions cannot be negative";
     setPayrollErrors(nextErr);
     if (Object.keys(nextErr).length) return;
     setPayrollSaving(true);
     try {
       const payload = {
-        overtime: num(payrollForm.overtime),
-        bonus: num(payrollForm.bonus),
-        allowances: num(payrollForm.allowances),
-        deductions: num(payrollForm.deductions),
-        advanceDeduction: num(payrollForm.advanceDeduction),
+        earnings: (payrollForm.earnings || []).map((it) => ({
+          key: String(it.key || "").trim(),
+          title: String(it.title || "").trim(),
+          amount: num(it.amount),
+        })),
+        deductionsItems: (payrollForm.deductionsItems || []).map((it) => ({
+          key: String(it.key || "").trim(),
+          title: String(it.title || "").trim(),
+          amount: num(it.amount),
+        })),
         paymentDate: payrollForm.paymentDate || new Date().toISOString().slice(0, 10),
         paymentMethod: payrollForm.paymentMethod || "CASH",
       };
       await api.post(`/hr/payrolls/${payTarget._id}/pay`, payload);
       toast.success("Salary paid");
       setPayTarget(null);
-      setPayrollForm((p) => ({ ...p, overtime: "", bonus: "", allowances: "", deductions: "", advanceDeduction: "", paymentDate: "" }));
+      setPayrollForm((p) => ({ ...p, earnings: [], deductionsItems: [], paymentDate: "" }));
       setPayrollErrors({});
       const pRes = await api.get("/hr/payrolls", { params: { month: payrollForm.month, year: payrollForm.year } });
       setPayrolls(pRes.data?.data || []);
@@ -394,9 +642,9 @@ export default function HR() {
     { key: "employeeName", label: "Employee" },
     { key: "month", label: "Month" },
     { key: "year", label: "Year" },
-    { key: "basicSalary", label: "Basic", render: (v) => Math.round(Number(v || 0)) },
-    { key: "advanceDeduction", label: "Advance Ded.", render: (v) => Math.round(Number(v || 0)) },
-    { key: "netSalary", label: "Net", render: (v) => Math.round(Number(v || 0)) },
+    { key: "totalEarnings", label: "Earnings", render: (v, row) => Math.round(Number(v ?? row.totalEarnings ?? 0)) },
+    { key: "totalDeductions", label: "Deductions", render: (v, row) => Math.round(Number(v ?? row.totalDeductions ?? 0)) },
+    { key: "netPay", label: "Net Pay", render: (v, row) => Math.round(Number(v ?? row.netPay ?? row.netSalary ?? 0)) },
     { key: "status", label: "Status" },
     {
       key: "paymentDate",
@@ -408,45 +656,86 @@ export default function HR() {
       key: "actions",
       label: "Actions",
       skipExport: true,
-      render: (_, row) =>
-        row.status === "DRAFT" ? (
+      render: (_, row) => (
+        <div className="flex items-center gap-2">
+          {row.status === "DRAFT" ? (
+            <button
+              type="button"
+              className="px-2 py-1 rounded border border-emerald-200 text-emerald-800 text-[11px] hover:bg-emerald-50 inline-flex items-center gap-1"
+              onClick={() => {
+                // Auto-fill advance deduction = total open remaining advances for this employee (user can change it).
+                const advBal = (advances || [])
+                  .filter((a) => String(a.employeeId) === String(row.employeeId) && a.status === "OPEN")
+                  .reduce((s, a) => s + Number(a.remainingBalance || 0), 0);
+
+                setPayTarget(row);
+                setPayrollForm((p) => ({
+                  ...p,
+                  month: row.month,
+                  year: row.year,
+                  earnings: Array.isArray(row.earnings) && row.earnings.length
+                    ? row.earnings.map((x) => ({ ...x, amount: x.amount === 0 ? "" : String(Math.round(Number(x.amount || 0))) }))
+                    : makeDefaultEarnings(row.basicSalary),
+                  deductionsItems: Array.isArray(row.deductionsItems) && row.deductionsItems.length
+                    ? row.deductionsItems.map((x) => {
+                        if (String(x.key) === "advance") {
+                          const v = advBal ? Math.round(advBal) : Number(x.amount || 0);
+                          return { ...x, amount: v ? String(v) : "" };
+                        }
+                        return { ...x, amount: x.amount === 0 ? "" : String(Math.round(Number(x.amount || 0))) };
+                      })
+                    : makeDefaultDeductions(advBal),
+                  paymentDate: "",
+                  paymentMethod: "CASH",
+                }));
+                setPayrollErrors({});
+              }}
+            >
+              <CreditCard size={12} /> Pay
+            </button>
+          ) : (
+            <span className="text-[11px] text-gray-400">Paid</span>
+          )}
+
           <button
             type="button"
-            className="px-2 py-1 rounded border border-emerald-200 text-emerald-800 text-[11px] hover:bg-emerald-50 inline-flex items-center gap-1"
-            onClick={() => {
-              setPayTarget(row);
-              setPayrollForm((p) => ({
-                ...p,
-                month: row.month,
-                year: row.year,
-                basicSalary: String(row.basicSalary ?? ""),
-                overtime: "",
-                bonus: "",
-                allowances: "",
-                deductions: "",
-                advanceDeduction: "",
-                paymentDate: "",
-                paymentMethod: "CASH",
-              }));
-              setPayrollErrors({});
-            }}
+            className="p-1 rounded hover:bg-gray-50"
+            title="Print payroll slip"
+            onClick={() => printPayrollSlip(row)}
           >
-            <CreditCard size={12} /> Pay
+            <Printer className="w-4 h-4 text-gray-700" />
           </button>
-        ) : (
-          <span className="text-[11px] text-gray-400">Paid</span>
-        ),
+
+          {row.status === "DRAFT" && (
+            <button
+              type="button"
+              className="p-1 rounded hover:bg-red-50"
+              title="Delete payroll"
+              onClick={async () => {
+                // eslint-disable-next-line no-alert
+                if (!confirm("Delete this DRAFT payroll?")) return;
+                try {
+                  await api.delete(`/hr/payrolls/${row._id}`);
+                  toast.success("Payroll deleted");
+                  setPayrolls((prev) => prev.filter((p) => p._id !== row._id));
+                } catch (err) {
+                  toast.error(err?.response?.data?.message || "Failed to delete payroll");
+                }
+              }}
+            >
+              <Trash2 className="w-4 h-4 text-red-600" />
+            </button>
+          )}
+        </div>
+      ),
     },
   ];
 
-  const advanceColumns = [
-    { key: "employeeName", label: "Employee" },
-    { key: "date", label: "Date", render: (v) => (v ? new Date(v).toLocaleDateString() : "-") },
-    { key: "amount", label: "Advance", render: (v) => Math.round(Number(v || 0)) },
-    { key: "remainingBalance", label: "Remaining", render: (v) => Math.round(Number(v || 0)) },
-    { key: "status", label: "Status" },
-    { key: "paymentMethod", label: "Method" },
-  ];
+  const advanceMiniRows = (employeeId) =>
+    (advances || [])
+      .filter((a) => String(a.employeeId) === String(employeeId))
+      .sort((a, b) => new Date(b.date || b.createdAt || 0) - new Date(a.date || a.createdAt || 0))
+      .slice(0, 5);
 
 
   return (
@@ -460,14 +749,15 @@ export default function HR() {
                 key={t.key}
                 type="button"
                 onClick={() => setActiveTab(t.key)}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
                   ${
                     isActive
                       ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
                       : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
                   }`}
               >
-                {t.label}
+                {t.icon}
+                <span>{t.label}</span>
               </button>
             );
           })}
@@ -889,105 +1179,33 @@ export default function HR() {
       )}
 
       {activeTab === "advances" && (
-        <div className="flex flex-col gap-4">
-          <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4 space-y-3">
-            <div className="text-sm font-semibold text-emerald-800">Add Advance</div>
-            <div className="space-y-2">
-              <div>
-                <label className="text-xs text-gray-600">Employee *</label>
-                <select
-                  className={`w-full border rounded p-2 text-sm ${advanceErrors.employeeId ? "border-red-400 bg-red-50" : "border-gray-300"}`}
-                  value={advanceForm.employeeId}
-                  onChange={(e) => {
-                    setAdvanceForm((p) => ({ ...p, employeeId: e.target.value }));
-                    setAdvanceErrors((p) => ({ ...p, employeeId: "" }));
-                  }}
-                >
-                  <option value="">Select</option>
-                  {employeeOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-                <div className="min-h-[14px] text-[11px] text-red-600">{advanceErrors.employeeId || ""}</div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-600">Date</label>
-                <input type="date" className="w-full border rounded p-2 text-sm" value={advanceForm.date} onChange={(e) => setAdvanceForm((p) => ({ ...p, date: e.target.value }))} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-600">Amount *</label>
-                <input
-                  type="number"
-                  min="0"
-                  className={`w-full border rounded p-2 text-sm ${advanceErrors.amount ? "border-red-400 bg-red-50" : "border-gray-300"}`}
-                  value={advanceForm.amount}
-                  onChange={(e) => {
-                    setAdvanceForm((p) => ({ ...p, amount: e.target.value }));
-                    setAdvanceErrors((p) => ({ ...p, amount: "" }));
-                  }}
-                />
-                <div className="min-h-[14px] text-[11px] text-red-600">{advanceErrors.amount || ""}</div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-600">Payment Method</label>
-                <select className="w-full border rounded p-2 text-sm" value={advanceForm.paymentMethod} onChange={(e) => setAdvanceForm((p) => ({ ...p, paymentMethod: e.target.value }))}>
-                  <option value="CASH">Cash</option>
-                  <option value="BANK">Bank</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-gray-600">Note</label>
-                <input className="w-full border rounded p-2 text-sm" value={advanceForm.note} onChange={(e) => setAdvanceForm((p) => ({ ...p, note: e.target.value }))} />
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={createAdvance}
-                disabled={advanceSaving}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
-              >
-                <Save size={14} /> {advanceSaving ? "Saving..." : "Save"}
-              </button>
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
-            <DataTable title="Advances" columns={advanceColumns} data={advances} idKey="_id" emptyMessage="No advances" />
-          </div>
-        </div>
+        <div />
       )}
 
       {activeTab === "payroll" && (
         <div className="flex flex-col gap-4">
           <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-semibold text-emerald-800">Payroll Generation</div>
-              <button
-                type="button"
-                onClick={generatePayroll}
-                disabled={payrollGenerating}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
-              >
-                <Wand2 size={14} /> {payrollGenerating ? "Generating..." : "Generate Payroll"}
-              </button>
+              <div className="text-sm font-semibold text-emerald-800">Payroll</div>
             </div>
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-gray-600">Month *</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="12"
+                  <select
                     className={`w-full border rounded p-2 text-sm ${payrollErrors.month ? "border-red-400 bg-red-50" : "border-gray-300"}`}
                     value={payrollForm.month}
                     onChange={(e) => {
                       setPayrollForm((p) => ({ ...p, month: Number(e.target.value) }));
                       setPayrollErrors((p) => ({ ...p, month: "" }));
                     }}
-                  />
+                  >
+                    {MONTHS.map((m, idx) => (
+                      <option key={m} value={idx + 1}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
                   <div className="min-h-[14px] text-[11px] text-red-600">{payrollErrors.month || ""}</div>
                 </div>
                 <div>
@@ -1007,74 +1225,437 @@ export default function HR() {
                 </div>
               </div>
             </div>
-            {payTarget && (
-              <div className="mt-2 border-t pt-3 space-y-2">
-                <div className="text-xs font-semibold text-emerald-900">
-                  Pay Salary: {payTarget.employeeName} ({payTarget.month}/{payTarget.year})
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs text-gray-600">Overtime</label>
-                    <input type="number" min="0" className="w-full border rounded p-2 text-sm" value={payrollForm.overtime} onChange={(e) => setPayrollForm((p) => ({ ...p, overtime: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Bonus</label>
-                    <input type="number" min="0" className="w-full border rounded p-2 text-sm" value={payrollForm.bonus} onChange={(e) => setPayrollForm((p) => ({ ...p, bonus: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Allowances</label>
-                    <input type="number" min="0" className="w-full border rounded p-2 text-sm" value={payrollForm.allowances} onChange={(e) => setPayrollForm((p) => ({ ...p, allowances: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Deductions</label>
-                    <input type="number" min="0" className="w-full border rounded p-2 text-sm" value={payrollForm.deductions} onChange={(e) => setPayrollForm((p) => ({ ...p, deductions: e.target.value }))} />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-gray-600">Advance Deduction</label>
-                  <input
-                    type="number"
-                    min="0"
-                    className={`w-full border rounded p-2 text-sm ${payrollErrors.advanceDeduction ? "border-red-400 bg-red-50" : "border-gray-300"}`}
-                    value={payrollForm.advanceDeduction}
-                    onChange={(e) => {
-                      setPayrollForm((p) => ({ ...p, advanceDeduction: e.target.value }));
-                      setPayrollErrors((p) => ({ ...p, advanceDeduction: "" }));
-                    }}
-                  />
-                  <div className="min-h-[14px] text-[11px] text-red-600">{payrollErrors.advanceDeduction || ""}</div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs text-gray-600">Payment Date</label>
-                    <input type="date" className="w-full border rounded p-2 text-sm" value={payrollForm.paymentDate} onChange={(e) => setPayrollForm((p) => ({ ...p, paymentDate: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Method</label>
-                    <select className="w-full border rounded p-2 text-sm" value={payrollForm.paymentMethod} onChange={(e) => setPayrollForm((p) => ({ ...p, paymentMethod: e.target.value }))}>
-                      <option value="CASH">Cash</option>
-                      <option value="BANK">Bank</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-xs text-gray-600">
-                    Net Salary: <span className="font-semibold text-gray-900">{Math.round(computeNet({ ...payTarget, ...payrollForm, basicSalary: payTarget.basicSalary }))}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={payPayroll}
-                    disabled={payrollSaving}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-800 disabled:opacity-60"
-                  >
-                    <Save size={14} /> {payrollSaving ? "Paying..." : "Pay Now"}
-                  </button>
-                </div>
+
+            <div className="border-t pt-3">
+              <div className="text-xs font-semibold text-gray-700 mb-2">Employees</div>
+              <div className="border rounded-xl overflow-hidden">
+                {(employees || [])
+                  .filter((e) => e.status === "ACTIVE")
+                  .map((emp) => {
+                    const p = (payrolls || []).find(
+                      (x) =>
+                        String(x.employeeId) === String(emp._id) &&
+                        Number(x.month) === Number(payrollForm.month) &&
+                        Number(x.year) === Number(payrollForm.year)
+                    );
+                    const openAdvance = Math.round(
+                      (advances || [])
+                        .filter((a) => String(a.employeeId) === String(emp._id) && a.status === "OPEN")
+                        .reduce((s, a) => s + Number(a.remainingBalance || 0), 0)
+                    );
+                    const expanded = String(expandedEmployeeId) === String(emp._id);
+
+                    const statusEl = !p ? (
+                      <span className="text-[11px] text-gray-500">Not generated</span>
+                    ) : p.status === "PAID" ? (
+                      <span className="text-[11px] text-emerald-700 font-semibold">Paid</span>
+                    ) : (
+                      <span className="text-[11px] text-amber-700 font-semibold">Generated</span>
+                    );
+
+                    return (
+                      <div key={emp._id} className="border-b last:border-b-0">
+                        <div className="p-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-semibold text-gray-900 truncate">
+                              {emp.name}{" "}
+                              <span className="text-xs font-normal text-gray-500">({emp.employeeId || "-"})</span>
+                            </div>
+                            <div className="text-xs text-gray-600 truncate">{emp.department || "-"}</div>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-gray-700">
+                            <div>
+                              <div className="text-[10px] text-gray-500">Basic</div>
+                              <div className="font-semibold">{Math.round(Number(emp.basicSalary || 0))}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-gray-500">Open Advance</div>
+                              <div className="font-semibold">{openAdvance}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-gray-500">Payroll</div>
+                              <div>{statusEl}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 sm:justify-end">
+                            <button
+                              type="button"
+                              className="px-2 py-1 rounded border border-gray-200 text-gray-800 text-[11px] hover:bg-gray-50 inline-flex items-center gap-1"
+                              onClick={() => {
+                                setExpandedEmployeeId(expanded ? null : emp._id);
+                                setPayTarget(p || null);
+                                const advBal = openAdvance;
+                                setAdvanceEditingId(null);
+                                setAdvanceErrors({});
+                                setAdvanceForm({
+                                  ...emptyAdvance,
+                                  employeeId: String(emp._id),
+                                  date: new Date().toISOString().slice(0, 10),
+                                  paymentMethod: "CASH",
+                                });
+
+                                if (p) {
+                                  setPayrollForm((prev) => ({
+                                    ...prev,
+                                    month: p.month,
+                                    year: p.year,
+                                    earnings:
+                                      Array.isArray(p.earnings) && p.earnings.length
+                                        ? p.earnings.map((x) => ({
+                                            ...x,
+                                            amount:
+                                              x.amount === 0 ? "" : String(Math.round(Number(x.amount || 0))),
+                                          }))
+                                        : makeDefaultEarnings(p.basicSalary),
+                                    deductionsItems:
+                                      Array.isArray(p.deductionsItems) && p.deductionsItems.length
+                                        ? p.deductionsItems.map((x) => {
+                                            if (String(x.key) === "advance") {
+                                              const v = advBal ? Math.round(advBal) : Number(x.amount || 0);
+                                              return { ...x, amount: v ? String(v) : "" };
+                                            }
+                                            return {
+                                              ...x,
+                                              amount:
+                                                x.amount === 0 ? "" : String(Math.round(Number(x.amount || 0))),
+                                            };
+                                          })
+                                        : makeDefaultDeductions(advBal),
+                                    paymentDate: "",
+                                    paymentMethod: "CASH",
+                                  }));
+                                } else {
+                                  // Pre-fill UI so user can edit before generating payroll.
+                                  setPayrollForm((prev) => ({
+                                    ...prev,
+                                    earnings: makeDefaultEarnings(emp.basicSalary),
+                                    deductionsItems: makeDefaultDeductions(advBal),
+                                    paymentDate: "",
+                                    paymentMethod: "CASH",
+                                  }));
+                                }
+                              }}
+                            >
+                              <Edit2 size={12} /> Details
+                            </button>
+
+                            {p && (
+                              <button
+                                type="button"
+                                className="p-1 rounded hover:bg-gray-50"
+                                title="Print payslip"
+                                onClick={() => printPayrollSlip(p)}
+                              >
+                                <Printer className="w-4 h-4 text-gray-700" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {expanded && (
+                          <div className="px-3 pb-3">
+                            <div className="mt-2 border-t pt-3 space-y-2">
+                              {!p && (
+                                <div className="flex items-center justify-between">
+                                  <div className="text-xs text-gray-600">
+                                    Payroll not generated for this month/year.
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-2"
+                                    disabled={payrollGenerating}
+                                    onClick={async () => {
+                                      const created = await generatePayrollForEmployee(emp);
+                                      if (!created?._id) return;
+                                      setPayTarget(created);
+                                      setPayrolls((prev) => {
+                                        const exists = prev.some((x) => String(x._id) === String(created._id));
+                                        return exists ? prev : [created, ...prev];
+                                      });
+                                    }}
+                                  >
+                                    <Wand2 size={14} /> {payrollGenerating ? "Generating..." : "Generate Payroll"}
+                                  </button>
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                <div className="border rounded-xl p-3">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="text-xs font-semibold text-gray-700">Earnings</div>
+                                    <button
+                                      type="button"
+                                      className="px-2 py-1 rounded border border-gray-200 text-[11px] hover:bg-gray-50"
+                                      onClick={() => setPayrollForm((pp) => ({ ...pp, earnings: [...(pp.earnings || []), { key: "", title: "", amount: "" }] }))}
+                                    >
+                                      + Add
+                                    </button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {(payrollForm.earnings || []).map((it, idx) => (
+                                      <div key={`e-${idx}`} className="grid grid-cols-12 gap-2 items-center">
+                                        <div className="col-span-7">
+                                          <select
+                                            className="w-full border rounded px-2 py-1 text-xs"
+                                            value={EARNINGS_PRESETS.includes(it.title) ? it.title : it.title ? NEW_OPT : ""}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setPayrollForm((pp) => {
+                                                const next = [...(pp.earnings || [])];
+                                                if (v === NEW_OPT) next[idx] = { ...next[idx], title: "" };
+                                                else next[idx] = { ...next[idx], title: v };
+                                                return { ...pp, earnings: next };
+                                              });
+                                            }}
+                                          >
+                                            <option value="">Select</option>
+                                            {EARNINGS_PRESETS.map((t) => (
+                                              <option key={t} value={t}>{t}</option>
+                                            ))}
+                                            <option value={NEW_OPT}>Add new...</option>
+                                          </select>
+                                          {(!EARNINGS_PRESETS.includes(it.title) || it.title === "") && (
+                                            <input
+                                              className="mt-1 w-full border rounded px-2 py-1 text-xs"
+                                              placeholder="Title"
+                                              value={it.title}
+                                              onChange={(e) => {
+                                                const v = String(e.target.value || "").slice(0, 40);
+                                                setPayrollForm((pp) => {
+                                                  const next = [...(pp.earnings || [])];
+                                                  next[idx] = { ...next[idx], title: v };
+                                                  return { ...pp, earnings: next };
+                                                });
+                                              }}
+                                            />
+                                          )}
+                                        </div>
+                                        <div className="col-span-4">
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            className="w-full border rounded px-2 py-1 text-xs"
+                                            value={it.amount}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setPayrollForm((pp) => {
+                                                const next = [...(pp.earnings || [])];
+                                                next[idx] = { ...next[idx], amount: v };
+                                                return { ...pp, earnings: next };
+                                              });
+                                            }}
+                                          />
+                                        </div>
+                                        <div className="col-span-1 flex justify-end">
+                                          <button type="button" className="p-1 rounded hover:bg-red-50" onClick={() => setPayrollForm((pp) => ({ ...pp, earnings: (pp.earnings || []).filter((_, i) => i !== idx) }))}>
+                                            <Trash2 className="w-4 h-4 text-red-600" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="border rounded-xl p-3">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="text-xs font-semibold text-gray-700">Deductions</div>
+                                    <button
+                                      type="button"
+                                      className="px-2 py-1 rounded border border-gray-200 text-[11px] hover:bg-gray-50"
+                                      onClick={() => setPayrollForm((pp) => ({ ...pp, deductionsItems: [...(pp.deductionsItems || []), { key: "", title: "", amount: "" }] }))}
+                                    >
+                                      + Add
+                                    </button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {(payrollForm.deductionsItems || []).map((it, idx) => (
+                                      <div key={`d-${idx}`} className="grid grid-cols-12 gap-2 items-center">
+                                        <div className="col-span-7">
+                                          <select
+                                            className="w-full border rounded px-2 py-1 text-xs"
+                                            value={DEDUCTION_PRESETS.includes(it.title) ? it.title : it.title ? NEW_OPT : ""}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setPayrollForm((pp) => {
+                                                const next = [...(pp.deductionsItems || [])];
+                                                if (v === NEW_OPT) next[idx] = { ...next[idx], title: "" };
+                                                else next[idx] = { ...next[idx], title: v, key: v === "Advance / Loan" ? "advance" : next[idx].key };
+                                                return { ...pp, deductionsItems: next };
+                                              });
+                                            }}
+                                          >
+                                            <option value="">Select</option>
+                                            {DEDUCTION_PRESETS.map((t) => (
+                                              <option key={t} value={t}>{t}</option>
+                                            ))}
+                                            <option value={NEW_OPT}>Add new...</option>
+                                          </select>
+                                          {(!DEDUCTION_PRESETS.includes(it.title) || it.title === "") && (
+                                            <input
+                                              className="mt-1 w-full border rounded px-2 py-1 text-xs"
+                                              placeholder="Title"
+                                              value={it.title}
+                                              onChange={(e) => {
+                                                const v = String(e.target.value || "").slice(0, 40);
+                                                setPayrollForm((pp) => {
+                                                  const next = [...(pp.deductionsItems || [])];
+                                                  next[idx] = { ...next[idx], title: v };
+                                                  return { ...pp, deductionsItems: next };
+                                                });
+                                              }}
+                                            />
+                                          )}
+                                        </div>
+                                        <div className="col-span-4">
+                                          <input
+                                            type="number"
+                                            min="0"
+                                            className="w-full border rounded px-2 py-1 text-xs"
+                                            value={it.amount}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setPayrollForm((pp) => {
+                                                const next = [...(pp.deductionsItems || [])];
+                                                next[idx] = { ...next[idx], amount: v };
+                                                return { ...pp, deductionsItems: next };
+                                              });
+                                            }}
+                                          />
+                                        </div>
+                                        <div className="col-span-1 flex justify-end">
+                                          <button type="button" className="p-1 rounded hover:bg-red-50" onClick={() => setPayrollForm((pp) => ({ ...pp, deductionsItems: (pp.deductionsItems || []).filter((_, i) => i !== idx) }))}>
+                                            <Trash2 className="w-4 h-4 text-red-600" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="border rounded-xl p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <div className="text-xs font-semibold text-gray-700">Advance (Optional)</div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                  <div>
+                                    <label className="text-[11px] text-gray-600">Date</label>
+                                    <input
+                                      type="date"
+                                      className="w-full border rounded px-2 py-1 text-xs"
+                                      value={advanceForm.date}
+                                      onChange={(e) => setAdvanceForm((pp) => ({ ...pp, date: e.target.value }))}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[11px] text-gray-600">Amount</label>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      className={`w-full border rounded px-2 py-1 text-xs ${advanceErrors.amount ? "border-red-400 bg-red-50" : ""}`}
+                                      value={advanceForm.amount}
+                                      onChange={(e) => {
+                                        setAdvanceForm((pp) => ({ ...pp, amount: e.target.value }));
+                                        setAdvanceErrors((pp) => ({ ...pp, amount: "" }));
+                                      }}
+                                    />
+                                    <div className="min-h-[14px] text-[11px] text-red-600">{advanceErrors.amount || ""}</div>
+                                  </div>
+                                  <div>
+                                    <label className="text-[11px] text-gray-600">Method</label>
+                                    <select
+                                      className="w-full border rounded px-2 py-1 text-xs"
+                                      value={advanceForm.paymentMethod}
+                                      onChange={(e) => setAdvanceForm((pp) => ({ ...pp, paymentMethod: e.target.value }))}
+                                    >
+                                      <option value="CASH">Cash</option>
+                                      <option value="BANK">Bank</option>
+                                    </select>
+                                  </div>
+                                  <div className="flex items-end">
+                                    <button
+                                      type="button"
+                                      onClick={createAdvance}
+                                      disabled={advanceSaving}
+                                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
+                                    >
+                                      <Save size={14} /> {advanceSaving ? "Saving..." : "Add Advance"}
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="mt-2">
+                                  <label className="text-[11px] text-gray-600">Note</label>
+                                  <input
+                                    className="w-full border rounded px-2 py-1 text-xs"
+                                    value={advanceForm.note}
+                                    onChange={(e) => setAdvanceForm((pp) => ({ ...pp, note: e.target.value }))}
+                                  />
+                                </div>
+
+                                <div className="mt-3">
+                                  <div className="text-[11px] text-gray-600 mb-1">Recent advances</div>
+                                  <div className="overflow-x-auto">
+                                    <table className="min-w-full text-xs">
+                                      <thead>
+                                        <tr className="text-gray-600">
+                                          <th className="text-left py-1 pr-2">Date</th>
+                                          <th className="text-left py-1 pr-2">Amount</th>
+                                          <th className="text-left py-1 pr-2">Remaining</th>
+                                          <th className="text-left py-1 pr-2">Status</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {advanceMiniRows(emp._id).length ? (
+                                          advanceMiniRows(emp._id).map((a) => (
+                                            <tr key={a._id} className="border-t">
+                                              <td className="py-1 pr-2">{a.date ? new Date(a.date).toLocaleDateString() : "-"}</td>
+                                              <td className="py-1 pr-2">{Math.round(Number(a.amount || 0))}</td>
+                                              <td className="py-1 pr-2">{Math.round(Number(a.remainingBalance || 0))}</td>
+                                              <td className="py-1 pr-2">{a.status || "-"}</td>
+                                            </tr>
+                                          ))
+                                        ) : (
+                                          <tr className="border-t">
+                                            <td className="py-2 text-gray-500" colSpan={4}>-</td>
+                                          </tr>
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="text-xs text-gray-600">Payment Date</label>
+                                  <input type="date" className="w-full border rounded p-2 text-sm" value={payrollForm.paymentDate} onChange={(e) => setPayrollForm((pp) => ({ ...pp, paymentDate: e.target.value }))} />
+                                </div>
+                                <div>
+                                  <label className="text-xs text-gray-600">Method</label>
+                                  <select className="w-full border rounded p-2 text-sm" value={payrollForm.paymentMethod} onChange={(e) => setPayrollForm((pp) => ({ ...pp, paymentMethod: e.target.value }))}>
+                                    <option value="CASH">Cash</option>
+                                    <option value="BANK">Bank</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div className="text-xs text-gray-600">
+                                  Net Pay: <span className="font-semibold text-gray-900">{Math.round(computeTotalsFromItems({ earnings: payrollForm.earnings || [], deductionsItems: payrollForm.deductionsItems || [] }).netPay)}</span>
+                                </div>
+                                <button type="button" onClick={payPayroll} disabled={payrollSaving || !p || (p.status === "PAID")} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-800 disabled:opacity-60">
+                                  <Save size={14} /> {!p ? "Generate first" : p.status === "PAID" ? "Paid" : payrollSaving ? "Paying..." : "Pay Now"}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
-            )}
-          </div>
-          <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm p-4">
-            <DataTable title="Payrolls" columns={payrollColumns} data={payrolls} idKey="_id" emptyMessage="No payrolls" />
+            </div>
+
           </div>
         </div>
       )}

@@ -1,7 +1,7 @@
 // src/components/MasterData/SystemSettings.jsx
 import React, { useEffect, useState } from "react";
 import api from "../../services/api";
-import { UploadCloud, Save, ArrowDownCircle, Eye, EyeOff } from "lucide-react";
+import { UploadCloud, Save, ArrowDownCircle, Eye, EyeOff, Settings2, Shield, DatabaseBackup } from "lucide-react";
 import { toast } from "react-hot-toast";
 import Pin4Input from "../Pin4Input";
 import ConfirmDialog from "../ui/ConfirmDialog";
@@ -293,6 +293,7 @@ export default function SystemSettings() {
               : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
+          <Settings2 size={16} />
           General
         </button>
         <button
@@ -303,6 +304,7 @@ export default function SystemSettings() {
               : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
+          <Shield size={16} />
           Admin Settings
         </button>
         <button
@@ -313,6 +315,7 @@ export default function SystemSettings() {
               : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
           }`}
         >
+          <DatabaseBackup size={16} />
           Backup & Restore
         </button>
       </div>

@@ -23,6 +23,31 @@ const hrPayrollSchema = new mongoose.Schema(
     advanceDeduction: { type: Number, min: 0, default: 0 },
     netSalary: { type: Number, min: 0, default: 0 },
 
+    // Flexible pay items (preferred going forward)
+    earnings: {
+      type: [
+        {
+          key: { type: String, trim: true, default: "" },
+          title: { type: String, trim: true, default: "" },
+          amount: { type: Number, min: 0, default: 0 },
+        },
+      ],
+      default: [],
+    },
+    deductionsItems: {
+      type: [
+        {
+          key: { type: String, trim: true, default: "" },
+          title: { type: String, trim: true, default: "" },
+          amount: { type: Number, min: 0, default: 0 },
+        },
+      ],
+      default: [],
+    },
+    totalEarnings: { type: Number, min: 0, default: 0 },
+    totalDeductions: { type: Number, min: 0, default: 0 },
+    netPay: { type: Number, min: 0, default: 0 },
+
     paymentDate: { type: Date, default: null },
     paymentMethod: { type: String, enum: ["CASH", "BANK"], default: "CASH" },
     status: { type: String, enum: ["DRAFT", "PAID"], default: "DRAFT" },

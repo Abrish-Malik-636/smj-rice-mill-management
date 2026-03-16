@@ -436,14 +436,14 @@ export default function Notifications() {
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
+    <div className="space-y-4">
       {loading && <span className="text-xs text-gray-400">Loading data...</span>}
 
       <div className="border-b border-emerald-200">
         <div className="flex flex-wrap gap-2">
           {[
-            { key: "reminders", label: "Notifications" },
-            { key: "alerts", label: "Alerts" },
+            { key: "reminders", label: "Notifications", icon: <Bell size={16} /> },
+            { key: "alerts", label: "Alerts", icon: <AlertCircle size={16} /> },
           ].map((t) => {
             const isActive = activeTab === t.key;
             return (
@@ -451,14 +451,15 @@ export default function Notifications() {
                 key={t.key}
                 type="button"
                 onClick={() => setActiveTab(t.key)}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
+                className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
                   ${
                     isActive
                       ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
                       : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
                   }`}
               >
-                {t.label}
+                {t.icon}
+                <span>{t.label}</span>
               </button>
             );
           })}
