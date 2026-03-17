@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Save, Trash2, Wand2, CreditCard, Users, Wallet, Edit2, Printer, Info, X } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../services/api";
@@ -148,6 +148,7 @@ function ensureAdvanceDeduction(items) {
 export default function HR() {
   const [activeTab, setActiveTab] = useState("employees");
   const [meta, setMeta] = useState({ departments: [] });
+  const [hrLoaded, setHrLoaded] = useState(false);
 
   const [employees, setEmployees] = useState([]);
   const [payrolls, setPayrolls] = useState([]);
@@ -175,6 +176,7 @@ export default function HR() {
   const [advancePercentEnabled, setAdvancePercentEnabled] = useState(false);
   const [advancePercent, setAdvancePercent] = useState(20);
   const [expandedOpenAdvance, setExpandedOpenAdvance] = useState(null);
+  const noAdvanceWarnedRef = useRef(false);
   const [confirmState, setConfirmState] = useState({
     open: false,
     title: "",
@@ -204,6 +206,7 @@ export default function HR() {
       setEmployees(e.data?.data || []);
       setPayrolls(p.data?.data || []);
       setAdvances(a.data?.data || []);
+      setHrLoaded(true);
     } catch (err) {
       toast.error(err?.response?.data?.message || "Failed to load HR data");
     }
@@ -259,11 +262,37 @@ export default function HR() {
   }, [payrollForm.month, payrollForm.year]);
 
   useEffect(() => {
+    noAdvanceWarnedRef.current = false;
+  }, [expandedEmployeeId]);
+
+  useEffect(() => {
+    // Recompute open-advance whenever advances or expanded employee changes.
+    if (!expandedEmployeeId) {
+      setExpandedOpenAdvance(null);
+      return;
+    }
+    if (!hrLoaded) return;
+    const bal = Math.round(
+      (advances || [])
+        .filter((a) => String(a.employeeId?._id || a.employeeId) === String(expandedEmployeeId) && a.status === "OPEN")
+        .reduce((s, a) => s + Number(a.remainingBalance || 0), 0)
+    );
+    setExpandedOpenAdvance(bal);
+  }, [advances, expandedEmployeeId, hrLoaded]);
+
+  useEffect(() => {
     if (!advancePercentEnabled) return;
     // Wait until open-advance is known; prevents checkbox flicker on first expand.
     if (expandedOpenAdvance == null) return;
+    if (!hrLoaded) return;
     // If open advance is zero, keep checkbox as-is but do not apply any value.
     if (Math.round(Number(expandedOpenAdvance || 0)) <= 0) {
+      if (!noAdvanceWarnedRef.current) {
+        noAdvanceWarnedRef.current = true;
+        toast.error("No open advance remaining for this employee.");
+      }
+      setAdvancePercentEnabled(false);
+      if (expandedEmployeeId) persistAdvanceDeductionSettings(expandedEmployeeId, false, advancePercent);
       setPayrollForm((p) => {
         const { list, idx } = ensureAdvanceDeduction(p.deductionsItems || []);
         const current = list[idx];
@@ -291,7 +320,7 @@ export default function HR() {
       return { ...p, deductionsItems: list };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [advancePercentEnabled, advancePercent, expandedOpenAdvance, payrollForm.earnings, expandedEmployeeId]);
+  }, [advancePercentEnabled, advancePercent, expandedOpenAdvance, payrollForm.earnings, expandedEmployeeId, hrLoaded]);
 
 
   const getEmployeeFieldState = (field, value) => {
@@ -1457,9 +1486,13 @@ export default function HR() {
                                 onClick={() => {
                                   setExpandedEmployeeId(expanded ? null : emp._id);
                                   setPayTarget(p || null);
-                                  const advBal = openAdvance;
-                                  setExpandedOpenAdvance(advBal);
-                                  const empEnabled = Boolean(emp?.advanceDeductionEnabled) && Math.round(Number(advBal || 0)) > 0;
+                                  setExpandedOpenAdvance(null);
+                                  const advBal = Math.round(
+                                    (advances || [])
+                                      .filter((a) => String(a.employeeId) === String(emp._id) && a.status === "OPEN")
+                                      .reduce((s, a) => s + Number(a.remainingBalance || 0), 0)
+                                  );
+                                  const empEnabled = Boolean(emp?.advanceDeductionEnabled);
                                   const empPct = emp?.advanceDeductionPercent == null ? 20 : Number(emp.advanceDeductionPercent || 0);
                                   setAdvancePercentEnabled(empEnabled);
                                   setAdvancePercent(Number.isFinite(empPct) ? empPct : 20);
@@ -1710,11 +1743,6 @@ export default function HR() {
                                       checked={advancePercentEnabled}
                                       onChange={(e) => {
                                         const enabled = e.target.checked;
-                                        const cap = Math.round(Number(expandedOpenAdvance || 0));
-                                        if (enabled && (expandedOpenAdvance == null || cap <= 0)) {
-                                          toast.error("No open advance remaining for this employee.");
-                                          return;
-                                        }
                                         setAdvancePercentEnabled(enabled);
                                         if (expandedEmployeeId) persistAdvanceDeductionSettings(expandedEmployeeId, enabled, advancePercent);
                                       }}
@@ -1735,7 +1763,7 @@ export default function HR() {
                                           if (expandedEmployeeId) persistAdvanceDeductionSettings(expandedEmployeeId, true, advancePercent);
                                         }}
                                       />
-                                      <span className="text-gray-500">(cap: {Math.round(Number(expandedOpenAdvance || 0))})</span>
+                                      <span className="text-gray-500">(cap: {expandedOpenAdvance == null ? "-" : Math.round(Number(expandedOpenAdvance || 0))})</span>
                                     </div>
                                   )}
                                 </div>
