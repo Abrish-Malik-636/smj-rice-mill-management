@@ -142,6 +142,11 @@ exports.createEmployee = async (req, res) => {
       joiningDate: body.joiningDate ? new Date(body.joiningDate) : null,
       salaryType: String(body.salaryType || "MONTHLY").toUpperCase(),
       basicSalary: Number(body.basicSalary || 0) || 0,
+      advanceDeductionEnabled: Boolean(body.advanceDeductionEnabled),
+      advanceDeductionPercent:
+        body.advanceDeductionPercent == null
+          ? undefined
+          : Math.max(0, Math.min(100, Number(body.advanceDeductionPercent || 0))),
       status: String(body.status || "ACTIVE").toUpperCase(),
     });
 
@@ -182,6 +187,11 @@ exports.updateEmployee = async (req, res) => {
           joiningDate: body.joiningDate != null ? (body.joiningDate ? new Date(body.joiningDate) : null) : undefined,
           salaryType: body.salaryType != null ? String(body.salaryType).toUpperCase() : undefined,
           basicSalary: body.basicSalary != null ? Number(body.basicSalary || 0) : undefined,
+          advanceDeductionEnabled: body.advanceDeductionEnabled != null ? Boolean(body.advanceDeductionEnabled) : undefined,
+          advanceDeductionPercent:
+            body.advanceDeductionPercent != null
+              ? Math.max(0, Math.min(100, Number(body.advanceDeductionPercent || 0)))
+              : undefined,
           status: body.status != null ? String(body.status).toUpperCase() : undefined,
         },
       },
@@ -520,7 +530,7 @@ exports.generatePayrollForEmployee = async (req, res) => {
       netPay,
       status: "DRAFT",
       paymentDate: null,
-      paymentMethod: "",
+      paymentMethod: "CASH",
       advanceIds: [],
     });
 

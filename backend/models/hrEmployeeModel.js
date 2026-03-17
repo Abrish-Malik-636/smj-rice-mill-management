@@ -56,6 +56,11 @@ const hrEmployeeSchema = new mongoose.Schema(
       default: "MONTHLY",
     },
     basicSalary: { type: Number, min: 0, default: 0 },
+
+    // Per-employee setting: if enabled, payroll UI auto-fills advance deduction each month
+    // based on the configured percent, until remaining advance becomes zero.
+    advanceDeductionEnabled: { type: Boolean, default: false },
+    advanceDeductionPercent: { type: Number, min: 0, max: 100, default: 20 },
     status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE" },
   },
   { timestamps: true }

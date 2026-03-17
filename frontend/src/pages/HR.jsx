@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Save, Trash2, Wand2, CreditCard, Users, Wallet, Edit2, Printer } from "lucide-react";
+import { Save, Trash2, Wand2, CreditCard, Users, Wallet, Edit2, Printer, Info, X } from "lucide-react";
 import { toast } from "react-hot-toast";
 import api from "../services/api";
 import DataTable from "../components/ui/DataTable";
 
 const TABS = [
-  { key: "payroll", label: "Payroll", icon: <Wallet size={16} /> },
   { key: "employees", label: "Employees", icon: <Users size={16} /> },
+  { key: "payroll", label: "Payroll", icon: <Wallet size={16} /> },
 ];
 
 const emptyEmployee = {
@@ -78,6 +78,7 @@ const emptyPayroll = {
 
 const num = (v) => (v === "" || v == null ? 0 : Number(v || 0) || 0);
 const round2 = (n) => Number((Number(n || 0)).toFixed(2));
+const fmtDate = (v) => (v ? new Date(v).toLocaleDateString() : "-");
 
 function computeTotalsFromItems({ earnings, deductionsItems }) {
   const e = Array.isArray(earnings) ? earnings : [];
@@ -136,6 +137,14 @@ function makeDefaultDeductions(openAdvance) {
   ];
 }
 
+function ensureAdvanceDeduction(items) {
+  const list = Array.isArray(items) ? [...items] : [];
+  const idx = list.findIndex((x) => String(x?.key || "") === "advance");
+  if (idx >= 0) return { list, idx };
+  list.unshift({ key: "advance", title: "Advance / Loan", amount: "" });
+  return { list, idx: 0 };
+}
+
 export default function HR() {
   const [activeTab, setActiveTab] = useState("employees");
   const [meta, setMeta] = useState({ departments: [] });
@@ -143,6 +152,7 @@ export default function HR() {
   const [employees, setEmployees] = useState([]);
   const [payrolls, setPayrolls] = useState([]);
   const [advances, setAdvances] = useState([]);
+  const [infoEmployee, setInfoEmployee] = useState(null);
 
   const [employeeForm, setEmployeeForm] = useState({ ...emptyEmployee });
   const [employeeSaving, setEmployeeSaving] = useState(false);
@@ -162,6 +172,17 @@ export default function HR() {
   const [payrollGenerating, setPayrollGenerating] = useState(false);
   const [payTarget, setPayTarget] = useState(null);
   const [expandedEmployeeId, setExpandedEmployeeId] = useState(null);
+  const [advancePercentEnabled, setAdvancePercentEnabled] = useState(false);
+  const [advancePercent, setAdvancePercent] = useState(20);
+  const [expandedOpenAdvance, setExpandedOpenAdvance] = useState(null);
+  const [confirmState, setConfirmState] = useState({
+    open: false,
+    title: "",
+    message: "",
+    confirmText: "Confirm",
+    danger: false,
+    onConfirm: null,
+  });
 
   const employeeOptions = useMemo(
     () =>
@@ -188,6 +209,38 @@ export default function HR() {
     }
   };
 
+  const askConfirm = ({ title, message, confirmText = "Confirm", danger = false, onConfirm }) => {
+    setConfirmState({
+      open: true,
+      title: title || "Confirm",
+      message: message || "",
+      confirmText,
+      danger,
+      onConfirm: typeof onConfirm === "function" ? onConfirm : null,
+    });
+  };
+
+  const closeConfirm = () => setConfirmState((p) => ({ ...p, open: false, onConfirm: null }));
+
+  const persistAdvanceDeductionSettings = async (employeeId, enabled, percent) => {
+    if (!employeeId) return;
+    try {
+      await api.put(`/hr/employees/${employeeId}`, {
+        advanceDeductionEnabled: Boolean(enabled),
+        advanceDeductionPercent: Math.max(0, Math.min(100, Number(percent || 0))),
+      });
+      setEmployees((prev) =>
+        (prev || []).map((e) =>
+          String(e._id) === String(employeeId)
+            ? { ...e, advanceDeductionEnabled: Boolean(enabled), advanceDeductionPercent: Math.max(0, Math.min(100, Number(percent || 0))) }
+            : e
+        )
+      );
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to save advance deduction settings");
+    }
+  };
+
 
   useEffect(() => {
     loadAll();
@@ -204,6 +257,41 @@ export default function HR() {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payrollForm.month, payrollForm.year]);
+
+  useEffect(() => {
+    if (!advancePercentEnabled) return;
+    // Wait until open-advance is known; prevents checkbox flicker on first expand.
+    if (expandedOpenAdvance == null) return;
+    // If open advance is zero, keep checkbox as-is but do not apply any value.
+    if (Math.round(Number(expandedOpenAdvance || 0)) <= 0) {
+      setPayrollForm((p) => {
+        const { list, idx } = ensureAdvanceDeduction(p.deductionsItems || []);
+        const current = list[idx];
+        if (String(current.amount || "") === "") return p;
+        list[idx] = { ...current, amount: "", title: current.title || "Advance / Loan", key: "advance" };
+        return { ...p, deductionsItems: list };
+      });
+      return;
+    }
+    // Auto-set advance deduction as % of total earnings (capped by open advance).
+    const totals = computeTotalsFromItems({
+      earnings: payrollForm.earnings || [],
+      deductionsItems: payrollForm.deductionsItems || [],
+    });
+    const pct = Math.max(0, Math.min(100, Number(advancePercent || 0)));
+    const desired = Math.round((Number(totals.totalEarnings || 0) * pct) / 100);
+    const capped = Math.max(0, Math.min(Math.round(Number(expandedOpenAdvance || 0)), desired));
+
+    setPayrollForm((p) => {
+      const { list, idx } = ensureAdvanceDeduction(p.deductionsItems || []);
+      const current = list[idx];
+      const nextAmt = capped ? String(capped) : "";
+      if (String(current.amount || "") === nextAmt) return p;
+      list[idx] = { ...current, amount: nextAmt, title: current.title || "Advance / Loan", key: "advance" };
+      return { ...p, deductionsItems: list };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advancePercentEnabled, advancePercent, expandedOpenAdvance, payrollForm.earnings, expandedEmployeeId]);
 
 
   const getEmployeeFieldState = (field, value) => {
@@ -328,14 +416,23 @@ export default function HR() {
 
   const deleteEmployee = async (row) => {
     if (!row?._id) return;
-    if (!confirm("Delete employee permanently?")) return;
-    try {
-      await api.delete(`/hr/employees/${row._id}`);
-      toast.success("Employee deleted");
-      setEmployees((prev) => prev.filter((e) => e._id !== row._id));
-    } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to delete employee");
-    }
+    askConfirm({
+      title: "Delete employee?",
+      message: "This will permanently delete the employee.",
+      confirmText: "Delete",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await api.delete(`/hr/employees/${row._id}`);
+          toast.success("Employee deleted");
+          setEmployees((prev) => prev.filter((e) => e._id !== row._id));
+        } catch (err) {
+          toast.error(err?.response?.data?.message || "Failed to delete employee");
+        } finally {
+          closeConfirm();
+        }
+      },
+    });
   };
 
   const createAdvance = async () => {
@@ -372,15 +469,23 @@ export default function HR() {
 
   const deleteAdvance = async (row) => {
     if (!row?._id) return;
-    // eslint-disable-next-line no-alert
-    if (!confirm("Delete this advance permanently?")) return;
-    try {
-      await api.delete(`/hr/advances/${row._id}`);
-      toast.success("Advance deleted");
-      setAdvances((prev) => prev.filter((a) => a._id !== row._id));
-    } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to delete advance");
-    }
+    askConfirm({
+      title: "Delete advance?",
+      message: "This will permanently delete the advance entry.",
+      confirmText: "Delete",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await api.delete(`/hr/advances/${row._id}`);
+          toast.success("Advance deleted");
+          setAdvances((prev) => prev.filter((a) => a._id !== row._id));
+        } catch (err) {
+          toast.error(err?.response?.data?.message || "Failed to delete advance");
+        } finally {
+          closeConfirm();
+        }
+      },
+    });
   };
 
   const printPayrollSlip = async (row) => {
@@ -393,65 +498,90 @@ export default function HR() {
       const phone = general.phone || general.companyPhone || "";
       const logoUrl = general.logoUrl || general.logo || "";
 
-      const earnings = Array.isArray(row.earnings) && row.earnings.length
-        ? row.earnings
-        : makeDefaultEarnings(row.basicSalary).map((x) => ({ ...x, amount: num(x.amount) }));
-      const deductionsItems = Array.isArray(row.deductionsItems) && row.deductionsItems.length
-        ? row.deductionsItems
-        : makeDefaultDeductions(row.advanceDeduction).map((x) => ({ ...x, amount: num(x.amount) }));
-
-      const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({ earnings, deductionsItems });
-      const lastTwo = (payrolls || [])
-        .filter((p) => String(p.employeeId) === String(row.employeeId) && p.status === "PAID")
+      const allForEmployee = row?.employeeId
+        ? await api.get("/hr/payrolls", { params: { employeeId: row.employeeId } })
+        : { data: { data: [] } };
+      const employeePayrolls = allForEmployee?.data?.data || [];
+      const lastTwo = employeePayrolls
+        .filter((p) => String(p._id) !== String(row._id) && p.status === "PAID")
         .sort((a, b) => new Date(b.paymentDate || b.createdAt || 0) - new Date(a.paymentDate || a.createdAt || 0))
-        .filter((p) => String(p._id) !== String(row._id))
         .slice(0, 2);
+
+      const earnings =
+        Array.isArray(row.earnings) && row.earnings.length
+          ? row.earnings
+          : [
+              { key: "basic", title: "Basic", amount: round2(Number(row.basicSalary || 0)) },
+              { key: "incentive", title: "Incentive", amount: 0 },
+              { key: "overtime", title: "Overtime", amount: 0 },
+              { key: "bonus", title: "Bonus", amount: 0 },
+              { key: "other", title: "Other", amount: 0 },
+            ];
+      const deductionsItems =
+        Array.isArray(row.deductionsItems) && row.deductionsItems.length
+          ? row.deductionsItems
+          : [
+              { key: "advance", title: "Advance / Loan", amount: 0 },
+              { key: "pf", title: "Provident Fund", amount: 0 },
+              { key: "tax", title: "Professional Tax", amount: 0 },
+              { key: "other", title: "Other Deduction", amount: 0 },
+            ];
+
+      const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({
+        earnings,
+        deductionsItems,
+      });
 
       const html = `
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Payroll Slip</title>
+  <title>Payslip</title>
   <style>
     @page { size: A4; margin: 14mm; }
     body { font-family: Arial, sans-serif; color: #0f172a; }
-    .hdr { display:flex; gap:12px; align-items:center; border-bottom: 2px solid #10b981; padding-bottom:10px; }
-    .logo { width:48px; height:48px; object-fit:contain; }
-    h1 { font-size:16px; margin:0; }
+    .hdr { text-align:center; border-bottom: 2px solid #10b981; padding-bottom:10px; }
+    .logo { width:52px; height:52px; object-fit:contain; display:block; margin: 0 auto 6px; }
+    h1 { font-size:18px; margin:0; }
     .muted { color:#475569; font-size:11px; margin-top:2px; }
-    .box { border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:12px; }
-    .row { display:flex; justify-content:space-between; gap:12px; font-size:12px; }
-    .row + .row { margin-top:6px; }
-    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .meta { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; font-size:12px; }
+    .meta .row { display:flex; justify-content: space-between; gap: 12px; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
+    .secTitle { font-weight:700; font-size:12px; margin-bottom:6px; }
     .tbl { width:100%; border-collapse: collapse; font-size:12px; }
     .tbl th, .tbl td { border:1px solid #e2e8f0; padding:8px; text-align:left; }
     .tbl th { background:#f8fafc; }
     .tot { margin-top: 10px; display:flex; justify-content: space-between; font-size:12px; }
     .tot b { font-size: 13px; }
-    .ft { margin-top:14px; border-top:1px solid #e2e8f0; padding-top:8px; font-size:11px; color:#475569; }
-    .sig { margin-top: 18px; display:flex; justify-content: space-between; gap: 18px; }
+    .box { border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:12px; }
+    .sig { margin-top: 24px; display:flex; justify-content: space-between; gap: 18px; }
     .sig .line { margin-top: 34px; border-top: 1px solid #0f172a; padding-top: 6px; font-size: 11px; color: #334155; }
+    .ft { margin-top:16px; border-top:1px solid #e2e8f0; padding-top:8px; font-size:11px; color:#475569; text-align:center; }
   </style>
 </head>
 <body>
   <div class="hdr">
     ${logoUrl ? `<img class="logo" src="${logoUrl}" />` : ""}
-    <div>
-      <h1>${companyName}</h1>
-      <div class="muted">${address ? address + " | " : ""}${phone ? phone : ""}</div>
-    </div>
+    <h1>Payslip</h1>
+    <div class="muted">${companyName}</div>
+    <div class="muted">${address ? address : ""}${address && phone ? " | " : ""}${phone ? phone : ""}</div>
   </div>
 
-  <div class="box">
-    <div class="row"><div><b>Employee:</b> ${row.employeeName || "-"}</div><div><b>Month:</b> ${row.month || "-"} / ${row.year || "-"}</div></div>
-    <div class="row"><div><b>Department:</b> ${row.department || "-"}</div><div><b>Status:</b> ${row.status || "-"}</div></div>
-    <div class="row"><div><b>Payment Date:</b> ${row.paymentDate ? new Date(row.paymentDate).toLocaleDateString() : "-"}</div><div><b>Method:</b> ${row.paymentMethod || "-"}</div></div>
+  <div class="meta">
+    <div>
+      <div class="row"><div>Date of Joining</div><div>: ${row.joiningDate ? fmtDate(row.joiningDate) : "-"}</div></div>
+      <div class="row"><div>Pay Period</div><div>: ${row.month || "-"} / ${row.year || "-"}</div></div>
+    </div>
+    <div>
+      <div class="row"><div>Employee name</div><div>: ${row.employeeName || "-"}</div></div>
+      <div class="row"><div>Department</div><div>: ${row.department || "-"}</div></div>
+    </div>
   </div>
 
   <div class="grid2">
     <div>
-      <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Earnings</div>
+      <div class="secTitle">Earnings</div>
       <table class="tbl">
         <thead><tr><th>Title</th><th>Amount</th></tr></thead>
         <tbody>
@@ -464,7 +594,7 @@ export default function HR() {
       </table>
     </div>
     <div>
-      <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Deductions</div>
+      <div class="secTitle">Deductions</div>
       <table class="tbl">
         <thead><tr><th>Title</th><th>Amount</th></tr></thead>
         <tbody>
@@ -484,14 +614,14 @@ export default function HR() {
   </div>
 
   <div class="box">
-    <div style="font-weight:700; font-size:12px; margin-bottom:6px;">Last 2 Months Paid</div>
+    <div class="secTitle">Last 2 Months Paid</div>
     <table class="tbl">
       <thead><tr><th>Month</th><th>Paid Date</th><th>Net Pay</th></tr></thead>
       <tbody>
         ${
           lastTwo.length
             ? lastTwo
-                .map((p) => `<tr><td>${p.month}/${p.year}</td><td>${p.paymentDate ? new Date(p.paymentDate).toLocaleDateString() : "-"}</td><td>${Math.round(Number(p.netPay ?? p.netSalary ?? 0))}</td></tr>`)
+                .map((p) => `<tr><td>${p.month}/${p.year}</td><td>${p.paymentDate ? fmtDate(p.paymentDate) : "-"}</td><td>${Math.round(Number(p.netPay ?? p.netSalary ?? 0))}</td></tr>`)
                 .join("")
             : `<tr><td colspan="3">-</td></tr>`
         }
@@ -504,9 +634,7 @@ export default function HR() {
     <div style="flex:1;"><div class="line">Employee Signature</div></div>
   </div>
 
-  <div class="ft">
-    This payroll slip is system generated.
-  </div>
+  <div class="ft">This is system generated payslip</div>
 </body>
 </html>`;
 
@@ -521,7 +649,7 @@ export default function HR() {
       w.focus();
       w.print();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to print slip");
+      toast.error(err?.response?.data?.message || "Failed to print payslip");
     }
   };
 
@@ -613,30 +741,55 @@ export default function HR() {
   const employeeColumns = [
     { key: "employeeId", label: "Employee ID" },
     { key: "name", label: "Name" },
-    { key: "department", label: "Department" },
-    { key: "salaryType", label: "Salary Type" },
+    { key: "department", label: "Department", filterOptions: (meta?.departments || []).slice().sort((a, b) => String(a).localeCompare(String(b))) },
+    { key: "salaryType", label: "Salary Type", filterOptions: ["MONTHLY", "DAILY", "PER_BAG", "OTHER"] },
     {
       key: "basicSalary",
       label: "Basic Salary",
       render: (v) => Math.round(Number(v || 0)),
     },
-    { key: "status", label: "Status" },
+    { key: "status", label: "Status", filterOptions: ["ACTIVE", "INACTIVE"] },
     {
       key: "actions",
       label: "Actions",
       skipExport: true,
       render: (_, row) => (
-        <button
-          type="button"
-          className="p-1 rounded hover:bg-red-50"
-          title="Delete"
-          onClick={() => deleteEmployee(row)}
-        >
-          <Trash2 className="w-4 h-4 text-red-600" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="p-1 rounded hover:bg-gray-50"
+            title="View details"
+            onClick={() => setInfoEmployee(row)}
+          >
+            <Info className="w-4 h-4 text-gray-700" />
+          </button>
+          <button
+            type="button"
+            className="p-1 rounded hover:bg-red-50"
+            title="Delete"
+            onClick={() => deleteEmployee(row)}
+          >
+            <Trash2 className="w-4 h-4 text-red-600" />
+          </button>
+        </div>
       ),
     },
   ];
+
+  const isEmployeeEligibleForPayroll = (emp, month, year) => {
+    const jd = emp?.joiningDate ? new Date(emp.joiningDate) : null;
+    if (!jd || Number.isNaN(jd.getTime())) return false;
+    const end = new Date(Number(year), Number(month), 0, 23, 59, 59, 999); // month is 1-12
+    return jd.getTime() <= end.getTime();
+  };
+
+  const eligiblePayrollEmployees = useMemo(() => {
+    const m = Number(payrollForm.month);
+    const y = Number(payrollForm.year);
+    return (employees || []).filter((e) => e.status === "ACTIVE" && isEmployeeEligibleForPayroll(e, m, y));
+  }, [employees, payrollForm.month, payrollForm.year]);
+
+
 
   const payrollColumns = [
     { key: "employeeName", label: "Employee" },
@@ -706,21 +859,29 @@ export default function HR() {
             <Printer className="w-4 h-4 text-gray-700" />
           </button>
 
-          {row.status === "DRAFT" && (
+              {row.status === "DRAFT" && (
             <button
               type="button"
               className="p-1 rounded hover:bg-red-50"
               title="Delete payroll"
               onClick={async () => {
-                // eslint-disable-next-line no-alert
-                if (!confirm("Delete this DRAFT payroll?")) return;
-                try {
-                  await api.delete(`/hr/payrolls/${row._id}`);
-                  toast.success("Payroll deleted");
-                  setPayrolls((prev) => prev.filter((p) => p._id !== row._id));
-                } catch (err) {
-                  toast.error(err?.response?.data?.message || "Failed to delete payroll");
-                }
+                askConfirm({
+                  title: "Delete draft payroll?",
+                  message: "This will permanently delete this DRAFT payroll.",
+                  confirmText: "Delete",
+                  danger: true,
+                  onConfirm: async () => {
+                    try {
+                      await api.delete(`/hr/payrolls/${row._id}`);
+                      toast.success("Payroll deleted");
+                      setPayrolls((prev) => prev.filter((p) => p._id !== row._id));
+                    } catch (err) {
+                      toast.error(err?.response?.data?.message || "Failed to delete payroll");
+                    } finally {
+                      closeConfirm();
+                    }
+                  },
+                });
               }}
             >
               <Trash2 className="w-4 h-4 text-red-600" />
@@ -1229,15 +1390,27 @@ export default function HR() {
             <div className="border-t pt-3">
               <div className="text-xs font-semibold text-gray-700 mb-2">Employees</div>
               <div className="border rounded-xl overflow-hidden">
-                {(employees || [])
-                  .filter((e) => e.status === "ACTIVE")
-                  .map((emp) => {
+                {(() => {
+                  const list = eligiblePayrollEmployees || [];
+                  const getPayroll = (emp) =>
+                    (payrolls || []).find(
+                      (x) =>
+                        String(x.employeeId) === String(emp._id) &&
+                        Number(x.month) === Number(payrollForm.month) &&
+                        Number(x.year) === Number(payrollForm.year)
+                    );
+
+                  const pending = list.filter((e) => (getPayroll(e)?.status || "DRAFT") !== "PAID");
+                  const paid = list.filter((e) => (getPayroll(e)?.status || "DRAFT") === "PAID");
+
+                  const renderRow = (emp) => {
                     const p = (payrolls || []).find(
                       (x) =>
                         String(x.employeeId) === String(emp._id) &&
                         Number(x.month) === Number(payrollForm.month) &&
                         Number(x.year) === Number(payrollForm.year)
                     );
+                    const isPaid = !!p && p.status === "PAID";
                     const openAdvance = Math.round(
                       (advances || [])
                         .filter((a) => String(a.employeeId) === String(emp._id) && a.status === "OPEN")
@@ -1278,18 +1451,23 @@ export default function HR() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2 sm:justify-end">
-                            <button
-                              type="button"
-                              className="px-2 py-1 rounded border border-gray-200 text-gray-800 text-[11px] hover:bg-gray-50 inline-flex items-center gap-1"
-                              onClick={() => {
-                                setExpandedEmployeeId(expanded ? null : emp._id);
-                                setPayTarget(p || null);
-                                const advBal = openAdvance;
-                                setAdvanceEditingId(null);
-                                setAdvanceErrors({});
-                                setAdvanceForm({
-                                  ...emptyAdvance,
-                                  employeeId: String(emp._id),
+                              <button
+                                type="button"
+                                className="px-2 py-1 rounded border border-gray-200 text-gray-800 text-[11px] hover:bg-gray-50 inline-flex items-center gap-1"
+                                onClick={() => {
+                                  setExpandedEmployeeId(expanded ? null : emp._id);
+                                  setPayTarget(p || null);
+                                  const advBal = openAdvance;
+                                  setExpandedOpenAdvance(advBal);
+                                  const empEnabled = Boolean(emp?.advanceDeductionEnabled) && Math.round(Number(advBal || 0)) > 0;
+                                  const empPct = emp?.advanceDeductionPercent == null ? 20 : Number(emp.advanceDeductionPercent || 0);
+                                  setAdvancePercentEnabled(empEnabled);
+                                  setAdvancePercent(Number.isFinite(empPct) ? empPct : 20);
+                                  setAdvanceEditingId(null);
+                                  setAdvanceErrors({});
+                                  setAdvanceForm({
+                                    ...emptyAdvance,
+                                    employeeId: String(emp._id),
                                   date: new Date().toISOString().slice(0, 10),
                                   paymentMethod: "CASH",
                                 });
@@ -1360,22 +1538,7 @@ export default function HR() {
                                   <div className="text-xs text-gray-600">
                                     Payroll not generated for this month/year.
                                   </div>
-                                  <button
-                                    type="button"
-                                    className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-2"
-                                    disabled={payrollGenerating}
-                                    onClick={async () => {
-                                      const created = await generatePayrollForEmployee(emp);
-                                      if (!created?._id) return;
-                                      setPayTarget(created);
-                                      setPayrolls((prev) => {
-                                        const exists = prev.some((x) => String(x._id) === String(created._id));
-                                        return exists ? prev : [created, ...prev];
-                                      });
-                                    }}
-                                  >
-                                    <Wand2 size={14} /> {payrollGenerating ? "Generating..." : "Generate Payroll"}
-                                  </button>
+                                  <span className="text-[11px] text-gray-500">Open details to generate.</span>
                                 </div>
                               )}
 
@@ -1387,6 +1550,7 @@ export default function HR() {
                                       type="button"
                                       className="px-2 py-1 rounded border border-gray-200 text-[11px] hover:bg-gray-50"
                                       onClick={() => setPayrollForm((pp) => ({ ...pp, earnings: [...(pp.earnings || []), { key: "", title: "", amount: "" }] }))}
+                                      disabled={isPaid}
                                     >
                                       + Add
                                     </button>
@@ -1463,6 +1627,7 @@ export default function HR() {
                                       type="button"
                                       className="px-2 py-1 rounded border border-gray-200 text-[11px] hover:bg-gray-50"
                                       onClick={() => setPayrollForm((pp) => ({ ...pp, deductionsItems: [...(pp.deductionsItems || []), { key: "", title: "", amount: "" }] }))}
+                                      disabled={isPaid}
                                     >
                                       + Add
                                     </button>
@@ -1538,13 +1703,51 @@ export default function HR() {
                                   <div className="text-xs font-semibold text-gray-700">Advance (Optional)</div>
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                <div className="flex flex-wrap items-center gap-2 mb-2">
+                                  <label className="inline-flex items-center gap-2 text-xs text-gray-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={advancePercentEnabled}
+                                      onChange={(e) => {
+                                        const enabled = e.target.checked;
+                                        const cap = Math.round(Number(expandedOpenAdvance || 0));
+                                        if (enabled && (expandedOpenAdvance == null || cap <= 0)) {
+                                          toast.error("No open advance remaining for this employee.");
+                                          return;
+                                        }
+                                        setAdvancePercentEnabled(enabled);
+                                        if (expandedEmployeeId) persistAdvanceDeductionSettings(expandedEmployeeId, enabled, advancePercent);
+                                      }}
+                                    />
+                                    Deduct advance as % of earnings
+                                  </label>
+                                  {advancePercentEnabled && (
+                                    <div className="flex items-center gap-2 text-xs">
+                                      <span className="text-gray-600">Percent</span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        className="w-20 border rounded px-2 py-1 text-xs"
+                                        value={advancePercent}
+                                        onChange={(e) => setAdvancePercent(Number(e.target.value))}
+                                        onBlur={() => {
+                                          if (expandedEmployeeId) persistAdvanceDeductionSettings(expandedEmployeeId, true, advancePercent);
+                                        }}
+                                      />
+                                      <span className="text-gray-500">(cap: {Math.round(Number(expandedOpenAdvance || 0))})</span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
                                   <div>
                                     <label className="text-[11px] text-gray-600">Date</label>
                                     <input
                                       type="date"
-                                      className="w-full border rounded px-2 py-1 text-xs"
+                                      className="w-full h-9 border rounded px-2 py-1 text-xs"
                                       value={advanceForm.date}
+                                      disabled={isPaid}
                                       onChange={(e) => setAdvanceForm((pp) => ({ ...pp, date: e.target.value }))}
                                     />
                                   </div>
@@ -1553,37 +1756,39 @@ export default function HR() {
                                     <input
                                       type="number"
                                       min="0"
-                                      className={`w-full border rounded px-2 py-1 text-xs ${advanceErrors.amount ? "border-red-400 bg-red-50" : ""}`}
+                                      className={`w-full h-9 border rounded px-2 py-1 text-xs ${advanceErrors.amount ? "border-red-400 bg-red-50" : ""}`}
                                       value={advanceForm.amount}
+                                      disabled={isPaid}
                                       onChange={(e) => {
                                         setAdvanceForm((pp) => ({ ...pp, amount: e.target.value }));
                                         setAdvanceErrors((pp) => ({ ...pp, amount: "" }));
                                       }}
                                     />
-                                    <div className="min-h-[14px] text-[11px] text-red-600">{advanceErrors.amount || ""}</div>
                                   </div>
                                   <div>
                                     <label className="text-[11px] text-gray-600">Method</label>
                                     <select
-                                      className="w-full border rounded px-2 py-1 text-xs"
+                                      className="w-full h-9 border rounded px-2 py-1 text-xs"
                                       value={advanceForm.paymentMethod}
+                                      disabled={isPaid}
                                       onChange={(e) => setAdvanceForm((pp) => ({ ...pp, paymentMethod: e.target.value }))}
                                     >
                                       <option value="CASH">Cash</option>
                                       <option value="BANK">Bank</option>
                                     </select>
                                   </div>
-                                  <div className="flex items-end">
+                                  <div className="flex">
                                     <button
                                       type="button"
                                       onClick={createAdvance}
-                                      disabled={advanceSaving}
-                                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
+                                      disabled={advanceSaving || isPaid}
+                                      className="w-full h-9 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
                                     >
                                       <Save size={14} /> {advanceSaving ? "Saving..." : "Add Advance"}
                                     </button>
                                   </div>
                                 </div>
+                                <div className="min-h-[14px] text-[11px] text-red-600">{advanceErrors.amount || ""}</div>
                                 <div className="mt-2">
                                   <label className="text-[11px] text-gray-600">Note</label>
                                   <input
@@ -1643,19 +1848,156 @@ export default function HR() {
                                 <div className="text-xs text-gray-600">
                                   Net Pay: <span className="font-semibold text-gray-900">{Math.round(computeTotalsFromItems({ earnings: payrollForm.earnings || [], deductionsItems: payrollForm.deductionsItems || [] }).netPay)}</span>
                                 </div>
-                                <button type="button" onClick={payPayroll} disabled={payrollSaving || !p || (p.status === "PAID")} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-800 disabled:opacity-60">
-                                  <Save size={14} /> {!p ? "Generate first" : p.status === "PAID" ? "Paid" : payrollSaving ? "Paying..." : "Pay Now"}
-                                </button>
+                                {!p ? (
+                                  <button
+                                    type="button"
+                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60"
+                                    disabled={payrollGenerating}
+                                    onClick={async () => {
+                                      askConfirm({
+                                        title: "Generate payroll?",
+                                        message: `Generate payroll for ${emp.name} (${MONTHS[Number(payrollForm.month) - 1]} ${payrollForm.year})?`,
+                                        confirmText: "Generate",
+                                        onConfirm: async () => {
+                                          try {
+                                            const created = await generatePayrollForEmployee(emp);
+                                            if (!created?._id) return;
+                                            setPayTarget(created);
+                                            setPayrolls((prev) => {
+                                              const exists = prev.some((x) => String(x._id) === String(created._id));
+                                              return exists ? prev : [created, ...prev];
+                                            });
+                                          } finally {
+                                            closeConfirm();
+                                          }
+                                        },
+                                      });
+                                    }}
+                                  >
+                                    <Wand2 size={14} /> {payrollGenerating ? "Generating..." : "Generate Payroll"}
+                                  </button>
+                                ) : (
+                                  <button type="button" onClick={payPayroll} disabled={payrollSaving || (p.status === "PAID")} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-800 disabled:opacity-60">
+                                    <Save size={14} /> {p.status === "PAID" ? "Paid" : payrollSaving ? "Paying..." : "Pay Now"}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>
                         )}
                       </div>
                     );
-                  })}
+                  };
+
+                  return (
+                    <>
+                      <div className="bg-emerald-50/50 px-3 py-2 text-[11px] font-semibold text-emerald-800 border-b border-emerald-100">
+                        Pending / Generated ({pending.length})
+                      </div>
+                      {pending.length ? pending.map(renderRow) : (
+                        <div className="p-3 text-xs text-gray-500 border-b">-</div>
+                      )}
+
+                      <div className="bg-gray-50 px-3 py-2 text-[11px] font-semibold text-gray-700 border-t border-gray-100">
+                        Paid ({paid.length})
+                      </div>
+                      {paid.length ? paid.map(renderRow) : (
+                        <div className="p-3 text-xs text-gray-500">-</div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {infoEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={() => setInfoEmployee(null)}>
+          <div
+            className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-gray-900 truncate">{infoEmployee.name || "Employee"}</div>
+                <div className="text-xs text-gray-500 truncate">Employee ID: {infoEmployee.employeeId || "-"}</div>
+              </div>
+              <button type="button" className="p-2 rounded hover:bg-gray-50" onClick={() => setInfoEmployee(null)} title="Close">
+                <X className="w-4 h-4 text-gray-700" />
+              </button>
+            </div>
+            <div className="p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">Father Name</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.fatherName || "-"}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">Department</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.department || "-"}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">CNIC</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.cnic || "-"}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">Phone</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.phone || "-"}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">Joining Date</div>
+                  <div className="font-medium text-gray-900">
+                    {infoEmployee.joiningDate ? new Date(infoEmployee.joiningDate).toLocaleDateString() : "-"}
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <div className="text-[11px] text-gray-500">Salary</div>
+                  <div className="font-medium text-gray-900">
+                    {infoEmployee.salaryType || "-"} / {Math.round(Number(infoEmployee.basicSalary || 0))}
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 sm:col-span-2">
+                  <div className="text-[11px] text-gray-500">Address</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.address || "-"}</div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 sm:col-span-2">
+                  <div className="text-[11px] text-gray-500">Status</div>
+                  <div className="font-medium text-gray-900">{infoEmployee.status || "-"}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmState.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={closeConfirm}>
+          <div
+            className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div className="text-sm font-semibold text-gray-900">{confirmState.title || "Confirm"}</div>
+              <button type="button" className="p-2 rounded hover:bg-gray-50" onClick={closeConfirm} title="Close">
+                <X className="w-4 h-4 text-gray-700" />
+              </button>
+            </div>
+            <div className="p-4 text-sm text-gray-700">{confirmState.message || ""}</div>
+            <div className="px-4 pb-4 flex items-center justify-end gap-2">
+              <button type="button" className="px-3 py-2 rounded-lg border border-gray-200 text-sm hover:bg-gray-50" onClick={closeConfirm}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`px-3 py-2 rounded-lg text-sm text-white ${confirmState.danger ? "bg-red-600 hover:bg-red-700" : "bg-emerald-700 hover:bg-emerald-800"}`}
+                onClick={() => confirmState.onConfirm && confirmState.onConfirm()}
+              >
+                {confirmState.confirmText || "Confirm"}
+              </button>
+            </div>
           </div>
         </div>
       )}

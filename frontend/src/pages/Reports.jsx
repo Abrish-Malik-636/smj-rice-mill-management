@@ -143,21 +143,12 @@ export default function Reports() {
             ? "/hr/reports/employees"
             : hrSubTab === "advanceBalances"
               ? "/hr/reports/advance-balances"
-              : hrSubTab === "payrollSummary"
-                ? "/hr/reports/payroll-summary"
-                : hrSubTab === "payrolls"
-                  ? "/hr/payrolls"
-                  : "/hr/reports/employees";
+              : hrSubTab === "payrolls"
+                ? "/hr/payrolls"
+                : "/hr/reports/employees";
         const res = await api.get(endpoint, hrSubTab === "payrolls" ? { params: hrPayrollFilters } : undefined);
         const data = res.data?.data || [];
-        if (hrSubTab === "payrollSummary") {
-          setHrRows(
-            data.map((r) => ({
-              __rowId: `${r.year}-${r.month}`,
-              ...r,
-            }))
-          );
-        } else if (hrSubTab === "advanceBalances") {
+        if (hrSubTab === "advanceBalances") {
           setHrRows(
             data.map((r) => ({
               __rowId: String(r.employeeId || r._id || ""),
@@ -632,14 +623,6 @@ export default function Reports() {
         { key: "remainingBalance", label: "Remaining", render: (v) => fmt(v) },
       ];
     }
-    if (hrSubTab === "payrollSummary") {
-      return [
-        { key: "year", label: "Year" },
-        { key: "month", label: "Month" },
-        { key: "count", label: "Employees" },
-        { key: "totalNet", label: "Total Net Salary", render: (v) => fmt(v) },
-      ];
-    }
     if (hrSubTab === "payrolls") {
       return [
         { key: "payrollId", label: "Payroll ID" },
@@ -771,7 +754,6 @@ export default function Reports() {
                 {[
                   { key: "employees", label: "Employee List", icon: <Users size={16} /> },
                   { key: "advanceBalances", label: "Advance Balance", icon: <HandCoins size={16} /> },
-                  { key: "payrollSummary", label: "Monthly Payroll Summary", icon: <TrendingUp size={16} /> },
                   { key: "payrolls", label: "Payrolls", icon: <FileText size={16} /> },
                 ].map((t) => {
                   const isActive = hrSubTab === t.key;
