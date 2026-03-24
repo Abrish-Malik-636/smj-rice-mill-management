@@ -367,7 +367,7 @@ export default function Production() {
       const [pRes] = await Promise.all([api.get("/product-types")]);
       setProducts(pRes.data.data || []);
     } catch {
-      setErrorDialog({ open: true, message: "Failed to load brand/product master data." });
+      setErrorDialog({ open: true, message: "Failed to load company name/product master data." });
     }
   }
 
@@ -645,7 +645,7 @@ export default function Production() {
 
   const saveNewProduct = async () => {
     if (!selectedBatch?.sourceCompanyName) {
-      setNewProductModal((p) => ({ ...p, error: "Select a source brand first." }));
+      setNewProductModal((p) => ({ ...p, error: "Select a source company name first." }));
       return;
     }
     const rows = Array.isArray(newProductModal.productRows)
@@ -1230,7 +1230,7 @@ export default function Production() {
                 }
                 className={`border rounded px-2 py-1 w-full ${fieldErrors.sourceCompanyName ? "border-red-500 bg-red-50" : ""}`}
               >
-                <option value="">Select paddy source brand</option>
+                <option value="">Select paddy source company name</option>
                 {batchForm.sourceCompanyName &&
                   !paddyCompanyOptions.includes(batchForm.sourceCompanyName) && (
                     <option value={batchForm.sourceCompanyName}>
@@ -1588,7 +1588,7 @@ export default function Production() {
               <table className="w-full text-[11px]">
                 <thead className="bg-gray-100">
                   <tr>
-                    <th className="p-2 text-left">Brand/Trademark</th>
+                    <th className="p-2 text-left">Company Name</th>
                     <th className="p-2 text-left">Product</th>
                     <th className="p-2 text-left">Status</th>
                     <th className="p-2 text-left">Complete At</th>
@@ -2151,7 +2151,11 @@ export default function Production() {
       <AddOptionModal
         open={newProductModal.open}
         title="Add Finished Product"
-        subtitle={selectedBatch?.sourceCompanyName ? `Brand/Trademark: ${selectedBatch.sourceCompanyName}` : "Select a batch brand first"}
+        subtitle={
+          selectedBatch?.sourceCompanyName
+            ? `Company Name: ${selectedBatch.sourceCompanyName}`
+            : "Select a batch company name first"
+        }
         submitLabel="Add"
         loading={newProductModal.saving}
         maxWidthClass="max-w-[20cm]"
@@ -2162,7 +2166,7 @@ export default function Production() {
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
             <div className="grid grid-cols-12 gap-3">
               <div className="col-span-12 md:col-span-6">
-                <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+                <label className="block text-xs text-gray-600 mb-1">Company Name *</label>
                 <input
                   type="text"
                   readOnly
@@ -2234,7 +2238,7 @@ export default function Production() {
                                 type="button"
                                 disabled
                                 className="w-full text-left px-2 py-1 text-sm text-gray-400 cursor-not-allowed bg-gray-50"
-                                title="Already added for this brand"
+                                title="Already added for this company name"
                               >
                                 {name}
                               </button>
@@ -2324,7 +2328,9 @@ export default function Production() {
                   ? normalizeText(p.brand) === normalizeText(selectedBatch.sourceCompanyName)
                   : true
               )).length === 0 ? (
-                <div className="text-xs text-gray-400">No products for this brand yet.</div>
+                <div className="text-xs text-gray-400">
+                  No products for this company name yet.
+                </div>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {(products || [])
@@ -2715,7 +2721,7 @@ function BatchSlipModal({ onClose, batch, millInfo }) {
             <table className="w-full text-[10px] mt-1">
               <thead>
                 <tr>
-                  <th className="text-left">Brand/Trademark</th>
+                  <th className="text-left">Company Name</th>
                   <th className="text-left">Product</th>
                   <th className="text-right">Bags</th>
                   <th className="text-right">Net (kg)</th>

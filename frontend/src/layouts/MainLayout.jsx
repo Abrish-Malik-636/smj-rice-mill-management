@@ -16,8 +16,6 @@ export default function MainLayout({ children }) {
   const [authLocked, setAuthLocked] = useState(false);
   const [loginPin, setLoginPin] = useState("");
   const [loginError, setLoginError] = useState("");
-  const lastAlertSnapshotRef = useRef(null);
-  const [pendingActions, setPendingActions] = useState([]);
   const [draftPrompt, setDraftPrompt] = useState({
     open: false,
     storageKey: "",
@@ -27,14 +25,10 @@ export default function MainLayout({ children }) {
   const routeNameMap = {
     "/gatepass": "Gate Pass Management",
     "/gatepasses": "Gate Pass Management",
-    "/financial": "Sales & Purchases",
     "/production": "Production Management",
     "/stock": "Stock Management",
-    "/stock-managerial": "Stock Management",
     "/accounting-finance": "Accounting & Finance",
     "/reports": "Reports",
-    "/hr": "HR & Payroll",
-    "/notifications": "Notifications & Alerts",
     "/masterdata": "System Settings",
   };
   const isDashboard = location.pathname === "/";
@@ -44,7 +38,7 @@ export default function MainLayout({ children }) {
     `smj_draft_${pathname}${search || ""}`;
 
   const isDraftEnabledRoute = (pathname) =>
-    ["/financial", "/gatepass", "/production"].includes(pathname);
+    ["/gatepass", "/production"].includes(pathname);
 
   const getControlKey = (el, idx) =>
     el.getAttribute("data-draft-key") ||
@@ -153,139 +147,6 @@ export default function MainLayout({ children }) {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-  }, []);
-
-  useEffect(() => {
-    const alertsEnabled = settings?.alertsEnabled !== false;
-    if (!alertsEnabled) return;
-
-    const showPopup = (title, body) => {
-      if (
-        typeof window !== "undefined" &&
-        "Notification" in window &&
-        Notification.permission === "granted"
-      ) {
-        try {
-          new Notification(title, { body, tag: "smj-alerts" });
-          return;
-        } catch (_) {}
-      }
-      toast(body, { icon: "🔔" });
-    };
-
-    const fetchAndNotify = async () => {
-      try {
-        const res = await api.get("/notifications/alerts");
-        const data = res.data?.data || {};
-        const alerts = Array.isArray(data.alerts) ? data.alerts : [];
-        const recentActivities = Array.isArray(data.recentActivities)
-          ? data.recentActivities
-          : [];
-        const pending = Array.isArray(data.pendingActions) ? data.pendingActions : [];
-        setPendingActions(pending);
-        const schedule = data.alertSchedule || {};
-
-        const nextSnapshot = {
-          overdue: Number(alerts.find((a) => a.id === "overdue")?.count || 0),
-          dueToday: Number(alerts.find((a) => a.id === "due_today")?.count || 0),
-          inProcess: Number(
-            alerts.find((a) => a.id === "in_process_batches")?.count || 0
-          ),
-          latestActivityAt: recentActivities[0]?.at
-            ? new Date(recentActivities[0].at).getTime()
-            : 0,
-          latestActivityTitle: String(recentActivities[0]?.title || ""),
-          latestActivityDetail: String(recentActivities[0]?.detail || ""),
-          inWorkingHours: !!schedule.inWorkingHours,
-          pendingActionsCount: pending.length,
-          latestPendingActionAt: pending[0]?.createdAt
-            ? new Date(pending[0].createdAt).getTime()
-            : 0,
-        };
-
-        const prev = lastAlertSnapshotRef.current;
-        lastAlertSnapshotRef.current = nextSnapshot;
-        const cooldownMs = 10 * 60 * 1000;
-        const lastPopupAt = Number(localStorage.getItem("smj_alert_last_popup_at") || 0);
-        const nowMs = Date.now();
-
-        if (!prev) {
-          if (
-            nextSnapshot.inWorkingHours &&
-            (nextSnapshot.overdue > 0 ||
-              nextSnapshot.dueToday > 0 ||
-              nextSnapshot.inProcess > 0)
-          ) {
-            if (nowMs - lastPopupAt >= cooldownMs) {
-              showPopup(
-                "SMJ Alerts",
-                `Overdue: ${nextSnapshot.overdue}, Due today: ${nextSnapshot.dueToday}, In process: ${nextSnapshot.inProcess}`
-              );
-              localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
-            }
-          }
-          return;
-        }
-        if (!nextSnapshot.inWorkingHours) return;
-
-        const messages = [];
-        if (nextSnapshot.overdue > prev.overdue) {
-          messages.push(
-            `${nextSnapshot.overdue - prev.overdue} new overdue invoice alert(s)`
-          );
-        }
-        if (nextSnapshot.dueToday > prev.dueToday) {
-          messages.push(
-            `${nextSnapshot.dueToday - prev.dueToday} invoice(s) now due today`
-          );
-        }
-        if (nextSnapshot.inProcess > prev.inProcess) {
-          messages.push(
-            `${nextSnapshot.inProcess - prev.inProcess} production batch(es) started`
-          );
-        }
-        if (
-          nextSnapshot.latestActivityAt &&
-          nextSnapshot.latestActivityAt > (prev.latestActivityAt || 0)
-        ) {
-          const t = nextSnapshot.latestActivityTitle || "New activity";
-          const d = nextSnapshot.latestActivityDetail || "";
-          messages.push(d ? `${t}: ${d}` : t);
-        }
-        // Ignore pending actions banner text in alerts.
-
-        if (messages.length > 0) {
-          showPopup("SMJ Alerts", messages.join(" | "));
-          localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
-        } else if (
-          nowMs - lastPopupAt >= cooldownMs &&
-          (nextSnapshot.overdue > 0 ||
-            nextSnapshot.dueToday > 0 ||
-            nextSnapshot.inProcess > 0)
-        ) {
-          showPopup(
-            "SMJ Alerts",
-            `Pending alerts: Overdue ${nextSnapshot.overdue}, Due today ${nextSnapshot.dueToday}, In process ${nextSnapshot.inProcess}`
-          );
-          localStorage.setItem("smj_alert_last_popup_at", String(nowMs));
-        }
-      } catch (_) {}
-    };
-
-    fetchAndNotify();
-    const intervalMinutes = Math.max(
-      1,
-      Number(settings?.alertsIntervalMinutes || 60)
-    );
-    const timer = setInterval(fetchAndNotify, intervalMinutes * 60 * 1000);
-    return () => clearInterval(timer);
-  }, [settings?.alertsEnabled, settings?.alertsIntervalMinutes]);
-
-  useEffect(() => {
     const onLogout = () => {
       localStorage.setItem("smj_logged_in", "false");
       setAuthLocked(true);
@@ -322,19 +183,16 @@ export default function MainLayout({ children }) {
         setIsOpen(true);
         return;
       }
-      if (e.altKey) {
-        const key = e.key;
-        const map = {
-          "1": "/",
-          "2": "/gatepass",
-          "3": "/financial?tab=sale",
-          "4": "/stock",
-          "5": "/accounting-finance",
-          "6": "/reports",
-          "7": "/hr",
-          "8": "/notifications",
-          "0": "/masterdata",
-        };
+        if (e.altKey) {
+          const key = e.key;
+          const map = {
+            "1": "/",
+            "2": "/gatepass",
+            "4": "/stock",
+            "5": "/accounting-finance",
+            "6": "/reports",
+            "0": "/masterdata",
+          };
         if (map[key]) {
           e.preventDefault();
           navigate(map[key]);

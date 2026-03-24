@@ -3,7 +3,6 @@ const Transaction = require("../models/transactionModel");
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const Company = require("../models/companyModel");
-const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const axios = require("axios");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -36,7 +35,7 @@ async function buildBusinessSnapshot() {
     $or: [{ date: { $gte: since } }, { createdAt: { $gte: since } }],
   });
 
-  const [sales7, sales30, purchases7, purchases30, stockAgg, paddyAgg, managerialAgg, inProcessCount] =
+  const [sales7, sales30, purchases7, purchases30, stockAgg, paddyAgg, inProcessCount] =
     await Promise.all([
       Transaction.find({ type: "SALE", ...inRange(since7) })
         .select("totalAmount partialPaid paymentStatus date createdAt")
@@ -97,22 +96,6 @@ async function buildBusinessSnapshot() {
           },
         },
       ]),
-      // Managerial stock is tracked separately (qty, not kg).
-      ManagerialStockLedger.aggregate([
-        {
-          $group: {
-            _id: { itemName: "$itemName", category: "$category" },
-            itemName: { $last: "$itemName" },
-            category: { $last: "$category" },
-            inQty: {
-              $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$quantity", 0] },
-            },
-            outQty: {
-              $sum: { $cond: [{ $eq: ["$type", "OUT"] }, "$quantity", 0] },
-            },
-          },
-        },
-      ]),
       ProductionBatch.countDocuments({ status: "IN_PROCESS" }),
     ]);
 
@@ -166,22 +149,6 @@ async function buildBusinessSnapshot() {
     .filter((row) => row.balanceKg > 0)
     .sort((a, b) => b.balanceKg - a.balanceKg);
 
-  const managerialRows = (Array.isArray(managerialAgg) ? managerialAgg : [])
-    .map((row) => ({
-      itemName: String(row.itemName || row.category || "").trim() || "Item",
-      category: String(row.category || "").trim() || "",
-      balanceQty: toNum(row.inQty) - toNum(row.outQty),
-    }))
-    .filter((row) => row.balanceQty > 0)
-    .sort((a, b) => b.balanceQty - a.balanceQty);
-
-  const managerialTotalQty = managerialRows.reduce(
-    (sum, r) => sum + Math.max(0, toNum(r.balanceQty)),
-    0,
-  );
-
-  const managerialTopItems = managerialRows.slice(0, 12);
-
   const totalPositiveKg = stockRows.reduce(
     (sum, row) => sum + Math.max(0, toNum(row.balanceKg)),
     0,
@@ -225,11 +192,6 @@ async function buildBusinessSnapshot() {
       outOfStockItems,
       totalTrackedProducts: stockRows.length,
       unprocessedPaddyByBrand: paddyByBrand,
-    },
-    managerialStock: {
-      totalQty: managerialTotalQty,
-      topItems: managerialTopItems,
-      totalTrackedItems: managerialRows.length,
     },
     production: {
       inProcessBatches: inProcessCount,
@@ -395,17 +357,19 @@ function detectIntent(rawMessage) {
 
   const wantsTotal = has("total") || has("overall") || has("kitna") || has("how much") || has("sum");
   const wantsList = has("list") || has("show") || has("all") || has("names") || has("name") || has("customers") || has("customer");
-  const wantsManagerial = has("managerial") || has("office") || has("admin stock");
   const wantsProduction = has("production") || has("finished") || has("rice stock");
 
+  // Managerial stock module has been removed from the system UI.
+  if (has("managerial") || has("office") || has("admin stock")) {
+    return { type: "managerial_removed" };
+  }
+
   if ((has("stock") || has("inventory")) && wantsTotal) {
-    if (wantsManagerial) return { type: "stock_total_managerial" };
     if (wantsProduction) return { type: "stock_total_production" };
-    return { type: "stock_total_both" };
+    return { type: "stock_total_production" };
   }
   if (has("low stock") || (has("stock") && has("low"))) return { type: "stock_low" };
   if (has("top stock") || (has("stock") && (has("top") || has("highest")))) return { type: "stock_top" };
-  if ((has("stock") || has("inventory")) && wantsManagerial) return { type: "managerial_top" };
   if ((has("stock") || has("inventory")) && wantsProduction) return { type: "stock_top" };
   if (has("paddy") || has("unprocessed paddy") || has("unprocessed")) {
     if (has("which") || has("brand") || has("brnd")) return { type: "paddy_brands" };
@@ -457,16 +421,6 @@ function answerFromSnapshot(intent, snapshot) {
       toNum(snapshot?.stock?.productionTotalKg),
     )}.`;
   }
-  if (intent.type === "stock_total_managerial") {
-    return `Available managerial stock is about ${Math.round(
-      toNum(snapshot?.managerialStock?.totalQty),
-    ).toLocaleString("en-US")} items.`;
-  }
-  if (intent.type === "stock_total_both") {
-    const prod = fmtKg(toNum(snapshot?.stock?.productionTotalKg));
-    const man = Math.round(toNum(snapshot?.managerialStock?.totalQty)).toLocaleString("en-US");
-    return `Available stock:\n- Production: ${prod}\n- Managerial: ${man} items`;
-  }
   if (intent.type === "stock_low") {
     if (!lowStockItems.length) return "No low-stock items under 300 kg right now.";
     return (
@@ -481,22 +435,15 @@ function answerFromSnapshot(intent, snapshot) {
       topStockItems.map((r) => `- ${r.productTypeName}: ${fmtKg(r.balanceKg)}`).join("\n")
     );
   }
-  if (intent.type === "managerial_top") {
-    const top = Array.isArray(snapshot?.managerialStock?.topItems)
-      ? snapshot.managerialStock.topItems
-      : [];
-    if (!top.length) return "No managerial stock items found.";
-    const lines = top
-      .slice(0, 12)
-      .map((r) => `- ${r.itemName}: ${Math.round(toNum(r.balanceQty)).toLocaleString("en-US")}`)
-      .join("\n");
-    return `Top managerial stock items:\n${lines}`;
+  if (intent.type === "managerial_removed") {
+    return "Managerial stock module has been removed. Ask about Production Stock instead.";
   }
   if (intent.type === "paddy_brands") {
-    if (!paddyByBrand.length) return "No Unprocessed Paddy stock found for any brand.";
+    if (!paddyByBrand.length)
+      return "No Unprocessed Paddy stock found for any company name.";
     const top = paddyByBrand[0];
     const lines = paddyByBrand.slice(0, 10).map((r) => `- ${r.brandName}: ${fmtKg(r.balanceKg)}`).join("\n");
-    return `Brands with Unprocessed Paddy:\n${lines}\n\nTop brand: ${top.brandName} (${fmtKg(top.balanceKg)}).`;
+    return `Company Names with Unprocessed Paddy:\n${lines}\n\nTop company: ${top.brandName} (${fmtKg(top.balanceKg)}).`;
   }
   if (intent.type === "sales_summary") {
     return [

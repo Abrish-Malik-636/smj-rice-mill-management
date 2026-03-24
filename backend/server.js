@@ -51,10 +51,6 @@ const accountingRoutes = require("./routes/accountingRoutes");
 app.use("/api/accounting", accountingRoutes);
 const reportsRoutes = require("./routes/reportsRoutes");
 app.use("/api/reports", reportsRoutes);
-const notificationRoutes = require("./routes/notificationRoutes");
-app.use("/api/notifications", notificationRoutes);
-const hrRoutes = require("./routes/hrRoutes");
-app.use("/api/hr", hrRoutes);
 
 // Connect MongoDB
 mongoose

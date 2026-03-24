@@ -33,7 +33,7 @@ const productTypeSchema = new mongoose.Schema(
     brand: {
       type: String,
       trim: true,
-      maxlength: [80, "Brand must not exceed 80 characters"],
+      maxlength: [80, "Company Name must not exceed 80 characters"],
       default: "",
     },
     defaultSaleRate: {
@@ -90,7 +90,9 @@ productTypeSchema.pre("save", async function (next) {
       brand: { $regex: new RegExp(`^${brandNorm}$`, "i") },
     });
     if (existing) {
-      const error = new Error(`Product already exists for this brand: "${existing.name}"`);
+      const error = new Error(
+        `Product already exists for this company name: "${existing.name}"`
+      );
       error.name = "ValidationError";
       return next(error);
     }

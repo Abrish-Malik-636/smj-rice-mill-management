@@ -9,10 +9,6 @@ const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ExpenseEntry = require("../models/expenseEntryModel");
-const HREmployee = require("../models/hrEmployeeModel");
-const HRAdvance = require("../models/hrAdvanceModel");
-const HRPayroll = require("../models/hrPayrollModel");
-const NotificationReminder = require("../models/notificationReminderModel");
 const AIChat = require("../models/AIChat");
 const JournalLine = require("../models/journalLineModel");
 
@@ -27,10 +23,6 @@ const MODEL_MAP = {
   stockLedgers: StockLedger,
   managerialStockLedgers: ManagerialStockLedger,
   expenseEntries: ExpenseEntry,
-  hrEmployees: HREmployee,
-  hrAdvances: HRAdvance,
-  hrPayrolls: HRPayroll,
-  notificationReminders: NotificationReminder,
   journalLines: JournalLine,
   aiChats: AIChat,
 };

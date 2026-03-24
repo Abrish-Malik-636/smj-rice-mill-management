@@ -153,8 +153,9 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
         if (value.trim().length > 50) return "Product name must not exceed 50 characters";
         return null;
       case "brand":
-        if (!value.trim()) return "Brand is required";
-        if (value.trim().length > 80) return "Brand must not exceed 80 characters";
+        if (!value.trim()) return "Company Name is required";
+        if (value.trim().length > 80)
+          return "Company Name must not exceed 80 characters";
         return null;
       case "pricePerKg":
         if (!value || String(value).trim() === "") return "Price per KG is required";
@@ -483,7 +484,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
   );
 
   const exportColumns = [
-    { key: "brand", label: "Brand / Trademark" },
+    { key: "brand", label: "Company Name" },
     { key: "product", label: "Product" },
     { key: "pricePerKg", label: "Processing Price/KG (PKR)" },
     { key: "pricePerBag", label: "Price/Bag (PKR)" },
@@ -507,7 +508,9 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
       {!tableOnly && (
       <form onSubmit={handleSubmit} className="grid grid-cols-6 gap-4 bg-emerald-50 p-4 rounded-lg">
         <div className="col-span-2">
-          <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+          <label className="block text-xs text-gray-600 mb-1">
+            Company Name *
+          </label>
           {!isOtherBrand ? (
             <select
               name="brandSelect"
@@ -521,7 +524,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
               }
               className={`border p-2 rounded text-sm w-full ${errors.brand && touched.brand ? "border-red-500 bg-red-50" : "border-gray-300"}`}
             >
-              <option value="">Select brand</option>
+              <option value="">Select company name</option>
               {allBrandOptions.map((b, idx) => (
                 <option key={`${b}-${idx}`} value={b}>
                   {b}
@@ -542,7 +545,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
                 }}
                 onBlur={handleBlur}
                 maxLength={80}
-                placeholder="Enter new brand"
+                placeholder="Enter new company name"
                 className={`border p-2 rounded text-sm w-full ${errors.brand && touched.brand ? "border-red-500 bg-red-50" : "border-gray-300"}`}
               />
               <button
@@ -732,7 +735,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
       {tableOnly && editInModal && (
         <AddOptionModal
           open={editModalOpen}
-          title="Edit Brand Product"
+          title="Edit Company Product"
           subtitle="Only pricing can be updated here."
           onClose={cancelEdit}
           onSubmit={() => saveProduct(false)}
@@ -742,7 +745,9 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+              <label className="block text-xs text-gray-600 mb-1">
+                Company Name *
+              </label>
               <input
                 type="text"
                 value={isOtherBrand ? formData.brandOther : formData.brandSelect}
@@ -777,13 +782,13 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
 
       <div className="bg-white rounded-lg shadow-sm p-4">
         <div className="text-sm font-semibold text-emerald-800 mb-3">
-          Production Stock (By Brand)
+          Production Stock (By Company Name)
         </div>
         <DataTable
-          title="Production Stock (By Brand)"
+          title="Production Stock (By Company Name)"
           data={brandRows}
           idKey="brand"
-          searchPlaceholder="Search brand or product..."
+          searchPlaceholder="Search company name or product..."
           emptyMessage="No product types found."
           exportColumns={exportColumns}
           exportData={exportData}
@@ -800,7 +805,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
           columns={[
             {
               key: "brand",
-              label: "Brand / Trademark",
+              label: "Company Name",
               filterOptions: brandGroups.map((g) => g.brand),
             },
             {
@@ -861,7 +866,7 @@ export default function ProductManager({ tableOnly = false, editInModal = false 
                             {row.items.length === 0 && (
                               <tr>
                                 <td colSpan={5} className="p-3 text-center text-gray-400">
-                                  No products for this brand.
+                                  No products for this company name.
                                 </td>
                               </tr>
                             )}

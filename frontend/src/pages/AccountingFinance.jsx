@@ -1,690 +1,904 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
-import {
-  Plus,
-  RotateCcw,
-  BookOpen,
-  BookCopy,
-  FileText,
-  Scale,
-  TrendingUp,
-  Landmark,
-  HandCoins,
-  ListTree,
-  Receipt,
-} from "lucide-react";
+import { BookOpen, FileText, List, Plus, Save, X, Pencil, Eye, Trash2, RefreshCcw } from "lucide-react";
 import api from "../services/api";
 import DataTable from "../components/ui/DataTable";
 
 const TABS = [
-  { key: "daybook", label: "Day Book", icon: <BookOpen size={16} /> },
-  { key: "ledger", label: "Ledger", icon: <BookCopy size={16} /> },
-  { key: "journal", label: "Journal", icon: <FileText size={16} /> },
-  { key: "trial", label: "Trial Balance", icon: <Scale size={16} /> },
-  { key: "pl", label: "Profit & Loss", icon: <TrendingUp size={16} /> },
-  { key: "balance", label: "Balance Sheet", icon: <Landmark size={16} /> },
-  { key: "receivables", label: "Outstanding Receivables", icon: <HandCoins size={16} /> },
-  { key: "payables", label: "Outstanding Payables", icon: <HandCoins size={16} /> },
-  { key: "accounts", label: "Accounts", icon: <ListTree size={16} /> },
-  { key: "expenses", label: "Expenses", icon: <Receipt size={16} /> },
+  { key: "journal-entry", label: "Journal Entry", icon: <FileText size={16} /> },
+  { key: "vouchers", label: "Voucher List", icon: <List size={16} /> },
+  { key: "reports", label: "Reports", icon: <BookOpen size={16} /> },
 ];
 
-const RANGE_OPTIONS = [
-  { value: "day", label: "Day (Today)" },
-  { value: "particular", label: "Particular Date" },
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
-  { value: "year", label: "Year" },
-  { value: "custom", label: "Custom Range" },
-];
+const VOUCHER_TYPES = ["JOURNAL", "PAYMENT", "RECEIPT"];
 
-const ACCOUNT_TYPES = ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE", "COGS"];
+const blankLine = () => ({
+  rowId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  accountId: "",
+  debit: "",
+  credit: "",
+  itemId: "",
+  partyId: "",
+  remarks: "",
+});
 
-const toInt = (v) => Math.round(Number(v || 0));
-const money = (v) => `Rs ${toInt(v)}`;
-const fmtDate = (v) => (v ? new Date(v).toLocaleDateString() : "-");
+const n0 = (v) => (v === "" || v == null ? 0 : Number(v || 0) || 0);
+const round2 = (n) => Number((Number(n || 0)).toFixed(2));
 
 export default function AccountingFinance() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState("daybook");
-  const [range, setRange] = useState("month");
-  const [particularDate, setParticularDate] = useState(new Date().toISOString().slice(0, 10));
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [activeTab, setActiveTab] = useState("journal-entry");
   const [loading, setLoading] = useState(false);
 
-  const [daybook, setDaybook] = useState([]);
-  const [ledger, setLedger] = useState([]);
-  const [journal, setJournal] = useState([]);
-  const [trial, setTrial] = useState([]);
-  const [pl, setPl] = useState({});
-  const [balance, setBalance] = useState({});
-  const [receivables, setReceivables] = useState([]);
-  const [payables, setPayables] = useState([]);
   const [accounts, setAccounts] = useState([]);
-  const [expenses, setExpenses] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [parties, setParties] = useState([]);
+  const [products, setProducts] = useState([]);
 
-  const [newAccount, setNewAccount] = useState({
-    code: "",
-    name: "",
-    type: "ASSET",
-    subType: "",
-  });
-
-  const [expenseForm, setExpenseForm] = useState({
+  const [editingVoucherId, setEditingVoucherId] = useState("");
+  const [editingVoucherNo, setEditingVoucherNo] = useState("");
+  const [header, setHeader] = useState({
     date: new Date().toISOString().slice(0, 10),
-    categoryName: "",
-    amount: "",
-    paymentMethod: "CASH",
-    remarks: "",
+    voucherType: "JOURNAL",
+    companyId: "",
+    companyName: "",
+    referenceNo: "",
+    description: "",
   });
+  const [lines, setLines] = useState([blankLine(), blankLine()]);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
-  const [manualJV, setManualJV] = useState({
-    date: new Date().toISOString().slice(0, 10),
-    narration: "",
-    debitAccountId: "",
-    debitAmount: "",
-    creditAccountId: "",
-    creditAmount: "",
-  });
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
+  const [filterCompanyId, setFilterCompanyId] = useState("");
+  const [filterVoucherType, setFilterVoucherType] = useState("");
+  const [filterAccountId, setFilterAccountId] = useState("");
+  const [filterPartyId, setFilterPartyId] = useState("");
+  const [vouchers, setVouchers] = useState([]);
 
   useEffect(() => {
     const tab = searchParams.get("tab");
     if (tab && TABS.some((t) => t.key === tab)) setActiveTab(tab);
   }, [searchParams]);
 
-  const params = useMemo(() => {
-    const p = { range };
-    if (range === "particular" && particularDate) p.date = particularDate;
-    if (range === "custom") {
-      if (startDate) p.startDate = startDate;
-      if (endDate) p.endDate = endDate;
-    }
-    return { params: p };
-  }, [range, particularDate, startDate, endDate]);
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      p.set("tab", activeTab);
+      return p;
+    });
+  }, [activeTab, setSearchParams]);
 
-  const loadShared = async () => {
-    const [accountsRes] = await Promise.all([api.get("/accounting/accounts")]);
-    setAccounts(accountsRes.data?.data || []);
+  const totals = useMemo(() => {
+    const totalDebit = round2(lines.reduce((s, l) => s + n0(l.debit), 0));
+    const totalCredit = round2(lines.reduce((s, l) => s + n0(l.credit), 0));
+    return { totalDebit, totalCredit, balanced: totalDebit > 0 && totalDebit === totalCredit };
+  }, [lines]);
+
+  const companyOptions = useMemo(
+    () => companies.map((c) => ({ id: String(c._id), name: c.name })),
+    [companies]
+  );
+  const accountOptions = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.isActive !== false)
+        .map((a) => ({ id: String(a._id), label: `${a.code} - ${a.name}`, name: a.name, code: a.code })),
+    [accounts]
+  );
+  const partyOptions = useMemo(
+    () => parties.filter((p) => p.isActive !== false).map((p) => ({ id: String(p._id), name: p.name })),
+    [parties]
+  );
+  const productOptions = useMemo(
+    () => products.filter((p) => p.isActive !== false).map((p) => ({ id: String(p._id), name: p.name })),
+    [products]
+  );
+
+  const loadDropdowns = async () => {
+    const [accRes, compRes, partyRes, prodRes] = await Promise.all([
+      api.get("/accounting/accounts"),
+      api.get("/accounting/entities"),
+      api.get("/accounting/parties"),
+      api.get("/accounting/products"),
+    ]);
+    setAccounts(accRes.data?.data || []);
+    setCompanies(compRes.data?.data || []);
+    setParties(partyRes.data?.data || []);
+    setProducts(prodRes.data?.data || []);
   };
 
-  const loadData = async () => {
-    try {
-      setLoading(true);
-      await loadShared();
-      if (activeTab === "daybook") {
-        const r = await api.get("/accounting/daybook", params);
-        setDaybook(r.data?.data || []);
-      } else if (activeTab === "ledger") {
-        const r = await api.get("/accounting/ledger", params);
-        setLedger(r.data?.data || []);
-      } else if (activeTab === "journal") {
-        const r = await api.get("/accounting/journal", params);
-        setJournal(r.data?.data || []);
-      } else if (activeTab === "trial") {
-        const r = await api.get("/accounting/trial-balance", params);
-        setTrial(r.data?.data || []);
-      } else if (activeTab === "pl") {
-        const r = await api.get("/accounting/pl", params);
-        setPl(r.data?.data || {});
-      } else if (activeTab === "balance") {
-        const r = await api.get("/accounting/balance", params);
-        setBalance(r.data?.data || {});
-      } else if (activeTab === "receivables") {
-        const r = await api.get("/accounting/outstanding/receivables", params);
-        setReceivables(r.data?.data || []);
-      } else if (activeTab === "payables") {
-        const r = await api.get("/accounting/outstanding/payables", params);
-        setPayables(r.data?.data || []);
-      } else if (activeTab === "expenses") {
-        const r = await api.get("/accounting/expenses", params);
-        setExpenses(r.data?.data || []);
+  const loadVouchers = async () => {
+    const params = {
+      startDate: rangeStart || undefined,
+      endDate: rangeEnd || undefined,
+      companyId: filterCompanyId || undefined,
+      voucherType: filterVoucherType || undefined,
+      accountId: filterAccountId || undefined,
+      partyId: filterPartyId || undefined,
+      range: "custom",
+    };
+    const res = await api.get("/accounting/vouchers", { params });
+    setVouchers(res.data?.data || []);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        await loadDropdowns();
+      } catch (err) {
+        toast.error(err?.response?.data?.message || "Failed to load accounting master data.");
+      } finally {
+        setLoading(false);
       }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "vouchers") return;
+    (async () => {
+      try {
+        setLoading(true);
+        await loadVouchers();
+      } catch (err) {
+        toast.error(err?.response?.data?.message || "Failed to load vouchers.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const setCompany = (companyId) => {
+    const c = companies.find((x) => String(x._id) === String(companyId));
+    setHeader((p) => ({
+      ...p,
+      companyId: companyId || "",
+      companyName: c?.name || "",
+    }));
+  };
+
+  const validate = () => {
+    const errs = [];
+    if (!header.date) errs.push("Date is required.");
+    if (!header.voucherType) errs.push("Voucher Type is required.");
+    if (!header.companyId || !header.companyName) errs.push("Company is required.");
+
+    const hasAnyLine = lines.some((l) => l.accountId && (n0(l.debit) > 0 || n0(l.credit) > 0));
+    if (!hasAnyLine) errs.push("Add at least 1 valid line (account + debit/credit).");
+
+    const badRow = lines.find((l) => (n0(l.debit) > 0 || n0(l.credit) > 0) && !l.accountId);
+    if (badRow) errs.push("Each amount row must have an Account.");
+
+    const bothDrCr = lines.find((l) => n0(l.debit) > 0 && n0(l.credit) > 0);
+    if (bothDrCr) errs.push("A row cannot have both Debit and Credit.");
+
+    if (!totals.balanced) errs.push("Total debit must equal total credit.");
+    return errs;
+  };
+
+  const resetEntry = () => {
+    setEditingVoucherId("");
+    setEditingVoucherNo("");
+    setHeader({
+      date: new Date().toISOString().slice(0, 10),
+      voucherType: "JOURNAL",
+      companyId: "",
+      companyName: "",
+      referenceNo: "",
+      description: "",
+    });
+    setLines([blankLine(), blankLine()]);
+    setSubmitAttempted(false);
+  };
+
+  const buildPayload = () => {
+    const payloadLines = lines
+      .map((l) => ({
+        accountId: l.accountId || "",
+        debit: round2(n0(l.debit)),
+        credit: round2(n0(l.credit)),
+        itemId: l.itemId || null,
+        itemName: productOptions.find((p) => p.id === l.itemId)?.name || "",
+        partyId: l.partyId || null,
+        partyName: partyOptions.find((p) => p.id === l.partyId)?.name || "",
+        remarks: String(l.remarks || "").trim(),
+      }))
+      .filter((l) => l.accountId && (l.debit > 0 || l.credit > 0));
+
+    return {
+      date: header.date,
+      voucherType: header.voucherType,
+      companyId: header.companyId,
+      companyName: header.companyName,
+      referenceNo: header.referenceNo,
+      description: header.description,
+      lines: payloadLines,
+    };
+  };
+
+  const saveVoucher = async ({ andNew } = { andNew: false }) => {
+    try {
+      setSubmitAttempted(true);
+      const errs = validate();
+      if (errs.length) {
+        toast.error(errs[0]);
+        return;
+      }
+      setLoading(true);
+      const payload = buildPayload();
+      if (editingVoucherId) {
+        const res = await api.put(`/accounting/vouchers/${editingVoucherId}`, payload);
+        setEditingVoucherNo(res.data?.data?.voucherNo || editingVoucherNo || "");
+        toast.success("Voucher updated.");
+      } else {
+        const res = await api.post("/accounting/vouchers", payload);
+        toast.success("Voucher saved.");
+        setEditingVoucherId(res.data?.data?._id || "");
+        setEditingVoucherNo(res.data?.data?.voucherNo || "");
+      }
+      if (andNew) resetEntry();
+      if (activeTab === "vouchers") await loadVouchers();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to load accounting data.");
+      toast.error(err?.response?.data?.message || "Failed to save voucher.");
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, [activeTab, params]);
-
-  const saveAccount = async (e) => {
-    e.preventDefault();
+  const editVoucher = async (id) => {
     try {
-      await api.post("/accounting/accounts", {
-        ...newAccount,
-        code: String(newAccount.code || "").trim(),
-        name: String(newAccount.name || "").trim(),
-        subType: String(newAccount.subType || "").trim(),
+      setLoading(true);
+      await loadDropdowns();
+      const res = await api.get(`/accounting/vouchers/${id}`);
+      const v = res.data?.data;
+      if (!v) throw new Error("Voucher not found.");
+      setEditingVoucherId(String(v._id));
+      setEditingVoucherNo(v.voucherNo || "");
+      setHeader({
+        date: v.date ? new Date(v.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+        voucherType: v.voucherType || "JOURNAL",
+        companyId: v.companyId || "",
+        companyName: v.companyName || "",
+        referenceNo: v.referenceNo || "",
+        description: v.description || "",
       });
-      toast.success("Account created.");
-      setNewAccount({ code: "", name: "", type: "ASSET", subType: "" });
-      loadData();
-    } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to create account.");
-    }
-  };
-
-  const postManualJournal = async (e) => {
-    e.preventDefault();
-    const debit = toInt(manualJV.debitAmount);
-    const credit = toInt(manualJV.creditAmount);
-    if (!debit || !credit || debit !== credit) {
-      toast.error("Debit and credit must be equal.");
-      return;
-    }
-    try {
-      await api.post("/accounting/journal/post", {
-        date: manualJV.date,
-        narration: manualJV.narration,
-        lines: [
-          { accountId: manualJV.debitAccountId, debit, credit: 0 },
-          { accountId: manualJV.creditAccountId, debit: 0, credit },
-        ],
-      });
-      toast.success("Journal posted.");
-      setManualJV((p) => ({
-        ...p,
-        narration: "",
-        debitAccountId: "",
-        debitAmount: "",
-        creditAccountId: "",
-        creditAmount: "",
+      const newLines = (v.lines || []).map((l) => ({
+        rowId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        accountId: String(l.accountId || ""),
+        debit: String(l.debit ?? ""),
+        credit: String(l.credit ?? ""),
+        itemId: l.itemId ? String(l.itemId) : "",
+        partyId: l.partyId ? String(l.partyId) : "",
+        remarks: l.remarks || "",
       }));
-      setActiveTab("journal");
-      setSearchParams({ tab: "journal" });
+      setLines(newLines.length ? newLines : [blankLine(), blankLine()]);
+      setSubmitAttempted(false);
+      setActiveTab("journal-entry");
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to post journal.");
+      toast.error(err?.response?.data?.message || err?.message || "Failed to load voucher.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const reverseJournal = async (id) => {
+  const viewVoucher = async (id) => {
     try {
-      await api.post(`/accounting/journal/${id}/reverse`);
-      toast.success("Journal reversed.");
-      loadData();
+      setLoading(true);
+      const res = await api.get(`/accounting/vouchers/${id}`);
+      const v = res.data?.data;
+      if (!v) throw new Error("Voucher not found.");
+
+      const details = [
+        `Voucher: ${v.voucherNo}`,
+        `Date: ${new Date(v.date).toLocaleDateString()}`,
+        `Type: ${v.voucherType}`,
+        `Company: ${v.companyName}`,
+        v.referenceNo ? `Reference: ${v.referenceNo}` : "",
+        v.description ? `Description: ${v.description}` : "",
+        "",
+        `Total Debit: ${v.totalDebit}`,
+        `Total Credit: ${v.totalCredit}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      toast(
+        <div className="text-sm whitespace-pre-wrap">
+          <div className="font-semibold mb-1">Voucher Details</div>
+          {details}
+        </div>,
+        { duration: 5000 }
+      );
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to reverse journal.");
+      toast.error(err?.response?.data?.message || "Failed to view voucher.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const runBackfill = async () => {
+  const deleteVoucher = async (id) => {
     try {
-      await api.post("/accounting/backfill", { version: 1 });
-      toast.success("Backfill completed.");
-      loadData();
+      if (!window.confirm("Delete this voucher permanently?")) return;
+      setLoading(true);
+      await api.delete(`/accounting/vouchers/${id}`);
+      toast.success("Voucher deleted.");
+      await loadVouchers();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Backfill failed.");
+      toast.error(err?.response?.data?.message || "Failed to delete voucher.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const saveExpense = async (e) => {
-    e.preventDefault();
+  const addCompany = async () => {
+    const name = window.prompt("New company name:");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
     try {
-      await api.post("/accounting/expenses", {
-        ...expenseForm,
-        amount: toInt(expenseForm.amount),
-      });
-      toast.success("Expense saved.");
-      setExpenseForm((p) => ({ ...p, categoryName: "", amount: "", remarks: "" }));
-      loadData();
+      setLoading(true);
+      await api.post("/accounting/entities", { name: trimmed });
+      toast.success("Company added.");
+      await loadDropdowns();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to save expense.");
+      toast.error(err?.response?.data?.message || "Unable to add company.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const deleteExpense = async (id) => {
+  const addParty = async () => {
+    const name = window.prompt("New party name:");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
     try {
-      await api.delete(`/accounting/expenses/${id}`);
-      toast.success("Expense deleted.");
-      loadData();
+      setLoading(true);
+      await api.post("/accounting/parties", { name: trimmed, partyType: "OTHER" });
+      toast.success("Party added.");
+      await loadDropdowns();
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to delete expense.");
+      toast.error(err?.response?.data?.message || "Unable to add party.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const tabs = (
-    <div className="border-b border-emerald-200">
-      <div className="flex flex-wrap gap-2">
-        {TABS.map((tab) => {
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => {
-                setActiveTab(tab.key);
-                setSearchParams({ tab: tab.key });
-              }}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
-                ${
-                  isActive
-                    ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
-                    : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
-                }`}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+  const addProduct = async () => {
+    const name = window.prompt("New product name:");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    try {
+      setLoading(true);
+      await api.post("/accounting/products", { name: trimmed });
+      toast.success("Product added.");
+      await loadDropdowns();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Unable to add product.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const filters = (
-    <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-wrap items-end gap-3">
-      <label className="text-sm">
-        <span className="block text-gray-600 mb-1">Range</span>
-        <select
-          value={range}
-          onChange={(e) => setRange(e.target.value)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[160px]"
-        >
-          {RANGE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {range === "particular" && (
-        <label className="text-sm">
-          <span className="block text-gray-600 mb-1">Date</span>
-          <input
-            type="date"
-            value={particularDate}
-            onChange={(e) => setParticularDate(e.target.value)}
-            className="border border-gray-300 rounded px-3 py-2 text-sm"
-          />
-        </label>
-      )}
-
-      {range === "custom" && (
-        <>
-          <label className="text-sm">
-            <span className="block text-gray-600 mb-1">Start Date</span>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="text-sm">
-            <span className="block text-gray-600 mb-1">End Date</span>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-          </label>
-        </>
-      )}
-
-      <button
-        type="button"
-        onClick={runBackfill}
-        className="ml-auto px-3 py-2 rounded border border-emerald-600 text-emerald-700 text-sm hover:bg-emerald-50"
-      >
-        Run Backfill
-      </button>
-    </div>
-  );
+  const fieldClass = (ok, hasValue) => {
+    if (!submitAttempted) return "border-gray-300";
+    if (!hasValue) return "border-red-300 bg-red-50";
+    return ok ? "border-emerald-300 bg-emerald-50" : "border-red-300 bg-red-50";
+  };
 
   return (
-    <div className="space-y-4">
-      {tabs}
-      {filters}
-
-      {loading && <div className="text-sm text-gray-500">Loading...</div>}
-
-      {activeTab === "daybook" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Day Book"
-            columns={[
-              { key: "date", label: "Date", render: (v) => fmtDate(v) },
-              { key: "type", label: "Type" },
-              { key: "party", label: "Party" },
-              { key: "description", label: "Description" },
-              { key: "inflow", label: "Inflow", render: (v) => money(v) },
-              { key: "outflow", label: "Outflow", render: (v) => money(v) },
-            ]}
-            data={daybook}
-          />
+    <div className="p-4 md:p-6 space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-2xl font-semibold text-gray-900">Accounting</div>
+          <div className="text-sm text-gray-500">Manual vouchers, Excel-like entry, and reports.</div>
         </div>
-      )}
-
-      {activeTab === "ledger" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Ledger"
-            columns={[
-              { key: "date", label: "Date", render: (v) => fmtDate(v) },
-              { key: "account", label: "Account" },
-              { key: "description", label: "Description" },
-              { key: "debit", label: "Debit", render: (v) => money(v) },
-              { key: "credit", label: "Credit", render: (v) => money(v) },
-              { key: "balance", label: "Balance", render: (v) => money(v) },
-            ]}
-            data={ledger}
-          />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              loadDropdowns().catch(() => {});
+              if (activeTab === "vouchers") loadVouchers().catch(() => {});
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            <RefreshCcw size={16} /> Refresh
+          </button>
         </div>
-      )}
+      </div>
 
-      {activeTab === "journal" && !loading && (
-        <div className="space-y-4">
-          <form onSubmit={postManualJournal} className="bg-white rounded-lg border border-gray-200 p-4 grid md:grid-cols-3 gap-3">
-            <div className="md:col-span-3 text-sm font-semibold text-emerald-800">Post Manual Journal Voucher</div>
-            <input
-              type="date"
-              value={manualJV.date}
-              onChange={(e) => setManualJV((p) => ({ ...p, date: e.target.value }))}
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <input
-              value={manualJV.narration}
-              onChange={(e) => setManualJV((p) => ({ ...p, narration: e.target.value }))}
-              placeholder="Narration"
-              className="border border-gray-300 rounded px-3 py-2 text-sm md:col-span-2"
-            />
-            <select
-              value={manualJV.debitAccountId}
-              onChange={(e) => setManualJV((p) => ({ ...p, debitAccountId: e.target.value }))}
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            >
-              <option value="">Debit Account</option>
-              {accounts.map((a) => (
-                <option key={a._id} value={a._id}>{a.code} - {a.name}</option>
-              ))}
-            </select>
-            <input
-              value={manualJV.debitAmount}
-              onChange={(e) => setManualJV((p) => ({ ...p, debitAmount: String(e.target.value).replace(/\D/g, "") }))}
-              placeholder="Debit Amount"
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <div />
-            <select
-              value={manualJV.creditAccountId}
-              onChange={(e) => setManualJV((p) => ({ ...p, creditAccountId: e.target.value }))}
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            >
-              <option value="">Credit Account</option>
-              {accounts.map((a) => (
-                <option key={a._id} value={a._id}>{a.code} - {a.name}</option>
-              ))}
-            </select>
-            <input
-              value={manualJV.creditAmount}
-              onChange={(e) => setManualJV((p) => ({ ...p, creditAmount: String(e.target.value).replace(/\D/g, "") }))}
-              placeholder="Credit Amount"
-              className="border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <div className="flex justify-end md:col-span-3">
-              <button className="px-3 py-2 rounded bg-emerald-600 text-white text-sm">Post Journal</button>
-            </div>
-          </form>
+      <div className="bg-white rounded-xl border border-gray-200 p-2 flex flex-wrap gap-2">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setActiveTab(t.key)}
+            className={`px-3 py-2 rounded-lg text-sm inline-flex items-center gap-2 border ${
+              activeTab === t.key
+                ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                : "bg-white border-transparent text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-          <div className="bg-white rounded-lg shadow-sm p-4">
-            <DataTable
-              title="Journal Entries"
-              columns={[
-                { key: "date", label: "Date", render: (v) => fmtDate(v) },
-                { key: "voucherNo", label: "Voucher #" },
-                { key: "sourceModule", label: "Source" },
-                { key: "narration", label: "Narration" },
-                { key: "status", label: "Status" },
-                {
-                  key: "action",
-                  label: "Action",
-                  skipExport: true,
-                  render: (_v, row) => (
-                    <button
-                      type="button"
-                      disabled={row.status !== "POSTED"}
-                      onClick={() => reverseJournal(row._id)}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-300 text-xs disabled:opacity-50"
-                    >
-                      <RotateCcw size={13} /> Reverse
-                    </button>
-                  ),
-                },
-              ]}
-              data={journal}
-            />
+      {activeTab === "reports" && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="text-sm text-gray-700">
+            Accounting reports are available in the main <span className="font-semibold">Reports</span> module. This
+            page focuses on fast voucher entry and voucher management.
           </div>
         </div>
       )}
 
-      {activeTab === "trial" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Trial Balance"
-            columns={[
-              { key: "code", label: "Code" },
-              { key: "account", label: "Account" },
-              { key: "debit", label: "Debit", render: (v) => money(v) },
-              { key: "credit", label: "Credit", render: (v) => money(v) },
-            ]}
-            data={trial}
-          />
-        </div>
-      )}
-
-      {activeTab === "pl" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Profit & Loss"
-            columns={[
-              { key: "line", label: "Particular" },
-              { key: "amount", label: "Amount", render: (v) => money(v) },
-            ]}
-            data={[
-              { id: 1, line: "Sales Revenue", amount: toInt(pl.salesTotal) },
-              { id: 2, line: "Cost of Goods Sold", amount: -toInt(pl.cogsTotal) },
-              { id: 3, line: "Purchases Expense", amount: -toInt(pl.purchasesTotal) },
-              { id: 4, line: "Operating Expense", amount: -toInt(pl.expenseTotal) },
-              { id: 5, line: "Payroll Expense", amount: -toInt(pl.payrollTotal) },
-              { id: 6, line: "Net Profit / (Loss)", amount: toInt(pl.profit) },
-            ]}
-            idKey="id"
-          />
-        </div>
-      )}
-
-      {activeTab === "balance" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Balance Sheet"
-            columns={[
-              { key: "section", label: "Section" },
-              { key: "line", label: "Particular" },
-              { key: "amount", label: "Amount", render: (v) => money(v) },
-            ]}
-            data={[
-              { id: 1, section: "Assets", line: "Cash & Bank", amount: toInt(balance.assets?.cash) },
-              { id: 2, section: "Assets", line: "Accounts Receivable", amount: toInt(balance.assets?.receivables) },
-              { id: 3, section: "Assets", line: "Inventory", amount: toInt(balance.assets?.inventory) },
-              { id: 4, section: "Assets", line: "Fixed Assets", amount: toInt(balance.assets?.fixedAssets) },
-              { id: 5, section: "Liabilities", line: "Accounts Payable", amount: toInt(balance.liabilities?.payables) },
-              { id: 6, section: "Liabilities", line: "Long-term Liabilities", amount: toInt(balance.liabilities?.longTerm) },
-              { id: 7, section: "Equity", line: "Owner Equity", amount: toInt(balance.equity) },
-            ]}
-            idKey="id"
-          />
-        </div>
-      )}
-
-      {activeTab === "receivables" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Outstanding Receivables"
-            columns={[
-              { key: "date", label: "Date", render: (v) => fmtDate(v) },
-              { key: "invoiceNo", label: "Invoice #" },
-              { key: "party", label: "Customer" },
-              { key: "totalAmount", label: "Total", render: (v) => money(v) },
-              { key: "paid", label: "Paid", render: (v) => money(v) },
-              { key: "outstanding", label: "Outstanding", render: (v) => money(v) },
-              { key: "dueDate", label: "Due", render: (v) => fmtDate(v) },
-            ]}
-            data={receivables}
-          />
-        </div>
-      )}
-
-      {activeTab === "payables" && !loading && (
-        <div className="bg-white rounded-lg shadow-sm p-4">
-          <DataTable
-            title="Outstanding Payables"
-            columns={[
-              { key: "date", label: "Date", render: (v) => fmtDate(v) },
-              { key: "invoiceNo", label: "Invoice #" },
-              { key: "party", label: "Supplier" },
-              { key: "totalAmount", label: "Total", render: (v) => money(v) },
-              { key: "paid", label: "Paid", render: (v) => money(v) },
-              { key: "outstanding", label: "Outstanding", render: (v) => money(v) },
-              { key: "dueDate", label: "Due", render: (v) => fmtDate(v) },
-            ]}
-            data={payables}
-          />
-        </div>
-      )}
-
-      {activeTab === "accounts" && !loading && (
-        <div className="grid lg:grid-cols-3 gap-4">
-          <form onSubmit={saveAccount} className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
-            <div className="text-sm font-semibold text-emerald-800 inline-flex items-center gap-1">
-              <Plus size={14} /> Add Account
+      {activeTab === "journal-entry" && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-sm font-semibold text-gray-900">
+              {editingVoucherId ? "Edit Voucher" : "New Voucher"}
             </div>
-            <input
-              value={newAccount.code}
-              onChange={(e) => setNewAccount((p) => ({ ...p, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))}
-              placeholder="Code (e.g. 4100)"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              required
-            />
-            <input
-              value={newAccount.name}
-              onChange={(e) => setNewAccount((p) => ({ ...p, name: e.target.value }))}
-              placeholder="Account Name"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              required
-            />
-            <select
-              value={newAccount.type}
-              onChange={(e) => setNewAccount((p) => ({ ...p, type: e.target.value }))}
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-            >
-              {ACCOUNT_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            <input
-              value={newAccount.subType}
-              onChange={(e) => setNewAccount((p) => ({ ...p, subType: e.target.value }))}
-              placeholder="Sub type"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <div className="flex justify-end">
-              <button className="px-3 py-2 rounded bg-emerald-600 text-white text-sm">Save Account</button>
+            <div className="text-xs text-gray-500">
+              Totals: Debit <span className="font-semibold">{totals.totalDebit}</span> | Credit{" "}
+              <span className="font-semibold">{totals.totalCredit}</span>{" "}
+              {!totals.balanced && <span className="ml-2 text-red-600 font-semibold">Unbalanced</span>}
             </div>
-          </form>
-
-          <div className="lg:col-span-2 bg-white rounded-lg shadow-sm p-4">
-            <DataTable
-              title="Chart of Accounts"
-              columns={[
-                { key: "code", label: "Code" },
-                { key: "name", label: "Name" },
-                { key: "type", label: "Type" },
-                { key: "subType", label: "Sub Type" },
-                { key: "isActive", label: "Active", render: (v) => (v ? "Yes" : "No") },
-              ]}
-              data={accounts}
-            />
           </div>
-        </div>
-      )}
 
-      {activeTab === "expenses" && !loading && (
-        <div className="grid lg:grid-cols-3 gap-4">
-          <form onSubmit={saveExpense} className="bg-white rounded-lg border border-gray-200 p-4 space-y-3">
-            <div className="text-sm font-semibold text-emerald-800">Add Expense</div>
-            <input
-              type="date"
-              value={expenseForm.date}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, date: e.target.value }))}
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <input
-              value={expenseForm.categoryName}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, categoryName: e.target.value }))}
-              placeholder="Category"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              required
-            />
-            <input
-              value={expenseForm.amount}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, amount: String(e.target.value).replace(/\D/g, "").slice(0, 10) }))}
-              placeholder="Amount"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              required
-            />
-            <select
-              value={expenseForm.paymentMethod}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, paymentMethod: e.target.value }))}
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-            >
-              <option value="CASH">Cash</option>
-              <option value="BANK">Bank</option>
-              <option value="ONLINE_TRANSFER">Online Transfer</option>
-            </select>
-            <input
-              value={expenseForm.remarks}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, remarks: e.target.value }))}
-              placeholder="Remarks"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-            />
-            <div className="flex justify-end">
-              <button className="px-3 py-2 rounded bg-emerald-600 text-white text-sm">Save Expense</button>
+          {editingVoucherNo && (
+            <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              Voucher No: <span className="font-semibold">{editingVoucherNo}</span>
             </div>
-          </form>
+          )}
 
-          <div className="lg:col-span-2 bg-white rounded-lg shadow-sm p-4">
-            <DataTable
-              title="Expenses"
-              columns={[
-                { key: "date", label: "Date", render: (v) => fmtDate(v) },
-                { key: "categoryName", label: "Category" },
-                { key: "amount", label: "Amount", render: (v) => money(v) },
-                { key: "paymentMethod", label: "Payment" },
-                { key: "remarks", label: "Remarks" },
-                {
-                  key: "action",
-                  label: "Action",
-                  skipExport: true,
-                  render: (_v, row) => (
+          <div className="grid md:grid-cols-6 gap-3">
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Date</label>
+              <input
+                type="date"
+                value={header.date}
+                onChange={(e) => setHeader((p) => ({ ...p, date: e.target.value }))}
+                className={`w-full px-3 py-2 rounded-lg border text-sm ${fieldClass(!!header.date, !!header.date)}`}
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Type</label>
+              <select
+                value={header.voucherType}
+                onChange={(e) => setHeader((p) => ({ ...p, voucherType: e.target.value }))}
+                className={`w-full px-3 py-2 rounded-lg border text-sm ${fieldClass(
+                  !!header.voucherType,
+                  !!header.voucherType
+                )}`}
+              >
+                {VOUCHER_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <div className="flex items-end justify-between gap-2">
+                <label className="block text-xs text-gray-600 mb-1">Company</label>
+                <button
+                  type="button"
+                  onClick={addCompany}
+                  className="text-xs text-emerald-700 hover:underline inline-flex items-center gap-1"
+                >
+                  <Plus size={12} /> Add
+                </button>
+              </div>
+              <select
+                value={header.companyId}
+                onChange={(e) => setCompany(e.target.value)}
+                className={`w-full px-3 py-2 rounded-lg border text-sm ${fieldClass(
+                  !!header.companyId,
+                  !!header.companyId
+                )}`}
+              >
+                <option value="">Select company</option>
+                {companyOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Reference No</label>
+              <input
+                value={header.referenceNo}
+                onChange={(e) => setHeader((p) => ({ ...p, referenceNo: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                placeholder="Optional"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Description</label>
+              <input
+                value={header.description}
+                onChange={(e) => setHeader((p) => ({ ...p, description: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-gray-200 overflow-x-auto">
+            <table className="min-w-[980px] w-full text-sm">
+              <thead className="bg-emerald-50 text-emerald-900">
+                <tr>
+                  <th className="text-left font-semibold px-3 py-2 w-[280px]">Account</th>
+                  <th className="text-left font-semibold px-3 py-2 w-[120px]">Debit</th>
+                  <th className="text-left font-semibold px-3 py-2 w-[120px]">Credit</th>
+                  <th className="text-left font-semibold px-3 py-2 w-[180px]">
+                    Product{" "}
                     <button
                       type="button"
-                      onClick={() => deleteExpense(row._id)}
-                      className="px-2 py-1 rounded border border-red-200 text-red-600 text-xs"
+                      onClick={addProduct}
+                      className="ml-1 text-[11px] text-emerald-700 hover:underline inline-flex items-center gap-1"
+                      title="Add product"
                     >
-                      Delete
+                      <Plus size={12} /> Add
                     </button>
-                  ),
-                },
-              ]}
-              data={expenses}
-            />
+                  </th>
+                  <th className="text-left font-semibold px-3 py-2 w-[180px]">
+                    Party{" "}
+                    <button
+                      type="button"
+                      onClick={addParty}
+                      className="ml-1 text-[11px] text-emerald-700 hover:underline inline-flex items-center gap-1"
+                      title="Add party"
+                    >
+                      <Plus size={12} /> Add
+                    </button>
+                  </th>
+                  <th className="text-left font-semibold px-3 py-2">Remarks</th>
+                  <th className="text-left font-semibold px-3 py-2 w-[60px]"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {lines.map((l, idx) => {
+                  const hasAmt = n0(l.debit) > 0 || n0(l.credit) > 0;
+                  const okAccount = !hasAmt || !!l.accountId;
+                  const okDebit = n0(l.credit) > 0 ? n0(l.debit) === 0 : true;
+                  const okCredit = n0(l.debit) > 0 ? n0(l.credit) === 0 : true;
+                  return (
+                    <tr key={l.rowId} className="hover:bg-gray-50">
+                      <td className="px-3 py-2">
+                        <select
+                          value={l.accountId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, accountId: v } : x)));
+                          }}
+                          className={`w-full px-2 py-1.5 rounded border text-sm ${fieldClass(okAccount, !!l.accountId)}`}
+                        >
+                          <option value="">Select account</option>
+                          {accountOptions.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          inputMode="decimal"
+                          value={l.debit}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/[^\d.]/g, "");
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, debit: v } : x)));
+                          }}
+                          className={`w-full px-2 py-1.5 rounded border text-sm ${fieldClass(okDebit, l.debit !== "")}`}
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          inputMode="decimal"
+                          value={l.credit}
+                          onChange={(e) => {
+                            const v = e.target.value.replace(/[^\d.]/g, "");
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, credit: v } : x)));
+                          }}
+                          className={`w-full px-2 py-1.5 rounded border text-sm ${fieldClass(okCredit, l.credit !== "")}`}
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          value={l.itemId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, itemId: v } : x)));
+                          }}
+                          className="w-full px-2 py-1.5 rounded border border-gray-300 text-sm"
+                        >
+                          <option value="">Optional</option>
+                          {productOptions.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          value={l.partyId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, partyId: v } : x)));
+                          }}
+                          className="w-full px-2 py-1.5 rounded border border-gray-300 text-sm"
+                        >
+                          <option value="">Optional</option>
+                          {partyOptions.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={l.remarks}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setLines((prev) => prev.map((x, i) => (i === idx ? { ...x, remarks: v } : x)));
+                          }}
+                          className="w-full px-2 py-1.5 rounded border border-gray-300 text-sm"
+                          placeholder="Optional"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setLines((prev) => prev.filter((_, i) => i !== idx))}
+                          className="p-2 rounded hover:bg-red-50 text-red-600"
+                          title="Delete row"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="bg-gray-50">
+                <tr>
+                  <td className="px-3 py-2 font-semibold">Totals</td>
+                  <td className="px-3 py-2 font-semibold">{totals.totalDebit}</td>
+                  <td className="px-3 py-2 font-semibold">{totals.totalCredit}</td>
+                  <td className="px-3 py-2" colSpan={4}>
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setLines((prev) => [...prev, blankLine()])}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                      >
+                        <Plus size={16} /> Add Row
+                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => saveVoucher({ andNew: false })}
+                          disabled={loading}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          <Save size={16} /> Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => saveVoucher({ andNew: true })}
+                          disabled={loading}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 text-emerald-800 text-sm hover:bg-emerald-50 disabled:opacity-50"
+                        >
+                          <Save size={16} /> Save & New
+                        </button>
+                        <button
+                          type="button"
+                          onClick={resetEntry}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+                        >
+                          <X size={16} /> Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {submitAttempted && (
+            <div className="text-xs text-gray-600">
+              Validation: Company required, each amount row must have an account, row cannot have both debit and credit,
+              and totals must be balanced.
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "vouchers" && (
+        <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+          <div className="grid md:grid-cols-6 gap-3 items-end">
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Start</label>
+              <input
+                type="date"
+                value={rangeStart}
+                onChange={(e) => setRangeStart(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">End</label>
+              <input
+                type="date"
+                value={rangeEnd}
+                onChange={(e) => setRangeEnd(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-gray-600 mb-1">Company</label>
+              <select
+                value={filterCompanyId}
+                onChange={(e) => setFilterCompanyId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              >
+                <option value="">All companies</option>
+                {companyOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs text-gray-600 mb-1">Type</label>
+              <select
+                value={filterVoucherType}
+                onChange={(e) => setFilterVoucherType(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              >
+                <option value="">All</option>
+                {VOUCHER_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => loadVouchers().catch(() => {})}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+              >
+                <RefreshCcw size={16} /> Apply
+              </button>
+            </div>
+
+            <div className="md:col-span-3">
+              <label className="block text-xs text-gray-600 mb-1">Account (optional filter)</label>
+              <select
+                value={filterAccountId}
+                onChange={(e) => setFilterAccountId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              >
+                <option value="">All accounts</option>
+                {accountOptions.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-3">
+              <label className="block text-xs text-gray-600 mb-1">Party (optional filter)</label>
+              <select
+                value={filterPartyId}
+                onChange={(e) => setFilterPartyId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+              >
+                <option value="">All parties</option>
+                {partyOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <DataTable
+            title="Vouchers"
+            columns={[
+              { key: "voucherNo", label: "Voucher No" },
+              { key: "date", label: "Date", render: (v) => (v ? new Date(v).toLocaleDateString() : "-") },
+              { key: "voucherType", label: "Type" },
+              { key: "companyName", label: "Company" },
+              { key: "amount", label: "Amount" },
+              { key: "status", label: "Status" },
+            ]}
+            data={vouchers}
+            rowClassName={(row) => (row.status === "REVERSED" ? "opacity-60" : "")}
+            toolbarActions={
+              <button
+                type="button"
+                onClick={() => {
+                  resetEntry();
+                  setActiveTab("journal-entry");
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                <Plus size={16} /> New Voucher
+              </button>
+            }
+            exportColumns={[
+              { key: "voucherNo", label: "Voucher No" },
+              { key: "date", label: "Date" },
+              { key: "voucherType", label: "Type" },
+              { key: "companyName", label: "Company" },
+              { key: "referenceNo", label: "Reference No" },
+              { key: "description", label: "Description" },
+              { key: "amount", label: "Amount" },
+              { key: "status", label: "Status" },
+            ]}
+            exportData={(rows) =>
+              rows.map((r) => ({
+                ...r,
+                date: r.date ? new Date(r.date).toISOString().slice(0, 10) : "",
+              }))
+            }
+          />
+
+          <div className="grid md:grid-cols-3 gap-2">
+            {vouchers.slice(0, 9).map((v) => (
+              <div key={v._id} className="rounded-lg border border-gray-200 p-3 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-gray-900 truncate">{v.voucherNo}</div>
+                  <div className="text-xs text-gray-500 truncate">
+                    {v.companyName} | {v.voucherType} | {v.date ? new Date(v.date).toLocaleDateString() : "-"}
+                  </div>
+                  <div className="text-xs text-gray-600 truncate">{v.description || "-"}</div>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => viewVoucher(v._id)}
+                    className="p-2 rounded hover:bg-gray-50 text-gray-700"
+                    title="View"
+                  >
+                    <Eye size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => editVoucher(v._id)}
+                    className="p-2 rounded hover:bg-gray-50 text-emerald-700"
+                    title="Edit"
+                  >
+                    <Pencil size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteVoucher(v._id)}
+                    className="p-2 rounded hover:bg-red-50 text-red-700"
+                    title="Delete"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

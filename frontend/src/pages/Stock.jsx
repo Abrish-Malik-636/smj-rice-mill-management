@@ -1,6 +1,5 @@
 // src/pages/Stock.jsx
 import React, { useEffect, useState, useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
 import api from "../services/api";
 import {
   Filter,
@@ -13,11 +12,9 @@ import {
   FileText,
   Printer,
   Factory,
-  Boxes,
 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 import Pin4Input from "../components/Pin4Input";
-import { ManagerialStockView } from "./ManagerialStock";
 import DataTable from "../components/ui/DataTable";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -43,14 +40,11 @@ const COLORS = [
   "#10B981",
 ];
 
-export default function Stock({ initialTab = "production" }) {
-  const [searchParams, setSearchParams] = useSearchParams();
+export default function Stock() {
   const [stockRows, setStockRows] = useState([]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState(
-    initialTab === "managerial" ? "managerial" : "production",
-  );
+  const activeTab = "production";
 
   const [companyFilter, setCompanyFilter] = useState("ALL");
   const [productFilter, setProductFilter] = useState("ALL");
@@ -121,26 +115,7 @@ export default function Stock({ initialTab = "production" }) {
     loadProducts();
   }, []);
 
-  useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (tab === "production" || tab === "managerial") {
-      setActiveTab(tab);
-      return;
-    }
-    setActiveTab(initialTab === "managerial" ? "managerial" : "production");
-  }, [initialTab, searchParams]);
 
-  useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (!tab) {
-      setSearchParams(
-        {
-          tab: initialTab === "managerial" ? "managerial" : "production",
-        },
-        { replace: true },
-      );
-    }
-  }, [initialTab, searchParams, setSearchParams]);
 
   async function loadData() {
     try {
@@ -478,7 +453,7 @@ export default function Stock({ initialTab = "production" }) {
       },
       {
         key: "companyName",
-        label: "Brand",
+        label: "Company Name",
         render: (_value, row) => getBrand(row),
       },
       {
@@ -513,7 +488,7 @@ export default function Stock({ initialTab = "production" }) {
   const exportRows = useMemo(
     () =>
       stockTableData.map((r) => ({
-        Brand: getBrand(r) || "-",
+        "Company Name": getBrand(r) || "-",
         Products: r.productsText || "-",
         "Stock (kg)": Math.round(Number(r.balanceKg || 0)),
         Status:
@@ -542,7 +517,7 @@ export default function Stock({ initialTab = "production" }) {
   const handleExportPdf = () => {
     const doc = new jsPDF();
     const body = exportRows.map((r) => [
-      r.Brand,
+      r["Company Name"],
       r.Products,
       r["Stock (kg)"],
       r.Status,
@@ -551,7 +526,7 @@ export default function Stock({ initialTab = "production" }) {
     doc.text("Production Stock", 14, 12);
     autoTable(doc, {
       startY: 18,
-      head: [["Brand", "Products", "Stock (kg)", "Status", "Updated"]],
+      head: [["Company Name", "Products", "Stock (kg)", "Status", "Updated"]],
       body,
       styles: { fontSize: 8 },
     });
@@ -567,39 +542,6 @@ export default function Stock({ initialTab = "production" }) {
     <div className="space-y-6 w-full">
       <Toaster />
 
-      <div className="border-b border-emerald-200">
-        <div className="flex gap-4">
-          {[
-            { label: "Production Stock", value: "production", icon: <Factory size={16} /> },
-            { label: "Managerial Stock", value: "managerial", icon: <Boxes size={16} /> },
-          ].map((t) => {
-            const isActive = activeTab === t.value;
-            return (
-              <button
-                key={t.value}
-                onClick={() => {
-                  setActiveTab(t.value);
-                  setSearchParams({ tab: t.value });
-                }}
-                className={`flex items-center gap-2 px-4 py-2 text-sm rounded-t-lg border-b-2 transition
-                  ${
-                    isActive
-                      ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
-                      : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
-                  }`}
-              >
-                {t.icon}
-                <span>{t.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {activeTab === "managerial" ? (
-        <ManagerialStockView lastClearedAt={lastClearedAt} />
-      ) : (
-        <>
           {/* HEADER */}
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
@@ -1035,13 +977,13 @@ export default function Stock({ initialTab = "production" }) {
                 </h3>
 
                 {/* COMPANY */}
-                <label className="text-xs text-gray-600">Brand</label>
+                <label className="text-xs text-gray-600">Company Name</label>
                 <select
                   className="w-full border p-2 rounded text-sm mb-3"
                   value={companyFilter}
                   onChange={(e) => setCompanyFilter(e.target.value)}
                 >
-                  <option value="ALL">All Brands</option>
+                  <option value="ALL">All Companies</option>
                   {filteredCompanies.map((c, idx) => (
                     <option key={`${c}-${idx}`} value={c}>
                       {c}
@@ -1183,8 +1125,6 @@ export default function Stock({ initialTab = "production" }) {
               </div>
             </div>
           </div>
-        </>
-      )}
     </div>
   );
 }

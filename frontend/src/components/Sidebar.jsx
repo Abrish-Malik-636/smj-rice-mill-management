@@ -35,15 +35,6 @@ const MENU = [
     ],
   },
   {
-    name: "Sales & Purchases",
-    icon: <HandCoins size={18} />,
-    path: "/financial",
-    children: [
-      { name: "Sales", path: "/financial?tab=sale" },
-      { name: "Purchases", path: "/financial?tab=purchase" },
-    ],
-  },
-  {
     name: "Production Management",
     icon: <FactoryIcon size={18} />,
     path: "/production",
@@ -54,7 +45,6 @@ const MENU = [
     path: "/stock",
     children: [
       { name: "Production Stock", path: "/stock" },
-      { name: "Managerial Stock", path: "/stock-managerial" },
     ],
   },
   {
@@ -62,18 +52,9 @@ const MENU = [
     icon: <BriefcaseBusiness size={18} />,
     path: "/accounting-finance",
     children: [
-      { name: "Day Book", path: "/accounting-finance?tab=daybook" },
-      { name: "Ledger", path: "/accounting-finance?tab=ledger" },
-      { name: "Cash In Hand", path: "/accounting-finance?tab=cash" },
-      { name: "Expenses Report", path: "/accounting-finance?tab=expenses" },
-      { name: "Profit & Loss", path: "/accounting-finance?tab=pl" },
-      { name: "Balance Sheet", path: "/accounting-finance?tab=balance" },
-      { name: "Trial Balance", path: "/accounting-finance?tab=trial" },
-      { name: "Receivables", path: "/accounting-finance?tab=receivables" },
-      { name: "Payables", path: "/accounting-finance?tab=payables" },
-      { name: "Party Ledger", path: "/accounting-finance?tab=party-ledger" },
-      { name: "Journal", path: "/accounting-finance?tab=journal" },
-      { name: "Accounts", path: "/accounting-finance?tab=accounts" },
+      { name: "Journal Entry", path: "/accounting-finance?tab=journal-entry" },
+      { name: "Voucher List", path: "/accounting-finance?tab=vouchers" },
+      { name: "Accounting Reports", path: "/reports?tab=trial" },
     ],
   },
   {
@@ -83,8 +64,6 @@ const MENU = [
     children: [
       { name: "Stock Report", path: "/reports?tab=stock" },
       { name: "Production Report", path: "/reports?tab=production" },
-      { name: "Sales Report", path: "/reports?tab=sales" },
-      { name: "Purchase Report", path: "/reports?tab=purchases" },
       { name: "P&L", path: "/reports?tab=pl" },
       { name: "Trial Balance", path: "/reports?tab=trial" },
       { name: "Balance Sheet", path: "/reports?tab=balance" },
@@ -93,18 +72,8 @@ const MENU = [
       { name: "Day Book", path: "/reports?tab=daybook" },
       { name: "Ledger", path: "/reports?tab=ledger" },
       { name: "Customer Report", path: "/reports?tab=customers" },
-      { name: "Brand Report", path: "/reports?tab=brands" },
+      { name: "Company Name Report", path: "/reports?tab=brands" },
     ],
-  },
-  {
-    name: "HR & Payroll",
-    icon: <User size={18} />,
-    path: "/hr",
-  },
-  {
-    name: "Notifications & Alerts",
-    icon: <ShieldAlert size={18} />,
-    path: "/notifications",
   },
   {
     name: "System Settings",

@@ -171,7 +171,7 @@ exports.createGatePass = async (req, res) => {
         return res.status(400).json({
           success: false,
           message:
-            "Brand / trademark is required for Production/Paddy stock. Select a brand for each paddy line or set a single brand at top.",
+            "Company Name is required for Production/Paddy stock. Select a company name for each paddy line or set a single company name at top.",
         });
       }
       }
@@ -323,7 +323,7 @@ exports.updateGatePass = async (req, res) => {
         return res.status(400).json({
           success: false,
           message:
-            "Brand / trademark is required for Production/Paddy stock. Select a brand for each paddy line or set a single brand at top.",
+            "Company Name is required for Production/Paddy stock. Select a company name for each paddy line or set a single company name at top.",
         });
       }
       }

@@ -10,10 +10,6 @@ const SystemSettings = require("../models/systemSettingsModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ManagerialStock = require("../models/managerialStockModel");
 const StockLedger = require("../models/stockLedgerModel");
-const {
-  postTransactionEntry,
-  reverseBySource,
-} = require("../services/accountingJournalService");
 
 function escapeRegex(s) {
   return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -421,13 +417,6 @@ exports.createTransaction = async (req, res) => {
     });
 
     const saved = await doc.save();
-    await reverseBySource({
-      sourceModule: "TRANSACTION",
-      sourceRefType: saved.type,
-      sourceRefId: saved._id,
-      reason: "Repost",
-    });
-    await postTransactionEntry(saved);
 
     if (payload.type === "PURCHASE") {
       const managerialOps = items
@@ -812,13 +801,6 @@ exports.updateTransaction = async (req, res) => {
     existing.partialPaid = finalPaid;
 
     const saved = await existing.save();
-    await reverseBySource({
-      sourceModule: "TRANSACTION",
-      sourceRefType: saved.type,
-      sourceRefId: saved._id,
-      reason: "Transaction updated",
-    });
-    await postTransactionEntry(saved);
 
     if (existing.type === "PURCHASE") {
       await ManagerialStockLedger.deleteMany({ transactionId: existing._id });
@@ -921,13 +903,6 @@ exports.deleteTransaction = async (req, res) => {
 
     await ManagerialStockLedger.deleteMany({ transactionId: deleted._id });
     await StockLedger.deleteMany({ transactionId: deleted._id });
-    await reverseBySource({
-      sourceModule: "TRANSACTION",
-      sourceRefType: deleted.type,
-      sourceRefId: deleted._id,
-      reason: "Transaction deleted",
-    });
-
     return res.json({ success: true, message: "Transaction deleted." });
   } catch (err) {
     console.error("deleteTransaction error:", err);

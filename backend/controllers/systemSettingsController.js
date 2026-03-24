@@ -14,7 +14,6 @@ const Transaction = require("../models/transactionModel");
 const ManagerialStock = require("../models/managerialStockModel");
 const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ExpenseEntry = require("../models/expenseEntryModel");
-const NotificationReminder = require("../models/notificationReminderModel");
 const AIChat = require("../models/AIChat");
 const SystemAction = require("../models/systemActionModel");
 const Account = require("../models/accountModel");
@@ -36,10 +35,6 @@ const COLLECTIONS = [
   { key: "stockLedgers", model: StockLedger },
   { key: "managerialStockLedgers", model: ManagerialStockLedger },
   { key: "expenseEntries", model: ExpenseEntry },
-  { key: "hrEmployees", model: require("../models/hrEmployeeModel") },
-  { key: "hrAdvances", model: require("../models/hrAdvanceModel") },
-  { key: "hrPayrolls", model: require("../models/hrPayrollModel") },
-  { key: "notificationReminders", model: NotificationReminder },
   { key: "aiChats", model: AIChat },
   { key: "systemActions", model: SystemAction },
 ];
@@ -323,7 +318,7 @@ exports.renameBrandEverywhere = async (req, res) => {
     if (oldName.toLowerCase() === newName.toLowerCase()) {
       return res.status(400).json({
         success: false,
-        message: "Old and new brand names are same.",
+        message: "Old and new company names are same.",
       });
     }
 
@@ -346,7 +341,7 @@ exports.renameBrandEverywhere = async (req, res) => {
     if (duplicate) {
       return res.status(400).json({
         success: false,
-        message: "New brand name already exists in dropdown list.",
+        message: "New company name already exists in dropdown list.",
       });
     }
     if (settings) {
@@ -388,10 +383,6 @@ exports.renameBrandEverywhere = async (req, res) => {
       { companyName: new RegExp(`^${oldName}$`, "i") },
       { $set: { companyName: newName } }
     );
-    await NotificationReminder.updateMany(
-      { companyName: new RegExp(`^${oldName}$`, "i") },
-      { $set: { companyName: newName } }
-    );
     await JournalLine.updateMany(
       { partyName: new RegExp(`^${oldName}$`, "i") },
       { $set: { partyName: newName } }
@@ -399,7 +390,7 @@ exports.renameBrandEverywhere = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Brand renamed across system.",
+      message: "Company Name renamed across system.",
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });

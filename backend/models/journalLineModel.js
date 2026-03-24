@@ -14,17 +14,30 @@ const journalLineSchema = new mongoose.Schema(
     },
     debit: { type: Number, default: 0, min: 0 },
     credit: { type: Number, default: 0, min: 0 },
-    partyId: { type: String, default: "", trim: true },
+    // Party (customer/supplier/etc.) is optional.
+    // Keep both id + cached name to support historical integrity.
+    partyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AccountingParty",
+      default: null,
+    },
     partyName: { type: String, default: "", trim: true },
-    itemId: { type: String, default: "", trim: true },
+    // Product is optional (for product-level reports).
+    itemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AccountingProduct",
+      default: null,
+    },
     itemName: { type: String, default: "", trim: true },
     remarks: { type: String, default: "", trim: true },
+    tags: { type: [String], default: [] },
   },
   { timestamps: true }
 );
 
 journalLineSchema.index({ journalEntryId: 1 });
 journalLineSchema.index({ accountId: 1 });
+journalLineSchema.index({ partyId: 1 });
+journalLineSchema.index({ itemId: 1 });
 
 module.exports = mongoose.model("JournalLine", journalLineSchema);
-

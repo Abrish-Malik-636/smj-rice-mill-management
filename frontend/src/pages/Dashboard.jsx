@@ -32,11 +32,9 @@ export default function Dashboard() {
   const [activities, setActivities] = useState([]);
   const [stockSummary, setStockSummary] = useState({
     productionKg: 0,
-    managerialQty: 0,
   });
   const [stockBreakdown, setStockBreakdown] = useState({
     production: [],
-    managerial: [],
   });
 
   // fetch live dashboard data
@@ -56,11 +54,9 @@ export default function Dashboard() {
         setActivities(data.recentActivities || []);
         setStockSummary({
           productionKg: data.stockSummary?.productionKg || 0,
-          managerialQty: data.stockSummary?.managerialQty || 0,
         });
         setStockBreakdown({
           production: data.stockSummaryBreakdown?.production || [],
-          managerial: data.stockSummaryBreakdown?.managerial || [],
         });
       } catch (err) {
         console.error("Dashboard data fetch failed:", err);
@@ -116,12 +112,6 @@ export default function Dashboard() {
       ? stockBreakdown.production
       : [
           { name: "Production", value: Number(stockSummary.productionKg || 0) },
-        ];
-  const managerialDonut =
-    stockBreakdown.managerial.length > 0
-      ? stockBreakdown.managerial
-      : [
-          { name: "Managerial", value: Number(stockSummary.managerialQty || 0) },
         ];
 
   return (
@@ -277,53 +267,6 @@ export default function Dashboard() {
                     <span className="flex-1 truncate">{entry.name}</span>
                     <span className="font-medium text-gray-700">
                       {Math.round(Number(entry.value || 0))} kg
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="border rounded-lg p-3">
-              <div className="text-xs text-gray-500 mb-2">Managerial Stock</div>
-              <div className="h-28 flex items-center justify-center">
-                <PieChart width={180} height={120}>
-                    <Pie
-                      data={managerialDonut}
-                      dataKey="value"
-                      innerRadius={30}
-                      outerRadius={45}
-                      paddingAngle={2}
-                    >
-                      {managerialDonut.map((entry, index) => (
-                        <Cell
-                          key={`${entry.name}-${index}`}
-                          fill={DONUT_COLORS[index % DONUT_COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      formatter={(value) =>
-                        `${Math.round(Number(value || 0))}`
-                      }
-                    />
-                  </PieChart>
-              </div>
-              <div className="text-sm font-semibold text-emerald-900 mt-2">
-                {Math.round(Number(stockSummary.managerialQty || 0))}
-              </div>
-              <div className="mt-2 space-y-1 text-xs text-gray-600">
-                {managerialDonut.map((entry, index) => (
-                  <div key={`${entry.name}-legend-${index}`} className="flex items-center gap-2">
-                    <span
-                      className="inline-block w-2.5 h-2.5 rounded"
-                      style={{
-                        backgroundColor:
-                          DONUT_COLORS[index % DONUT_COLORS.length],
-                      }}
-                    />
-                    <span className="flex-1 truncate">{entry.name}</span>
-                    <span className="font-medium text-gray-700">
-                      {Math.round(Number(entry.value || 0))}
                     </span>
                   </div>
                 ))}

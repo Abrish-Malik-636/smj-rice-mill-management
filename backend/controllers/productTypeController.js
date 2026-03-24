@@ -28,7 +28,7 @@ exports.createProductType = async (req, res) => {
     if (similar) {
       return res.status(400).json({
         success: false,
-        message: `Product already exists for this brand: "${similar.name}"`,
+        message: `Product already exists for this company name: "${similar.name}"`,
       });
     }
     const productData = {
@@ -63,7 +63,7 @@ exports.updateProductType = async (req, res) => {
       if (similar) {
         return res.status(400).json({
           success: false,
-          message: `Product already exists for this brand: "${similar.name}"`,
+          message: `Product already exists for this company name: "${similar.name}"`,
         });
       }
     }

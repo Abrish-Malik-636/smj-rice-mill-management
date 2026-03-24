@@ -1,7 +1,6 @@
 const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const SystemAction = require("../models/systemActionModel");
-const { postProductionOutputEntry } = require("./accountingJournalService");
 
 function computeShift(date) {
   const d = date instanceof Date ? date : new Date(date);
@@ -61,21 +60,7 @@ async function runOnce() {
         console.error("productionScheduler StockLedger error:", e?.message || e);
       }
 
-      // Post accounting journal entry
-      try {
-        await postProductionOutputEntry({
-          batchId: batch._id,
-          batchNo: batch.batchNo,
-          outputDate: now,
-          companyId: out.companyId || null,
-          companyName: out.companyName || "",
-          productTypeId: out.productTypeId,
-          productTypeName: out.productTypeName,
-          netWeightKg: out.netWeightKg || 0,
-        });
-      } catch (e) {
-        console.error("productionScheduler journal error:", e?.message || e);
-      }
+      // Accounting integration intentionally removed: accounting is manual-entry only.
     }
 
     if (changed) {

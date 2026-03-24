@@ -17,6 +17,7 @@ const accountSchema = new mongoose.Schema(
     },
     isControl: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
+    tags: { type: [String], default: [] },
   },
   { timestamps: true }
 );
@@ -24,4 +25,3 @@ const accountSchema = new mongoose.Schema(
 accountSchema.index({ type: 1, subType: 1 });
 
 module.exports = mongoose.model("Account", accountSchema);
-

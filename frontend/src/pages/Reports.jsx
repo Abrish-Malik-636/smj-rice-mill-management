@@ -4,9 +4,7 @@ import toast from "react-hot-toast";
 import {
   Package,
   Factory,
-  ShoppingCart,
   Truck,
-  Users,
   TrendingUp,
   Scale,
   Landmark,
@@ -14,7 +12,6 @@ import {
   BookOpen,
   BookCopy,
   FileText,
-  Printer,
   UserRound,
   UsersRound,
   Tags,
@@ -26,9 +23,6 @@ import ProductManager from "../components/MasterData/ProductManager";
 const REPORT_TABS = [
   { key: "stock", label: "Stock Report", icon: <Package size={16} /> },
   { key: "production", label: "Production Report", icon: <Factory size={16} /> },
-  { key: "sales", label: "Sales Report", icon: <ShoppingCart size={16} /> },
-  { key: "purchases", label: "Purchase Report", icon: <Truck size={16} /> },
-  { key: "hr", label: "HR Reports", icon: <Users size={16} /> },
   { key: "pl", label: "Profit & Loss", icon: <TrendingUp size={16} /> },
   { key: "trial", label: "Trial Balance", icon: <Scale size={16} /> },
   { key: "balance", label: "Balance Sheet", icon: <Landmark size={16} /> },
@@ -38,7 +32,7 @@ const REPORT_TABS = [
   { key: "ledger", label: "Ledger", icon: <BookCopy size={16} /> },
   { key: "customers", label: "Customer Report", icon: <UserRound size={16} /> },
   { key: "wholesellers", label: "Wholeseller Report", icon: <UsersRound size={16} /> },
-  { key: "brands", label: "Brand Report", icon: <Tags size={16} /> },
+  { key: "brands", label: "Company Name Report", icon: <Tags size={16} /> },
 ];
 
 const RANGE_OPTIONS = [
@@ -108,13 +102,21 @@ export default function Reports() {
   const [endDate, setEndDate] = useState("");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [hrSubTab, setHrSubTab] = useState("employees");
-  const [hrRows, setHrRows] = useState([]);
-  const [hrPayrollFilters, setHrPayrollFilters] = useState({
-    month: new Date().getMonth() + 1,
-    year: new Date().getFullYear(),
-    employeeId: "",
-  });
+
+  // Accounting filters (manual-entry reports)
+  const [accCompanies, setAccCompanies] = useState([]);
+  const [accAccounts, setAccAccounts] = useState([]);
+  const [accParties, setAccParties] = useState([]);
+  const [accProducts, setAccProducts] = useState([]);
+
+  const [accCompanyId, setAccCompanyId] = useState("");
+  const [accVoucherTypes, setAccVoucherTypes] = useState([]);
+  const [accAccountIds, setAccAccountIds] = useState([]);
+  const [accPartyIds, setAccPartyIds] = useState([]);
+  const [accProductIds, setAccProductIds] = useState([]);
+
+  const [filterTemplates, setFilterTemplates] = useState([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   // Kept for backward compatibility; customers/wholesellers now load from dedicated tables.
   const [partyBuckets, setPartyBuckets] = useState({ customers: [], wholesalers: [] });
 
@@ -130,44 +132,41 @@ export default function Reports() {
       if (startDate) p.startDate = startDate;
       if (endDate) p.endDate = endDate;
     }
+
+    const isAccountingReport = [
+      "trial",
+      "pl",
+      "balance",
+      "receivables",
+      "payables",
+      "daybook",
+      "ledger",
+    ].includes(activeTab);
+
+    if (isAccountingReport) {
+      if (accCompanyId) p.companyId = accCompanyId;
+      if (accVoucherTypes.length) p.voucherTypes = accVoucherTypes.join(",");
+      if (accAccountIds.length) p.accountIds = accAccountIds.join(",");
+      if (accPartyIds.length) p.partyIds = accPartyIds.join(",");
+      if (accProductIds.length) p.productIds = accProductIds.join(",");
+    }
     return { params: p };
-  }, [range, particularDate, startDate, endDate]);
+  }, [
+    range,
+    particularDate,
+    startDate,
+    endDate,
+    activeTab,
+    accCompanyId,
+    accVoucherTypes,
+    accAccountIds,
+    accPartyIds,
+    accProductIds,
+  ]);
 
   const loadReport = async () => {
     try {
       setLoading(true);
-      if (activeTab === "hr") {
-        // HR reports are not range-based for now; keep UX simple.
-        const endpoint =
-          hrSubTab === "employees"
-            ? "/hr/reports/employees"
-            : hrSubTab === "advanceBalances"
-              ? "/hr/reports/advance-balances"
-              : hrSubTab === "payrolls"
-                ? "/hr/payrolls"
-                : "/hr/reports/employees";
-        const res = await api.get(endpoint, hrSubTab === "payrolls" ? { params: hrPayrollFilters } : undefined);
-        const data = res.data?.data || [];
-        if (hrSubTab === "advanceBalances") {
-          setHrRows(
-            data.map((r) => ({
-              __rowId: String(r.employeeId || r._id || ""),
-              ...r,
-            }))
-          );
-        } else if (hrSubTab === "payrolls") {
-          setHrRows(
-            data.map((r) => ({
-              __rowId: String(r._id || ""),
-              ...r,
-            }))
-          );
-        } else {
-          setHrRows(data);
-        }
-        setRows([]);
-        return;
-      }
       if (activeTab === "customers" || activeTab === "brands") {
         setRows([]);
         return;
@@ -181,14 +180,7 @@ export default function Reports() {
           party: r.companyName || "-",
           balance: `${num(r.balanceKg)} kg`,
         }));
-        const managerial = (res.data?.data?.managerial || []).map((r, idx) => ({
-          id: `m-${idx}`,
-          stockType: "Managerial",
-          item: r.itemName || "-",
-          party: r.category || "-",
-          balance: `${num(r.balanceQty)} ${r.unit || ""}`.trim(),
-        }));
-        setRows([...production, ...managerial]);
+        setRows([...production]);
         return;
       }
       if (activeTab === "production") {
@@ -207,85 +199,105 @@ export default function Reports() {
         setRows(mapped);
         return;
       }
-      if (activeTab === "sales") {
-        const res = await api.get("/reports/sales", params);
-        setRows(
-          (res.data?.data || []).map((r) => ({
-            ...r,
-            date: fmtDate(r.date),
-            totalAmount: num(r.totalAmount),
-            partialPaid: num(r.partialPaid),
-            remaining: Math.max(num(r.totalAmount) - num(r.partialPaid), 0),
-          }))
-        );
-        return;
-      }
-      if (activeTab === "purchases") {
-        const res = await api.get("/reports/purchases", params);
-        setRows(
-          (res.data?.data || []).map((r) => ({
-            ...r,
-            date: fmtDate(r.date),
-            totalAmount: num(r.totalAmount),
-            partialPaid: num(r.partialPaid),
-            remaining: Math.max(num(r.totalAmount) - num(r.partialPaid), 0),
-          }))
-        );
-        return;
-      }
       if (activeTab === "trial") {
         const res = await api.get("/accounting/trial-balance", params);
-        setRows(res.data?.data || []);
+        setRows(
+          (res.data?.data || []).map((r) => ({
+            id: r.accountId || r._id || `${r.code}-${r.account}`,
+            ...r,
+          }))
+        );
         return;
       }
       if (activeTab === "pl") {
         const res = await api.get("/accounting/pl", params);
         const p = res.data?.data || {};
-        setRows([
-          { id: "sales", line: "Sales Revenue", amount: num(p.salesTotal) },
-          { id: "cogs", line: "Cost of Goods Sold", amount: -num(p.cogsTotal) },
-          { id: "purchase", line: "Purchases Expense", amount: -num(p.purchasesTotal) },
-          { id: "expense", line: "Operating Expense", amount: -num(p.expenseTotal) },
-          { id: "payroll", line: "Payroll Expense", amount: -num(p.payrollTotal) },
-          { id: "net", line: "Net Profit / (Loss)", amount: num(p.profit) },
-        ]);
+        const income = (p.income || []).map((r) => ({
+          id: `inc-${r.accountId}`,
+          section: "Income",
+          line: r.account,
+          amount: num(r.amount),
+        }));
+        const cogs = (p.cogs || []).map((r) => ({
+          id: `cogs-${r.accountId}`,
+          section: "COGS",
+          line: r.account,
+          amount: -num(r.amount),
+        }));
+        const exp = (p.expenses || []).map((r) => ({
+          id: `exp-${r.accountId}`,
+          section: "Expenses",
+          line: r.account,
+          amount: -num(r.amount),
+        }));
+        const totals = p.totals || {};
+        const summary = [
+          { id: "sum-income", section: "Summary", line: "Total Income", amount: num(totals.incomeTotal) },
+          { id: "sum-cogs", section: "Summary", line: "Total COGS", amount: -num(totals.cogsTotal) },
+          { id: "sum-gp", section: "Summary", line: "Gross Profit", amount: num(totals.grossProfit) },
+          { id: "sum-exp", section: "Summary", line: "Total Expenses", amount: -num(totals.expenseTotal) },
+          { id: "sum-np", section: "Summary", line: "Net Profit / (Loss)", amount: num(totals.profit) },
+        ];
+        setRows([...income, ...cogs, ...exp, ...summary]);
         return;
       }
       if (activeTab === "balance") {
         const res = await api.get("/accounting/balance", params);
         const b = res.data?.data || {};
-        setRows([
-          { id: "a1", section: "Assets", line: "Cash & Bank", amount: num(b.assets?.cash) },
-          { id: "a2", section: "Assets", line: "Accounts Receivable", amount: num(b.assets?.receivables) },
-          { id: "a3", section: "Assets", line: "Inventory", amount: num(b.assets?.inventory) },
-          { id: "a4", section: "Assets", line: "Fixed Assets", amount: num(b.assets?.fixedAssets) },
-          { id: "l1", section: "Liabilities", line: "Accounts Payable", amount: num(b.liabilities?.payables) },
-          { id: "l2", section: "Liabilities", line: "Long-term Liabilities", amount: num(b.liabilities?.longTerm) },
-          { id: "e1", section: "Equity", line: "Owner Equity", amount: num(b.equity) },
-        ]);
+        const assets = (b.assets || []).map((r) => ({
+          id: `a-${r.accountId}`,
+          section: "Assets",
+          line: r.account,
+          amount: num(r.balance),
+        }));
+        const liabilities = (b.liabilities || []).map((r) => ({
+          id: `l-${r.accountId}`,
+          section: "Liabilities",
+          line: r.account,
+          amount: num(r.balance),
+        }));
+        const equity = (b.equity || []).map((r) => ({
+          id: `e-${r.accountId}`,
+          section: "Equity",
+          line: r.account,
+          amount: num(r.balance),
+        }));
+        const totals = b.totals || {};
+        const summary = [
+          { id: "t-a", section: "Summary", line: "Total Assets", amount: num(totals.totalAssets) },
+          { id: "t-l", section: "Summary", line: "Total Liabilities", amount: num(totals.totalLiabilities) },
+          { id: "t-e", section: "Summary", line: "Total Equity", amount: num(totals.totalEquity) },
+          { id: "t-le", section: "Summary", line: "Total L + E", amount: num(totals.totalLE) },
+        ];
+        setRows([...assets, ...liabilities, ...equity, ...summary]);
         return;
       }
       if (activeTab === "receivables") {
         const res = await api.get("/accounting/outstanding/receivables", params);
-        setRows(res.data?.data || []);
+        setRows(
+          (res.data?.data || []).map((r, idx) => ({
+            id: `${idx}-${r.party}`,
+            ...r,
+          }))
+        );
         return;
       }
       if (activeTab === "payables") {
         const res = await api.get("/accounting/outstanding/payables", params);
-        setRows(res.data?.data || []);
+        setRows(
+          (res.data?.data || []).map((r, idx) => ({
+            id: `${idx}-${r.party}`,
+            ...r,
+          }))
+        );
         return;
       }
       if (activeTab === "daybook") {
         const res = await api.get("/accounting/daybook", params);
         setRows(
           (res.data?.data || []).map((r, idx) => ({
-            id: `${idx}-${r.description || ""}`,
-            date: fmtDate(r.date),
-            type: r.type || "-",
-            party: r.party || "-",
-            description: r.description || "-",
-            inflow: num(r.inflow),
-            outflow: num(r.outflow),
+            id: r.journalEntryId || `${idx}-${r.voucherNo}`,
+            ...r,
           }))
         );
         return;
@@ -294,13 +306,8 @@ export default function Reports() {
         const res = await api.get("/accounting/ledger", params);
         setRows(
           (res.data?.data || []).map((r, idx) => ({
-            id: `${idx}-${r.account || ""}`,
-            date: fmtDate(r.date),
-            account: r.account || "-",
-            description: r.description || "-",
-            debit: num(r.debit),
-            credit: num(r.credit),
-            balance: num(r.balance),
+            id: r.journalLineId || `${idx}-${r.account || ""}`,
+            ...r,
           }))
         );
       }
@@ -312,170 +319,53 @@ export default function Reports() {
     }
   };
 
-  const printPayrollSlip = async (row) => {
-    try {
-      const s = await api.get("/settings");
-      const data = s.data?.data || {};
-      const general = data.general || data.generalSettings || data;
-      const companyName = general.companyName || general.millName || "SMJ Rice Mill";
-      const address = general.address || general.companyAddress || "";
-      const phone = general.phone || general.companyPhone || "";
-      const logoUrl = general.logoUrl || general.logo || "";
-
-      const allForEmployee = row?.employeeId
-        ? await api.get("/hr/payrolls", { params: { employeeId: row.employeeId } })
-        : { data: { data: [] } };
-      const employeePayrolls = allForEmployee?.data?.data || [];
-      const lastTwo = employeePayrolls
-        .filter((p) => String(p._id) !== String(row._id) && p.status === "PAID")
-        .sort((a, b) => new Date(b.paymentDate || b.createdAt || 0) - new Date(a.paymentDate || a.createdAt || 0))
-        .slice(0, 2);
-
-      const earnings =
-        Array.isArray(row.earnings) && row.earnings.length
-          ? row.earnings
-          : defaultEarningsFromBasic(row.basicSalary);
-      const deductionsItems =
-        Array.isArray(row.deductionsItems) && row.deductionsItems.length
-          ? row.deductionsItems
-          : defaultDeductions();
-
-      const { totalEarnings, totalDeductions, netPay } = computeTotalsFromItems({
-        earnings,
-        deductionsItems,
-      });
-
-      const html = `
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Payslip</title>
-  <style>
-    @page { size: A4; margin: 14mm; }
-    body { font-family: Arial, sans-serif; color: #0f172a; }
-    .hdr { text-align:center; border-bottom: 2px solid #10b981; padding-bottom:10px; }
-    .logo { width:52px; height:52px; object-fit:contain; display:block; margin: 0 auto 6px; }
-    h1 { font-size:18px; margin:0; }
-    .muted { color:#475569; font-size:11px; margin-top:2px; }
-    .meta { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; font-size:12px; }
-    .meta .row { display:flex; justify-content: space-between; gap: 12px; }
-    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
-    .secTitle { font-weight:700; font-size:12px; margin-bottom:6px; }
-    .tbl { width:100%; border-collapse: collapse; font-size:12px; }
-    .tbl th, .tbl td { border:1px solid #e2e8f0; padding:8px; text-align:left; }
-    .tbl th { background:#f8fafc; }
-    .tot { margin-top: 10px; display:flex; justify-content: space-between; font-size:12px; }
-    .tot b { font-size: 13px; }
-    .box { border:1px solid #e2e8f0; border-radius:10px; padding:12px; margin-top:12px; }
-    .sig { margin-top: 24px; display:flex; justify-content: space-between; gap: 18px; }
-    .sig .line { margin-top: 34px; border-top: 1px solid #0f172a; padding-top: 6px; font-size: 11px; color: #334155; }
-    .ft { margin-top:16px; border-top:1px solid #e2e8f0; padding-top:8px; font-size:11px; color:#475569; text-align:center; }
-  </style>
-</head>
-<body>
-  <div class="hdr">
-    ${logoUrl ? `<img class="logo" src="${logoUrl}" />` : ""}
-    <h1>Payslip</h1>
-    <div class="muted">${companyName}</div>
-    <div class="muted">${address ? address : ""}${address && phone ? " | " : ""}${phone ? phone : ""}</div>
-  </div>
-
-  <div class="meta">
-    <div>
-      <div class="row"><div>Date of Joining</div><div>: ${row.joiningDate ? fmtDate(row.joiningDate) : "-"}</div></div>
-      <div class="row"><div>Pay Period</div><div>: ${row.month || "-"} / ${row.year || "-"}</div></div>
-    </div>
-    <div>
-      <div class="row"><div>Employee name</div><div>: ${row.employeeName || "-"}</div></div>
-      <div class="row"><div>Department</div><div>: ${row.department || "-"}</div></div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div>
-      <div class="secTitle">Earnings</div>
-      <table class="tbl">
-        <thead><tr><th>Title</th><th>Amount</th></tr></thead>
-        <tbody>
-          ${earnings
-            .filter((x) => String(x.title || "").trim())
-            .map((x) => `<tr><td>${String(x.title)}</td><td>${Math.round(Number(x.amount||0))}</td></tr>`)
-            .join("")}
-          <tr><td><b>Total Earnings</b></td><td><b>${Math.round(totalEarnings)}</b></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div>
-      <div class="secTitle">Deductions</div>
-      <table class="tbl">
-        <thead><tr><th>Title</th><th>Amount</th></tr></thead>
-        <tbody>
-          ${deductionsItems
-            .filter((x) => String(x.title || "").trim())
-            .map((x) => `<tr><td>${String(x.title)}</td><td>${Math.round(Number(x.amount||0))}</td></tr>`)
-            .join("")}
-          <tr><td><b>Total Deductions</b></td><td><b>${Math.round(totalDeductions)}</b></td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="tot">
-    <div><b>Net Pay</b></div>
-    <div><b>${Math.round(netPay)}</b></div>
-  </div>
-
-  <div class="box">
-    <div class="secTitle">Last 2 Months Paid</div>
-    <table class="tbl">
-      <thead><tr><th>Month</th><th>Paid Date</th><th>Net Pay</th></tr></thead>
-      <tbody>
-        ${
-          lastTwo.length
-            ? lastTwo
-                .map((p) => `<tr><td>${p.month}/${p.year}</td><td>${p.paymentDate ? fmtDate(p.paymentDate) : "-"}</td><td>${Math.round(Number(p.netPay ?? p.netSalary ?? 0))}</td></tr>`)
-                .join("")
-            : `<tr><td colspan="3">-</td></tr>`
-        }
-      </tbody>
-    </table>
-  </div>
-
-  <div class="sig">
-    <div style="flex:1;"><div class="line">Employer Signature</div></div>
-    <div style="flex:1;"><div class="line">Employee Signature</div></div>
-  </div>
-
-  <div class="ft">This is system generated payslip</div>
-</body>
-</html>`;
-
-      const w = window.open("", "_blank");
-      if (!w) {
-        toast.error("Popup blocked. Allow popups to print.");
-        return;
+  useEffect(() => {
+    (async () => {
+      try {
+        const [compRes, accRes, partyRes, prodRes] = await Promise.all([
+          api.get("/accounting/entities"),
+          api.get("/accounting/accounts"),
+          api.get("/accounting/parties"),
+          api.get("/accounting/products"),
+        ]);
+        setAccCompanies(compRes.data?.data || []);
+        setAccAccounts(accRes.data?.data || []);
+        setAccParties(partyRes.data?.data || []);
+        setAccProducts(prodRes.data?.data || []);
+      } catch {
+        // ignore; reports can still load without these filters
       }
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
-      w.focus();
-      w.print();
-    } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to print payslip");
+    })();
+  }, []);
+
+  useEffect(() => {
+    const isAccountingReport = [
+      "trial",
+      "pl",
+      "balance",
+      "receivables",
+      "payables",
+      "daybook",
+      "ledger",
+    ].includes(activeTab);
+    if (!isAccountingReport) {
+      setFilterTemplates([]);
+      setSelectedTemplateId("");
+      return;
     }
-  };
+    (async () => {
+      try {
+        const res = await api.get("/accounting/templates", {
+          params: { reportKey: activeTab, companyId: accCompanyId || "" },
+        });
+        setFilterTemplates(res.data?.data || []);
+      } catch {
+        setFilterTemplates([]);
+      }
+    })();
+  }, [activeTab, accCompanyId]);
 
-  useEffect(() => {
-    if (activeTab === "hr") loadReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, hrSubTab]);
 
-  useEffect(() => {
-    if (activeTab !== "hr" || hrSubTab !== "payrolls") return;
-    loadReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hrPayrollFilters.month, hrPayrollFilters.year, hrPayrollFilters.employeeId]);
 
   useEffect(() => {
     loadReport();
@@ -533,7 +423,7 @@ export default function Reports() {
       return [
         { key: "stockType", label: "Stock Type" },
         { key: "item", label: "Item / Product" },
-        { key: "party", label: "Brand / Category" },
+        { key: "party", label: "Company Name / Category" },
         { key: "balance", label: "Balance" },
       ];
     }
@@ -541,22 +431,10 @@ export default function Reports() {
       return [
         { key: "date", label: "Date" },
         { key: "batchNo", label: "Batch #" },
-        { key: "company", label: "Brand" },
+        { key: "company", label: "Company Name" },
         { key: "product", label: "Product" },
         { key: "outputKg", label: "Output (kg)" },
         { key: "status", label: "Status" },
-      ];
-    }
-    if (activeTab === "sales" || activeTab === "purchases") {
-      const partyLabel = activeTab === "sales" ? "Customer" : "Supplier";
-      return [
-        { key: "date", label: "Date" },
-        { key: "invoiceNo", label: "Invoice #" },
-        { key: "companyName", label: partyLabel },
-        { key: "paymentStatus", label: "Payment Status" },
-        { key: "totalAmount", label: "Total (PKR)", render: (v) => fmt(v) },
-        { key: "partialPaid", label: "Paid (PKR)", render: (v) => fmt(v) },
-        { key: "remaining", label: "Remaining (PKR)", render: (v) => fmt(v) },
       ];
     }
     if (activeTab === "trial") {
@@ -569,6 +447,7 @@ export default function Reports() {
     }
     if (activeTab === "pl") {
       return [
+        { key: "section", label: "Section" },
         { key: "line", label: "Particular" },
         { key: "amount", label: "Amount (PKR)", render: (v) => fmt(v) },
       ];
@@ -582,27 +461,27 @@ export default function Reports() {
     }
     if (activeTab === "receivables" || activeTab === "payables") {
       return [
-        { key: "date", label: "Date", render: (v) => fmtDate(v) },
-        { key: "invoiceNo", label: "Invoice #" },
         { key: "party", label: "Party" },
-        { key: "totalAmount", label: "Total (PKR)", render: (v) => fmt(v) },
-        { key: "paid", label: "Paid (PKR)", render: (v) => fmt(v) },
-        { key: "outstanding", label: "Outstanding (PKR)", render: (v) => fmt(v) },
-        { key: "dueDate", label: "Due Date", render: (v) => fmtDate(v) },
+        { key: "totalDebit", label: "Total Debit (PKR)", render: (v) => fmt(v) },
+        { key: "totalCredit", label: "Total Credit (PKR)", render: (v) => fmt(v) },
+        { key: "balance", label: "Balance (PKR)", render: (v) => fmt(v) },
       ];
     }
     if (activeTab === "daybook") {
       return [
-        { key: "date", label: "Date" },
+        { key: "date", label: "Date", render: (v) => fmtDate(v) },
+        { key: "voucherNo", label: "Voucher No" },
         { key: "type", label: "Type" },
-        { key: "party", label: "Party" },
+        { key: "companyName", label: "Company" },
         { key: "description", label: "Description" },
-        { key: "inflow", label: "Inflow (PKR)", render: (v) => fmt(v) },
-        { key: "outflow", label: "Outflow (PKR)", render: (v) => fmt(v) },
+        { key: "debit", label: "Debit (PKR)", render: (v) => fmt(v) },
+        { key: "credit", label: "Credit (PKR)", render: (v) => fmt(v) },
+        { key: "amount", label: "Amount (PKR)", render: (v) => fmt(v) },
+        { key: "status", label: "Status" },
       ];
     }
     return [
-      { key: "date", label: "Date" },
+      { key: "date", label: "Date", render: (v) => fmtDate(v) },
       { key: "account", label: "Account" },
       { key: "description", label: "Description" },
       { key: "debit", label: "Debit (PKR)", render: (v) => fmt(v) },
@@ -613,55 +492,51 @@ export default function Reports() {
 
   const title = REPORT_TABS.find((t) => t.key === activeTab)?.label || "Report";
 
-  const hrColumns = useMemo(() => {
-    if (hrSubTab === "advanceBalances") {
-      return [
-        { key: "employeeCode", label: "Employee ID" },
-        { key: "employeeName", label: "Employee" },
-        { key: "department", label: "Department" },
-        { key: "totalAdvance", label: "Total Advance", render: (v) => fmt(v) },
-        { key: "remainingBalance", label: "Remaining", render: (v) => fmt(v) },
-      ];
-    }
-    if (hrSubTab === "payrolls") {
-      return [
-        { key: "payrollId", label: "Payroll ID" },
-        { key: "employeeName", label: "Employee" },
-        { key: "department", label: "Department" },
-        { key: "month", label: "Month" },
-        { key: "year", label: "Year" },
-        { key: "totalEarnings", label: "Earnings", render: (v) => fmt(v) },
-        { key: "totalDeductions", label: "Deductions", render: (v) => fmt(v) },
-        { key: "netPay", label: "Net Pay", render: (v, row) => fmt(v ?? row.netSalary ?? 0) },
-        { key: "status", label: "Status" },
-        { key: "paymentDate", label: "Payment Date", render: (v) => fmtDate(v) },
-        {
-          key: "actions",
-          label: "Actions",
-          skipExport: true,
-          render: (_, row) => (
-            <button
-              type="button"
-              className="p-1 rounded hover:bg-gray-50"
-              title="Print payslip"
-              onClick={() => printPayrollSlip(row)}
-            >
-              <Printer className="w-4 h-4 text-gray-700" />
-            </button>
-          ),
+  const applyTemplate = (templateId) => {
+    const t = filterTemplates.find((x) => String(x._id) === String(templateId));
+    if (!t) return;
+    const f = t.filters || {};
+    if (f.companyId != null) setAccCompanyId(String(f.companyId || ""));
+    if (Array.isArray(f.voucherTypes)) setAccVoucherTypes(f.voucherTypes);
+    if (Array.isArray(f.accountIds)) setAccAccountIds(f.accountIds);
+    if (Array.isArray(f.partyIds)) setAccPartyIds(f.partyIds);
+    if (Array.isArray(f.productIds)) setAccProductIds(f.productIds);
+    if (f.range) setRange(f.range);
+    if (f.particularDate) setParticularDate(f.particularDate);
+    if (f.startDate) setStartDate(f.startDate);
+    if (f.endDate) setEndDate(f.endDate);
+  };
+
+  const saveTemplate = async () => {
+    const name = window.prompt("Template name:");
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    try {
+      await api.post("/accounting/templates", {
+        name: trimmed,
+        reportKey: activeTab,
+        companyId: accCompanyId || "",
+        filters: {
+          companyId: accCompanyId || "",
+          voucherTypes: accVoucherTypes,
+          accountIds: accAccountIds,
+          partyIds: accPartyIds,
+          productIds: accProductIds,
+          range,
+          particularDate,
+          startDate,
+          endDate,
         },
-      ];
+      });
+      toast.success("Template saved.");
+      const res = await api.get("/accounting/templates", {
+        params: { reportKey: activeTab, companyId: accCompanyId || "" },
+      });
+      setFilterTemplates(res.data?.data || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || "Failed to save template.");
     }
-    return [
-      { key: "employeeId", label: "Employee ID" },
-      { key: "name", label: "Employee Name" },
-      { key: "department", label: "Department" },
-      { key: "designation", label: "Designation" },
-      { key: "salaryType", label: "Salary Type" },
-      { key: "basicSalary", label: "Basic Salary", render: (v) => fmt(v) },
-      { key: "status", label: "Status" },
-    ];
-  }, [hrSubTab]);
+  };
 
   return (
     <div className="space-y-4">
@@ -692,7 +567,6 @@ export default function Reports() {
         </div>
       </div>
 
-      {activeTab !== "hr" && (
       <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-wrap items-end gap-3">
         <label className="text-sm">
           <span className="block text-gray-600 mb-1">Range</span>
@@ -741,104 +615,124 @@ export default function Reports() {
             </label>
           </>
         )}
+
+        {["trial", "pl", "balance", "receivables", "payables", "daybook", "ledger"].includes(activeTab) && (
+          <>
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Company</span>
+              <select
+                value={accCompanyId}
+                onChange={(e) => setAccCompanyId(e.target.value)}
+                className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[200px]"
+              >
+                <option value="">All</option>
+                {(accCompanies || []).map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Templates</span>
+              <div className="flex gap-2">
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSelectedTemplateId(v);
+                    applyTemplate(v);
+                  }}
+                  className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[220px]"
+                >
+                  <option value="">Select template</option>
+                  {(filterTemplates || []).map((t) => (
+                    <option key={t._id} value={t._id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={saveTemplate}
+                  className="px-3 py-2 rounded border border-emerald-200 text-emerald-800 text-sm hover:bg-emerald-50"
+                >
+                  Save Template
+                </button>
+              </div>
+            </label>
+
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Voucher Types</span>
+              <select
+                multiple
+                value={accVoucherTypes}
+                onChange={(e) => setAccVoucherTypes(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[200px] h-[42px]"
+              >
+                {["JOURNAL", "PAYMENT", "RECEIPT"].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Accounts</span>
+              <select
+                multiple
+                value={accAccountIds}
+                onChange={(e) => setAccAccountIds(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[260px] h-[42px]"
+              >
+                {(accAccounts || []).filter((a) => a.isActive !== false).map((a) => (
+                  <option key={a._id} value={a._id}>
+                    {a.code} - {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Parties</span>
+              <select
+                multiple
+                value={accPartyIds}
+                onChange={(e) => setAccPartyIds(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[220px] h-[42px]"
+              >
+                {(accParties || []).filter((p) => p.isActive !== false).map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm">
+              <span className="block text-gray-600 mb-1">Products</span>
+              <select
+                multiple
+                value={accProductIds}
+                onChange={(e) => setAccProductIds(Array.from(e.target.selectedOptions).map((o) => o.value))}
+                className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[220px] h-[42px]"
+              >
+                {(accProducts || []).filter((p) => p.isActive !== false).map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
       </div>
-      )}
 
       <div className="bg-white rounded-lg shadow-sm p-4">
         {activeTab === "brands" ? (
           <ProductManager tableOnly editInModal />
-        ) : activeTab === "hr" ? (
-          <>
-            <div className="border-b border-emerald-200 mb-3">
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { key: "employees", label: "Employee List", icon: <Users size={16} /> },
-                  { key: "advanceBalances", label: "Advance Balance", icon: <HandCoins size={16} /> },
-                  { key: "payrolls", label: "Payrolls", icon: <FileText size={16} /> },
-                ].map((t) => {
-                  const isActive = hrSubTab === t.key;
-                  return (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => setHrSubTab(t.key)}
-                      className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm rounded-t-lg border-b-2 transition whitespace-nowrap
-                        ${
-                          isActive
-                            ? "bg-emerald-50 text-emerald-700 font-semibold border-emerald-600"
-                            : "text-gray-500 border-transparent hover:text-emerald-600 hover:bg-emerald-50"
-                        }`}
-                    >
-                      {t.icon}
-                      <span>{t.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {hrSubTab === "payrolls" && (
-              <div className="bg-white rounded-lg border border-gray-200 p-3 flex flex-wrap items-end gap-3 mb-3">
-                <label className="text-sm">
-                  <span className="block text-gray-600 mb-1">Month</span>
-                  <select
-                    value={hrPayrollFilters.month}
-                    onChange={(e) =>
-                      setHrPayrollFilters((p) => ({ ...p, month: Number(e.target.value) }))
-                    }
-                    className="border border-gray-300 rounded px-3 py-2 text-sm w-44"
-                  >
-                    {MONTHS.map((m, idx) => (
-                      <option key={m} value={idx + 1}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-sm">
-                  <span className="block text-gray-600 mb-1">Year</span>
-                  <input
-                    type="number"
-                    min="2000"
-                    max="2100"
-                    value={hrPayrollFilters.year}
-                    onChange={(e) => setHrPayrollFilters((p) => ({ ...p, year: Number(e.target.value) }))}
-                    className="border border-gray-300 rounded px-3 py-2 text-sm w-32"
-                  />
-                </label>
-                <label className="text-sm">
-                  <span className="block text-gray-600 mb-1">Employee</span>
-                  <select
-                    value={hrPayrollFilters.employeeId}
-                    onChange={(e) => setHrPayrollFilters((p) => ({ ...p, employeeId: e.target.value }))}
-                    className="border border-gray-300 rounded px-3 py-2 text-sm min-w-[240px]"
-                  >
-                    <option value="">All</option>
-                    {(hrRows || [])
-                      .map((r) => ({ id: r.employeeId, name: r.employeeName }))
-                      .filter((x) => x.id && x.name)
-                      .filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i)
-                      .map((x) => (
-                        <option key={x.id} value={x.id}>
-                          {x.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-              </div>
-            )}
-            {loading ? (
-              <div className="text-sm text-gray-500">Loading hr reports...</div>
-            ) : (
-              <DataTable
-                title="HR Reports"
-                columns={hrColumns}
-                data={hrRows}
-                idKey={hrSubTab === "employees" ? "_id" : "__rowId"}
-                emptyMessage="No data found."
-              />
-            )}
-          </>
         ) : (
           loading ? (
           <div className="text-sm text-gray-500">Loading {title.toLowerCase()}...</div>

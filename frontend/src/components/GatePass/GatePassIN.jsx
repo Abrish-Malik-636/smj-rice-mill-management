@@ -103,7 +103,7 @@ export default function GatePassIN() {
   };
 
   const needsBrand = () => {
-    // Brand/Trademark is required only when receiving Production/Paddy stock.
+    // Company name is required only when receiving Production/Paddy stock.
     const hasManualProduction = (items || []).some((it) => {
       const name = String(it?.itemType || "").trim().toLowerCase();
       const qty = Number(it?.quantity || 0);
@@ -132,7 +132,7 @@ export default function GatePassIN() {
         const perRowOk =
           manualPaddy.length > 0 &&
           manualPaddy.every((it) => String(it?.brand || "").trim() !== "");
-        msg = value || perRowOk ? "" : "Brand / trademark is required.";
+        msg = value || perRowOk ? "" : "Company Name is required.";
       }
     }
     if (name === "driverName")
@@ -158,7 +158,7 @@ export default function GatePassIN() {
     const e2 = needsBrand()
       ? form.supplier || perRowOk
         ? ""
-        : "Brand / trademark is required."
+        : "Company Name is required."
       : "";
     const e3 = form.driverName
       ? validateDriverName(form.driverName)
@@ -244,7 +244,7 @@ export default function GatePassIN() {
     fetchInvoices();
   }, []);
 
-  // Load brand/trademark list for paddy ownership
+  // Load company name list for paddy ownership
   useEffect(() => {
     const loadBrands = async () => {
       try {
@@ -317,8 +317,8 @@ export default function GatePassIN() {
 
   const validateBrandValue = (value) => {
     const v = String(value || "").trim();
-    if (!v) return "Brand is required";
-    if (v.length > 100) return "Brand must be 100 characters or less";
+    if (!v) return "Company Name is required";
+    if (v.length > 100) return "Company Name must be 100 characters or less";
     return "";
   };
 
@@ -363,7 +363,8 @@ export default function GatePassIN() {
       (b) => normalizeText(b) === normalizeText(brandName)
     );
     const isNewBrand = String(modal.valueOther || "").trim().length > 0;
-    const duplicateBrandError = brandExists && isNewBrand ? "Brand already exists." : "";
+    const duplicateBrandError =
+      brandExists && isNewBrand ? "Company Name already exists." : "";
     const rows = Array.isArray(modal.productRows) ? modal.productRows : [];
     const rowErrors = rows.map((row) => validateBrandRow(row));
     const hasRowErrors = rowErrors.some((e) => Object.keys(e).length > 0);
@@ -454,7 +455,7 @@ export default function GatePassIN() {
       (r) => normalizeText(r.name) === normalizeText(name)
     );
     if (duplicate) {
-      toast.error("Product already exists in this brand list.");
+      toast.error("Product already exists in this company list.");
       return;
     }
     setBrandModal((prev) => ({
@@ -515,7 +516,7 @@ export default function GatePassIN() {
     const validation = validateBrandModalBeforeSave(brandModal);
     setBrandModal((prev) => ({ ...prev, errors: validation.errors }));
     if (!validation.isValid) {
-      toast.error("Please fix brand form errors.");
+      toast.error("Please fix company name form errors.");
       return;
     }
     const brandName = getBrandModalName(brandModal);
@@ -580,18 +581,18 @@ export default function GatePassIN() {
       setBrandModal(createBrandModalState());
       toast.success(
         changedCount > 0
-          ? `Brand saved with ${changedCount} product row(s).`
-          : "Brand added."
+          ? `Company Name saved with ${changedCount} product row(s).`
+          : "Company Name added."
       );
     } catch (err) {
-      toast.error(err?.response?.data?.message || "Failed to add brand");
+      toast.error(err?.response?.data?.message || "Failed to add company name");
       setBrandModal((prev) => ({ ...prev, saving: false }));
     }
   };
 
   const handleInvoiceChange = (id) => {
     // handled by <select multiple>
-    // Important: supplier is used as Brand/Trademark for paddy ownership.
+    // Important: supplier is used as company name for paddy ownership.
     // Linking an invoice should NOT overwrite the selected brand.
   };
 
@@ -1001,7 +1002,7 @@ export default function GatePassIN() {
       render: (val) => (val ? new Date(val).toLocaleDateString() : "-"),
     },
     { key: "gatePassNo", label: "GP No" },
-    { key: "supplier", label: "Brand / Trademark" },
+    { key: "supplier", label: "Company Name" },
     { key: "truckNo", label: "Truck" },
     {
       key: "items",
@@ -1251,7 +1252,10 @@ export default function GatePassIN() {
           </h3>
           <div className="p-3 bg-gray-50 rounded-lg space-y-3">
             <div className="flex items-center justify-between">
-              <div className="text-xs text-gray-600">Add one or more paddy lines (each row can have a different brand/trademark).</div>
+              <div className="text-xs text-gray-600">
+                Add one or more paddy lines (each row can have a different company
+                name).
+              </div>
               <button
                 type="button"
                 onClick={() =>
@@ -1271,7 +1275,7 @@ export default function GatePassIN() {
             <div id="field-supplier">
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs text-gray-500">
-                  Brand / Trademark
+                  Company Name
                 </label>
               </div>
               <select
@@ -1287,7 +1291,9 @@ export default function GatePassIN() {
                     .map((x) => String(x?.brand || "").trim())
                     .filter(Boolean);
                   if (v && used.includes(v)) {
-                    toast.error("Each paddy row must have a different brand/trademark.");
+                    toast.error(
+                      "Each paddy row must have a different company name."
+                    );
                     return;
                   }
                   handleItemChange(0, "brand", v);
@@ -1299,7 +1305,7 @@ export default function GatePassIN() {
                   errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
                 }`}
               >
-                <option value="">Select brand / trademark</option>
+                <option value="">Select company name</option>
                 {brandOptions.map((b, idx) => (
                   <option
                     key={`${b}-${idx}`}
@@ -1363,7 +1369,9 @@ export default function GatePassIN() {
                   return (
                     <div key={`paddy-${realIdx}`} className="grid md:grid-cols-4 gap-3 items-end">
                       <div className="md:col-span-1">
-                        <label className="block text-xs text-gray-500 mb-1">Brand / Trademark</label>
+                        <label className="block text-xs text-gray-500 mb-1">
+                          Company Name
+                        </label>
                         <select
                           value={it?.brand ?? ""}
                           onChange={(e) => {
@@ -1376,7 +1384,9 @@ export default function GatePassIN() {
                               .map((x, i) => (i === realIdx ? "" : String(x?.brand || "").trim()))
                               .filter(Boolean);
                             if (v && used.includes(v)) {
-                              toast.error("Each paddy row must have a different brand/trademark.");
+                              toast.error(
+                                "Each paddy row must have a different company name."
+                              );
                               return;
                             }
                             handleItemChange(realIdx, "brand", v);
@@ -1385,7 +1395,7 @@ export default function GatePassIN() {
                             errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
                           }`}
                         >
-                          <option value="">Select brand / trademark</option>
+                          <option value="">Select company name</option>
                           {brandOptions.map((b, idx2) => (
                             <option
                               key={`${b}-${idx2}`}
@@ -1551,7 +1561,7 @@ export default function GatePassIN() {
 
       <AddOptionModal
         open={brandModal.open}
-        title="Manage Brand / Trademark"
+        title="Manage Company Names"
         subtitle="Add brand, select products, set conversion and pricing."
         maxWidthClass="max-w-[20cm]"
         onClose={() => setBrandModal(createBrandModalState())}
@@ -1565,7 +1575,9 @@ export default function GatePassIN() {
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
             <div className="grid grid-cols-12 gap-3">
               <div className="col-span-12 md:col-span-6">
-                <label className="block text-xs text-gray-600 mb-1">Brand / Trademark *</label>
+                <label className="block text-xs text-gray-600 mb-1">
+                  Company Name *
+                </label>
                 {brandModal.value !== OTHER_OPTION ? (
                   <select
                     className={`w-full border rounded px-3 py-2 text-sm ${
@@ -1599,7 +1611,7 @@ export default function GatePassIN() {
                       })
                     }
                   >
-                    <option value="">Select brand</option>
+                    <option value="">Select company name</option>
                     {brandOptions.map((b, idx) => (
                       <option key={`brand-opt-${b}-${idx}`} value={b}>
                         {b}
@@ -1627,7 +1639,10 @@ export default function GatePassIN() {
                               value: match,
                               valueOther: "",
                               productRows: getBrandProducts(match),
-                              errors: { ...(prev.errors || {}), value: "Brand already exists." },
+                            errors: {
+                              ...(prev.errors || {}),
+                              value: "Company Name already exists.",
+                            },
                             };
                           }
                           return {
@@ -1643,7 +1658,7 @@ export default function GatePassIN() {
                           valueOther: toTitleCase(prev.valueOther || ""),
                         }))
                       }
-                      placeholder="Enter brand name"
+                      placeholder="Enter company name"
                     />
                     <button
                       type="button"

@@ -4,10 +4,6 @@ const ProductionBatch = require("../models/productionBatchModel");
 const StockLedger = require("../models/stockLedgerModel");
 const SystemSettings = require("../models/systemSettingsModel");
 const SystemAction = require("../models/systemActionModel");
-const {
-  postProductionOutputEntry,
-  reverseBySource,
-} = require("../services/accountingJournalService");
 
 // PB-YYYYMMDD-HHMMSS
 function generateBatchNo() {
@@ -329,14 +325,7 @@ exports.deleteBatch = async (req, res) => {
       if (outputs.length > 0) {
         outputs.forEach((o) => {
           if (!o.productTypeId || !o.netWeightKg) return;
-          reverseBySource({
-            sourceModule: "PRODUCTION",
-            sourceRefType: "OUTPUT",
-            sourceRefId: `${batch._id}:${o.productTypeId}:${new Date(
-              o.outputDate || batch.date
-            ).getTime()}`,
-            reason: "Batch deleted",
-          }).catch(() => {});
+          // Accounting is manual-only; no automatic journal reversals.
           ledgerOps.push({
             date: o.outputDate || batch.date,
             type: "OUT",
@@ -554,26 +543,7 @@ exports.addOutput = async (req, res) => {
       } catch {
         // don't crash if ledger fails
       }
-      try {
-        await reverseBySource({
-          sourceModule: "PRODUCTION",
-          sourceRefType: "OUTPUT",
-          sourceRefId: `${saved._id}:${output.productTypeId}:${new Date(
-            output.outputDate || saved.date
-          ).getTime()}`,
-          reason: "Repost output",
-        });
-        await postProductionOutputEntry({
-          batchId: saved._id,
-          batchNo: saved.batchNo,
-          outputDate: output.completedAt || output.outputDate || saved.date,
-          companyId: output.companyId || null,
-          companyName: output.companyName || "",
-          productTypeId: output.productTypeId,
-          productTypeName: output.productTypeName,
-          netWeightKg: output.netWeightKg,
-        });
-      } catch {}
+      // Accounting is manual-only; no automatic journal posting.
     }
 
     return res.json({ success: true, data: saved });
@@ -673,14 +643,7 @@ exports.updateOutput = async (req, res) => {
           new Date(output.outputDate || batch.date).getTime())
     ) {
       try {
-        await reverseBySource({
-          sourceModule: "PRODUCTION",
-          sourceRefType: "OUTPUT",
-          sourceRefId: `${saved._id}:${oldProductTypeId}:${new Date(
-            oldOutputDate || batch.date
-          ).getTime()}`,
-          reason: "Output updated",
-        });
+        // Accounting is manual-only; no automatic journal reversals.
         await StockLedger.create({
           date: oldOutputDate || batch.date,
           type: "OUT",
@@ -707,24 +670,7 @@ exports.updateOutput = async (req, res) => {
           gatePassNo: "",
           remarks: `Production output (${output.shift || "DAY"}) - ${batch.batchNo}`,
         });
-        await reverseBySource({
-          sourceModule: "PRODUCTION",
-          sourceRefType: "OUTPUT",
-          sourceRefId: `${saved._id}:${output.productTypeId}:${new Date(
-            output.outputDate || batch.date
-          ).getTime()}`,
-          reason: "Repost updated output",
-        });
-        await postProductionOutputEntry({
-          batchId: saved._id,
-          batchNo: saved.batchNo,
-          outputDate: output.completedAt || output.outputDate || batch.date,
-          companyId: output.companyId || null,
-          companyName: output.companyName || "",
-          productTypeId: output.productTypeId,
-          productTypeName: output.productTypeName,
-          netWeightKg: newNet,
-        });
+        // Accounting is manual-only; no automatic journal posting.
       } catch {
         // don't crash if ledger fails
       }

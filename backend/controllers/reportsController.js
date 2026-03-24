@@ -1,48 +1,40 @@
-const Transaction = require("../models/transactionModel");
 const StockLedger = require("../models/stockLedgerModel");
-const ManagerialStockLedger = require("../models/managerialStockLedgerModel");
 const ProductionBatch = require("../models/productionBatchModel");
+const ProductType = require("../models/productTypeModel");
+const Company = require("../models/companyModel");
+const AccountingFilterTemplate = require("../models/accountingFilterTemplateModel");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const parseRange = (req) => getDateRangeFromQuery(req.query);
 
 exports.getStockReport = async (_req, res) => {
   try {
-    const [productionLedgers, managerialLedgers] = await Promise.all([
-      StockLedger.find({}).lean(),
-      ManagerialStockLedger.find({}).lean(),
-    ]);
+    const productionLedgers = await StockLedger.find({}).lean();
+    const productTypes = await ProductType.find({}).lean().select("_id name pricePerKg defaultSaleRate");
+    const ptMap = new Map(productTypes.map((p) => [String(p._id), p]));
     const productionMap = new Map();
     productionLedgers.forEach((l) => {
       const key = `${l.companyName || ""}__${l.productTypeName || ""}`;
       const prev = productionMap.get(key) || {
         companyName: l.companyName || "-",
         productTypeName: l.productTypeName || "-",
+        productTypeId: l.productTypeId ? String(l.productTypeId) : "",
         balanceKg: 0,
+        valuePKR: 0,
       };
       const qty = Number(l.netWeightKg || 0);
       prev.balanceKg += l.type === "OUT" ? -qty : qty;
+      const pt = l.productTypeId ? ptMap.get(String(l.productTypeId)) : null;
+      const rate = Number(pt?.pricePerKg || 0) || Number(pt?.defaultSaleRate || 0) || 0;
+      // Value is derived from current balance only (not movement).
+      prev.valuePKR = Number((Number(prev.balanceKg || 0) * rate).toFixed(2));
       productionMap.set(key, prev);
-    });
-    const managerialMap = new Map();
-    managerialLedgers.forEach((l) => {
-      const key = `${l.itemName || ""}__${l.category || ""}`;
-      const prev = managerialMap.get(key) || {
-        itemName: l.itemName || "-",
-        category: l.category || "-",
-        balanceQty: 0,
-        unit: l.unit || "Nos",
-      };
-      const qty = Number(l.quantity || 0);
-      prev.balanceQty += l.type === "OUT" ? -qty : qty;
-      managerialMap.set(key, prev);
     });
 
     res.json({
       success: true,
       data: {
         production: Array.from(productionMap.values()),
-        managerial: Array.from(managerialMap.values()),
       },
     });
   } catch (err) {
@@ -64,32 +56,190 @@ exports.getProductionReport = async (req, res) => {
   }
 };
 
-exports.getSalesReport = async (req, res) => {
+// -------------------- STOCK MOVEMENT (LEDGER) --------------------
+
+exports.getStockMovementReport = async (req, res) => {
   try {
     const { start, end } = parseRange(req);
-    const rows = await Transaction.find({
-      type: "SALE",
-      date: { $gte: start, $lte: end },
-    })
-      .sort({ date: -1, createdAt: -1 })
-      .lean();
-    res.json({ success: true, data: rows });
+    const companyId = String(req.query.companyId || "").trim();
+    const productTypeId = String(req.query.productTypeId || "").trim();
+
+    const filter = { date: { $gte: start, $lte: end } };
+    if (companyId) filter.companyId = companyId;
+    if (productTypeId) filter.productTypeId = productTypeId;
+
+    const rows = await StockLedger.find(filter).sort({ date: 1, createdAt: 1 }).lean();
+
+    let balance = 0;
+    const data = rows.map((r) => {
+      const qty = Number(r.netWeightKg || 0);
+      const stockIn = r.type === "OUT" ? 0 : qty;
+      const stockOut = r.type === "OUT" ? qty : 0;
+      balance += stockIn - stockOut;
+      const ref = r.gatePassNo || (r.transactionId ? `TX-${String(r.transactionId).slice(-6)}` : "");
+      return {
+        _id: r._id,
+        date: r.date,
+        companyId: r.companyId ? String(r.companyId) : "",
+        companyName: r.companyName || "",
+        productTypeId: r.productTypeId ? String(r.productTypeId) : "",
+        productTypeName: r.productTypeName || "",
+        stockInKg: Number(stockIn.toFixed(3)),
+        stockOutKg: Number(stockOut.toFixed(3)),
+        balanceKg: Number(balance.toFixed(3)),
+        reference: ref,
+        remarks: r.remarks || "",
+      };
+    });
+
+    res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Failed to load sales report." });
+    res.status(500).json({ success: false, message: "Failed to load stock movement." });
   }
 };
 
-exports.getPurchaseReport = async (req, res) => {
+// -------------------- PRODUCTION SUMMARY / BY-PRODUCT --------------------
+
+function normName(s) {
+  return String(s || "").toLowerCase().trim();
+}
+
+exports.getProductionSummaryReport = async (req, res) => {
   try {
     const { start, end } = parseRange(req);
-    const rows = await Transaction.find({
-      type: "PURCHASE",
-      date: { $gte: start, $lte: end },
-    })
-      .sort({ date: -1, createdAt: -1 })
-      .lean();
+    const companyId = String(req.query.companyId || "").trim();
+
+    const filter = { date: { $gte: start, $lte: end } };
+    if (companyId) filter.sourceCompanyId = companyId;
+
+    const batches = await ProductionBatch.find(filter).sort({ date: -1 }).lean();
+
+    const data = batches.map((b) => {
+      const out = b.outputs || [];
+      const pick = (needle) =>
+        out
+          .filter((o) => normName(o.productTypeName).includes(needle))
+          .reduce((s, o) => s + (Number(o.netWeightKg) || 0), 0);
+
+      return {
+        _id: b._id,
+        date: b.date,
+        batchNo: b.batchNo,
+        companyId: b.sourceCompanyId ? String(b.sourceCompanyId) : "",
+        companyName: b.sourceCompanyName || "",
+        paddyInputKg: Number((Number(b.paddyWeightKg || 0) || 0).toFixed(3)),
+        riceOutputKg: Number(pick("rice").toFixed(3)),
+        brokenOutputKg: Number(pick("broken").toFixed(3)),
+        huskOutputKg: Number(pick("husk").toFixed(3)),
+        branOutputKg: Number(pick("bran").toFixed(3)),
+        totalOutputKg: Number((Number(b.totalOutputWeightKg || 0) || 0).toFixed(3)),
+        status: b.status || "-",
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to load production summary." });
+  }
+};
+
+exports.getByProductReport = async (req, res) => {
+  try {
+    const { start, end } = parseRange(req);
+    const companyId = String(req.query.companyId || "").trim(); // source company filter
+
+    const filter = { date: { $gte: start, $lte: end } };
+    if (companyId) filter.sourceCompanyId = companyId;
+
+    const batches = await ProductionBatch.find(filter).lean();
+    const bucket = new Map(); // key = productTypeName
+
+    batches.forEach((b) => {
+      (b.outputs || []).forEach((o) => {
+        const key = `${o.productTypeName || "-"}`;
+        const prev = bucket.get(key) || {
+          productTypeName: o.productTypeName || "-",
+          outputKg: 0,
+          batches: 0,
+        };
+        prev.outputKg += Number(o.netWeightKg || 0);
+        bucket.set(key, prev);
+      });
+    });
+
+    const data = Array.from(bucket.values())
+      .map((r) => ({ ...r, outputKg: Number(r.outputKg.toFixed(3)) }))
+      .sort((a, b) => b.outputKg - a.outputKg);
+
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to load by-product report." });
+  }
+};
+
+// -------------------- MASTER DATA REPORTS --------------------
+
+exports.getCompanyListReport = async (_req, res) => {
+  try {
+    const rows = await Company.find({}).sort({ name: 1 }).lean();
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Failed to load purchase report." });
+    res.status(500).json({ success: false, message: "Failed to load company list." });
+  }
+};
+
+exports.getProductListReport = async (_req, res) => {
+  try {
+    const rows = await ProductType.find({}).sort({ name: 1 }).lean();
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to load product list." });
+  }
+};
+
+// -------------------- REPORT FILTER TEMPLATES --------------------
+
+exports.getReportTemplates = async (req, res) => {
+  try {
+    const reportKey = String(req.query.reportKey || "").trim();
+    const companyId = String(req.query.companyId || "").trim();
+    const filter = { isActive: true };
+    if (reportKey) filter.reportKey = reportKey;
+    if (companyId) filter.companyId = companyId;
+    const rows = await AccountingFilterTemplate.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to load templates." });
+  }
+};
+
+exports.createReportTemplate = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim();
+    const reportKey = String(body.reportKey || "").trim();
+    if (!name) return res.status(400).json({ success: false, message: "Template name is required." });
+    if (!reportKey) return res.status(400).json({ success: false, message: "reportKey is required." });
+    const doc = await AccountingFilterTemplate.create({
+      name,
+      reportKey,
+      companyId: String(body.companyId || "").trim(),
+      filters: body.filters || {},
+      createdBy: body.createdBy || "user",
+    });
+    res.status(201).json({ success: true, data: doc });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message || "Unable to create template." });
+  }
+};
+
+exports.deleteReportTemplate = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const doc = await AccountingFilterTemplate.findByIdAndUpdate(id, { $set: { isActive: false } }, { new: true }).lean();
+    if (!doc) return res.status(404).json({ success: false, message: "Template not found." });
+    res.json({ success: true, message: "Template deleted." });
+  } catch (err) {
+    res.status(400).json({ success: false, message: err.message || "Unable to delete template." });
   }
 };
