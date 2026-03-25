@@ -344,6 +344,36 @@ export default function GatePassIN() {
       .replace(/\D/g, "")
       .slice(0, max);
 
+  const formatGatePassSearch = (value) => {
+    const raw = String(value || "").toUpperCase();
+    const cleaned = raw.replace(/[^A-Z0-9]/g, "");
+    let prefix = "";
+    let digits = "";
+
+    for (const ch of cleaned) {
+      if (prefix.length < 3) {
+        if (prefix === "" && ch === "G") prefix = "G";
+        else if (prefix === "G" && ch === "P") prefix = "GP";
+        else if (prefix === "GP" && ch === "I") prefix = "GPI";
+        else if (/\d/.test(ch)) {
+          // Ignore digits until prefix is complete.
+        }
+      } else if (/\d/.test(ch)) {
+        digits += ch;
+      }
+    }
+
+    if (prefix.length < 3) return prefix;
+
+    const year = digits.slice(0, 4);
+    const gpNo = digits.slice(4, 9);
+    let out = "GPI-";
+    out += year;
+    if (year.length === 4) out += "-";
+    out += gpNo;
+    return out;
+  };
+
   const validateBrandRow = (row = {}) => {
     const errors = {};
     const name = String(row.name || "").trim();
@@ -1543,6 +1573,7 @@ export default function GatePassIN() {
         data={rows}
         idKey="_id"
         searchPlaceholder="Search gate passes..."
+        searchFormatter={formatGatePassSearch}
         emptyMessage={loading ? "Loading..." : "No gate passes found."}
         deleteAll={{
           description: "This will permanently delete ALL Gate Pass IN records from the database.",

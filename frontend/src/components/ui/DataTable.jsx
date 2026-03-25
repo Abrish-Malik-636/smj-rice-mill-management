@@ -38,6 +38,7 @@ export default function DataTable({
   onRowAction,
   toolbarActions,
   deleteAll,
+  searchFormatter,
 }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -196,7 +197,9 @@ export default function DataTable({
                 placeholder={searchPlaceholder}
                 value={search}
                 onChange={(e) => {
-                  setSearch(e.target.value);
+                  const raw = e.target.value;
+                  const next = typeof searchFormatter === "function" ? searchFormatter(raw) : raw;
+                  setSearch(next);
                   setPage(1);
                 }}
                 data-global-search
