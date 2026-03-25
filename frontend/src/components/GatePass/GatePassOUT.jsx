@@ -115,6 +115,36 @@ export default function GatePassOUT() {
     return `${s.slice(0, 4)}-${s.slice(4, 11)}`;
   };
 
+  const formatGatePassSearch = (value) => {
+    const raw = String(value || "").toUpperCase();
+    const cleaned = raw.replace(/[^A-Z0-9]/g, "");
+    let prefix = "";
+    let digits = "";
+
+    for (const ch of cleaned) {
+      if (prefix.length < 3) {
+        if (prefix === "" && ch === "G") prefix = "G";
+        else if (prefix === "G" && ch === "P") prefix = "GP";
+        else if (prefix === "GP" && ch === "O") prefix = "GPO";
+        else if (/\d/.test(ch)) {
+          // Ignore digits until prefix is complete.
+        }
+      } else if (/\d/.test(ch)) {
+        digits += ch;
+      }
+    }
+
+    if (prefix.length < 3) return prefix;
+
+    const year = digits.slice(0, 4);
+    const gpNo = digits.slice(4, 9);
+    let out = "GPO-";
+    out += year;
+    if (year.length === 4) out += "-";
+    out += gpNo;
+    return out;
+  };
+
   // Load settings
   useEffect(() => {
     const loadSettings = async () => {
@@ -861,6 +891,7 @@ export default function GatePassOUT() {
         data={rows}
         idKey="_id"
         searchPlaceholder="Search gate passes..."
+        searchFormatter={formatGatePassSearch}
         emptyMessage={loading ? "Loading..." : "No gate passes found."}
         deleteAll={{
           description: "This will permanently delete ALL Gate Pass OUT records from the database.",

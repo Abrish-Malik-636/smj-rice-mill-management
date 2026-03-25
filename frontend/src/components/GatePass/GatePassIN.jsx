@@ -43,6 +43,8 @@ export default function GatePassIN() {
   const [items, setItems] = useState([
     { itemType: "Paddy", brand: "", quantity: "", unit: "kg" },
   ]);
+  const [companySuggestOpen, setCompanySuggestOpen] = useState(false);
+  const [companyActiveIndex, setCompanyActiveIndex] = useState(-1);
 
   const toggleInvoiceId = (id) => {
     const sid = String(id || "");
@@ -634,6 +636,42 @@ export default function GatePassIN() {
       updated[idx][field] = value;
     }
     setItems(updated);
+  };
+
+  const getCompanySuggestions = (query) => {
+    const q = normalizeText(query);
+    if (!q) return [];
+    return (brandOptions || [])
+      .filter((b) => normalizeText(b).startsWith(q))
+      .slice(0, 10);
+  };
+
+  const applyCompanyName = (rawValue, { trim = true } = {}) => {
+    const v = trim ? String(rawValue || "").trim() : String(rawValue || "");
+    const used = (items || [])
+      .slice(1)
+      .map((x) => String(x?.brand || "").trim())
+      .filter(Boolean);
+    const usedLower = used.map((x) => normalizeText(x));
+    if (v && usedLower.includes(normalizeText(v))) {
+      toast.error("Each paddy row must have a different company name.");
+      return false;
+    }
+    handleItemChange(0, "brand", v);
+    setForm((prev) => ({ ...prev, supplier: v }));
+    if (v) clearFieldError("supplier");
+    return true;
+  };
+
+  const openNewCompanyModal = (rawValue) => {
+    const v = toTitleCase(String(rawValue || "").trim());
+    if (!v) return;
+    setBrandModal({
+      ...createBrandModalState(),
+      open: true,
+      value: OTHER_OPTION,
+      valueOther: v,
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -1308,47 +1346,90 @@ export default function GatePassIN() {
                   Company Name
                 </label>
               </div>
-              <select
-                value={items[0]?.brand ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === OTHER_OPTION) {
-                    setBrandModal({ ...createBrandModalState(), open: true });
-                    return;
-                  }
-                  const used = (items || [])
-                    .slice(1)
-                    .map((x) => String(x?.brand || "").trim())
-                    .filter(Boolean);
-                  if (v && used.includes(v)) {
-                    toast.error(
-                      "Each paddy row must have a different company name."
-                    );
-                    return;
-                  }
-                  handleItemChange(0, "brand", v);
-                  // Keep top-level supplier in sync for backward compatibility (printing/listing).
-                  setForm((prev) => ({ ...prev, supplier: v }));
-                  clearFieldError("supplier");
-                }}
-                className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
-                  errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
-                }`}
-              >
-                <option value="">Select company name</option>
-                {brandOptions.map((b, idx) => (
-                  <option
-                    key={`${b}-${idx}`}
-                    value={b}
-                    disabled={(items || [])
-                      .slice(1)
-                      .some((x) => String(x?.brand || "").trim() === b)}
-                  >
-                    {b}
-                  </option>
-                ))}
-                <option value={OTHER_OPTION}>Other (Add New)</option>
-              </select>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={items[0]?.brand ?? ""}
+                  onChange={(e) => {
+                    applyCompanyName(e.target.value, { trim: false });
+                    setCompanySuggestOpen(true);
+                    setCompanyActiveIndex(-1);
+                  }}
+                  onFocus={() => {
+                    setCompanySuggestOpen(true);
+                  }}
+                  onBlur={() => {
+                    setTimeout(() => {
+                      setCompanySuggestOpen(false);
+                      setCompanyActiveIndex(-1);
+                    }, 120);
+                  }}
+                  onKeyDown={(e) => {
+                    const query = String(items[0]?.brand || "");
+                    const suggestions = getCompanySuggestions(query);
+                    if (!suggestions.length && e.key !== "Enter") return;
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setCompanyActiveIndex((prev) =>
+                        Math.min(prev + 1, suggestions.length - 1)
+                      );
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setCompanyActiveIndex((prev) =>
+                        Math.max(prev - 1, 0)
+                      );
+                    }
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      if (companyActiveIndex >= 0 && suggestions[companyActiveIndex]) {
+                        applyCompanyName(suggestions[companyActiveIndex]);
+                        setCompanySuggestOpen(false);
+                        setCompanyActiveIndex(-1);
+                        return;
+                      }
+                      const exact = (brandOptions || []).find(
+                        (b) => normalizeText(b) === normalizeText(query)
+                      );
+                      if (exact) {
+                        applyCompanyName(exact);
+                        setCompanySuggestOpen(false);
+                        setCompanyActiveIndex(-1);
+                        return;
+                      }
+                      openNewCompanyModal(query);
+                    }
+                  }}
+                  placeholder="Type company name"
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none ${
+                    errors.supplier ? "border-red-500 bg-red-50" : "border-gray-300"
+                  }`}
+                />
+                {companySuggestOpen &&
+                  String(items[0]?.brand || "").trim().length >= 1 &&
+                  getCompanySuggestions(items[0]?.brand || "").length > 0 && (
+                    <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg max-h-56 overflow-auto">
+                      {getCompanySuggestions(items[0]?.brand || "").map((b, idx) => (
+                        <button
+                          type="button"
+                          key={`${b}-${idx}`}
+                          onMouseDown={() => {
+                            applyCompanyName(b);
+                            setCompanySuggestOpen(false);
+                            setCompanyActiveIndex(-1);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm ${
+                            idx === companyActiveIndex
+                              ? "bg-emerald-50 text-emerald-800"
+                              : "hover:bg-gray-50"
+                          }`}
+                        >
+                          {b}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+              </div>
               {errors.supplier && (
                 <p className="text-xs text-red-500 mt-1">{errors.supplier}</p>
               )}
